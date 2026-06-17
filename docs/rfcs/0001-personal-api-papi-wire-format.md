@@ -1,6 +1,7 @@
 ---
 status: proposed
 date: 2026-06-16
+amended: 2026-06-17
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -72,6 +73,7 @@ The document MAY contain these top-level members; all are OPTIONAL:
 | `forges[]`        | array  | Forge identities (see §1.1), each with `repos[]`.                         |
 | `organizations[]` | array  | Organization accounts, each with `repos[]`.                               |
 | `sitemap`         | object | A domain → entries map.                                                   |
+| `templates[]`     | array  | Advertised nix flake templates for repo bootstrap (see §7).               |
 | `localsend`       | object | Declared but disabled in `papi/v0`; `enabled` MUST be `false`.            |
 
 `person.handle`, when present, MUST be a string; it is used as the subject label
@@ -171,6 +173,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/repos`               | flattened, provenance-annotated repos, JSON | projected          |
 | GET    | `/papi/organizations`       | projected `organizations[]`, JSON           | projected          |
 | GET    | `/papi/sitemap`             | projected `sitemap`, JSON                   | projected          |
+| GET    | `/papi/templates`           | projected `templates[]`, JSON               | projected          |
 | GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids recipient template   | projected          |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
 | POST   | `/papi/auth/challenge`      | challenge JSON (§5)                         | no                 |
@@ -188,7 +191,8 @@ unauthenticated request, the registered principal for an authenticated one.
 - `handle` — the subject handle,
 - `resources` — an object whose values are **absolute** URLs to `/papi`,
   `/papi/piggy-ids`, `/papi/ssh-authorized-keys`, `/papi/forges`, `/papi/repos`,
-  `/papi/organizations`, and `/papi/sitemap`, and
+  `/papi/organizations`, `/papi/sitemap`, and (when the document advertises
+  templates, §7) `/papi/templates`, and
 - `auth` — `{scheme: "piggy-challenge-response", challenge, response,
 present_session_as}`, where `challenge`/`response` are absolute URLs.
 
@@ -200,9 +204,11 @@ JSON endpoints MUST wrap their payload in the envelope:
 
     { "data": <payload>, "meta": { "count": <int>, "type": "<string>", ... } }
 
-`/papi` MUST add `meta.version` and `meta.visibility`. The four projected-list
-endpoints MUST add `meta.visibility`. `meta.visibility` MUST be `"public"` for
-the anonymous principal and `"scoped"` for an authenticated principal.
+`/papi` MUST add `meta.version` and `meta.visibility`. The five projected-list
+endpoints (`/papi/forges`, `/papi/repos`, `/papi/organizations`, `/papi/sitemap`,
+`/papi/templates`) MUST add `meta.visibility`. `meta.visibility` MUST be
+`"public"` for the anonymous principal and `"scoped"` for an authenticated
+principal.
 
 The two `text/plain` endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`)
 MUST NOT use the envelope; they return a raw body with `Content-Type:
@@ -316,6 +322,107 @@ A registry entry granting a caller the `friends` group:
         "piggy-recipient-v1@pivy_ecdh_p256_pub-qqqsyqcyq5rq…": {
           "id": "friend", "groups": ["authenticated", "friends"] } } }
 
+### 7. Flake Template Advertisement
+
+A PAPI document MAY advertise one or more **nix flake templates** that bootstrap
+a repository in the subject's house style. This turns "who is this person" into
+"scaffold me a repo the way they scaffold theirs", served from the same
+well-known document.
+
+#### 7.1. `templates[]`
+
+The OPTIONAL top-level `templates[]` member is an array of **template entries**.
+Each entry is a JSON object with:
+
+| Member        | Type   | Required | Meaning                                                                                                      |
+| ------------- | ------ | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `id`          | string | MUST     | Stable identifier, unique within `templates[]`; the selector used by §8.                                    |
+| `flakeref`    | string | MUST     | A nix-resolvable flake reference including the template attribute, e.g. `github:amarbel-llc/conformist#eng`. |
+| `description` | string | SHOULD   | One-line human summary.                                                                                     |
+| `kind`        | string | MAY      | Bootstrap mechanism; MUST default to `"flake-template"` when absent.                                        |
+
+A server MAY include additional members; clients MUST ignore members they do not
+recognize (§1.1). `id` MUST be a non-empty string and MUST be unique within the
+array; a document with duplicate `id`s is malformed, and a client MUST refuse to
+resolve a duplicated `id` (§8) rather than choose arbitrarily. `flakeref` MUST be
+a non-empty string; this RFC does not constrain its grammar beyond "a reference
+`nix flake init -t` accepts", deferring to the nix flake-reference syntax.
+
+`kind` exists so future bootstrap mechanisms can be added without a version bump;
+in `papi/v0` the only defined value is `"flake-template"`. A client MUST skip an
+entry whose `kind` it does not understand rather than fail the whole list.
+
+#### 7.2. Projection
+
+`templates[]` is an ordinary part of the document and MUST be projected through
+the requesting principal exactly as every other node (§2): a `"private"` entry is
+dropped for principals its `acl` does not admit, the `acl` member MUST be stripped
+from every serialized entry, and the array MUST contain only entries visible to
+the principal. A domain MAY therefore publish public templates to everyone and
+gate house-internal templates behind the auth handshake (§5).
+
+#### 7.3. `GET /papi/templates`
+
+A server that advertises templates MUST serve `GET /papi/templates`, returning
+the projected `templates[]` in the JSON envelope (§4.2):
+
+    { "data": [ <template entry>, ... ],
+      "meta": { "count": <int>, "type": "templates",
+                "visibility": <"public"|"scoped"> } }
+
+`meta.count` MUST be the number of entries in `data` after projection;
+`meta.visibility` follows §4.2. A server whose projected `templates[]` is empty
+MUST return a `200` with an empty `data` array (`count: 0`), not a `404`. The
+discovery document (§4.1) MUST list `templates` in `resources` with an absolute
+URL to `/papi/templates`.
+
+### 8. Template Resolution and Bootstrap
+
+This section specifies how a **client** turns a bootstrap target into a concrete
+flake reference and scaffolds from it. It is the contract behind a
+`conform <domain>` / `bootstrap <domain>` style command; the reference consumer is
+`conformist conform <domain>` (amarbel-llc/conformist).
+
+#### 8.1. Target grammar
+
+A bootstrap target is either:
+
+- `<domain>` — resolve against the domain's advertised templates, or
+- `<domain>#<id>` — select the template whose `id` equals `<id>`.
+
+`<domain>` is the authority of the well-known URI (§4); the client fetches
+`https://<domain>/.well-known/papi` and follows `resources.templates` (falling
+back to `<base>/papi/templates` if the discovery document omits it).
+
+#### 8.2. Selection
+
+From the **visible** `templates[]` (§7.2), after skipping entries whose `kind` it
+does not understand (§7.1), the client MUST select as follows:
+
+1. If the target carried `#<id>`: select the entry whose `id` equals `<id>`. No
+   match MUST be an error; the client MUST NOT fall back to another entry.
+2. Otherwise (bare `<domain>`): if exactly one template is visible, select it. If
+   more than one is visible the target is ambiguous and the client MUST
+   disambiguate — it MAY prompt the operator to choose, but a client running
+   non-interactively MUST fail with a diagnostic listing the available `id`s
+   rather than guess. If none are visible, that MUST be an error.
+
+#### 8.3. Bootstrap
+
+Having selected an entry, the client bootstraps by initializing its `flakeref` as
+a flake template — the reference behavior is `nix flake init -t <flakeref>` in the
+target directory. A client SHOULD refuse to scaffold over a non-empty target
+unless explicitly told to overwrite.
+
+#### 8.4. Private templates
+
+A template gated under §7.2 is invisible to the anonymous principal, so resolving
+it requires presenting an authenticated session (§5.3): the client performs the
+challenge/response handshake (§5) before fetching `/papi/templates`. A client MAY
+support only public templates in a first cut, in which case it MUST treat a domain
+that advertises only private templates as "no templates visible" (§8.2) rather
+than erroring opaquely.
+
 ## Security Considerations
 
 **Trust boundary on the document.** The document and the principal registry are
@@ -372,6 +479,19 @@ files (reference: under `api/tmp/papi-auth/`). The store MUST key lookups by the
 opaque id (not a directory scan) and MUST treat an absent/expired record as no
 session. A host without a reaping cron relies on lazy expiry at access time.
 
+**Template flakerefs are executable trust (§7–§8).** A `flakeref` advertised in
+`templates[]` points at code that `nix flake init -t` fetches and writes into the
+operator's working tree; bootstrapping from a domain therefore extends that
+domain (and whatever forge its flakeref resolves to) the trust to scaffold files
+the operator will build and run. The flakeref is chosen by the document author,
+not the caller, so it is not attacker-controlled in the normal case — but a client
+that resolves a domain it does not trust, or that followed a discovery link from a
+response it did not originate (see the `Host` header note above), could be steered
+to an arbitrary flake. A bootstrapping client SHOULD surface the resolved flakeref
+to the operator before initializing it, MUST honor nix's own flake-evaluation trust
+prompts rather than suppressing them, and SHOULD restrict resolution to domains the
+operator named explicitly.
+
 ## Conformance Testing
 
 Conformance tests for the reference implementation live in
@@ -422,6 +542,10 @@ and echoed in `meta.version` on `GET /papi`.
   branch on `version`.
 - New OPTIONAL members MAY be added to any node without a version bump; clients
   MUST ignore unrecognized members (§1.1).
+- The `templates[]` member and the `/papi/templates` endpoint (§7) are an additive
+  OPTIONAL extension within `papi/v0`: a document without `templates[]` is
+  unchanged, and a client predating §7 ignores both the member and the endpoint.
+  No version bump is required.
 - The `localsend` block and a slot-9A HTTP-signature authentication strategy are
   reserved for `papi/v1`; in `papi/v0` `localsend.enabled` MUST be `false` and a
   server MUST NOT advertise a signature auth scheme in discovery.
@@ -457,3 +581,18 @@ Informative:
   `piggy-ids encrypt` (slot-9D ECDH recipient templates), `pivy-box stream
 decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
 - [LocalSend] LocalSend protocol. <https://github.com/localsend/protocol>
+- [nix-flakes] Nix Reference Manual — flake references and `nix flake init -t
+  <flakeref>`. <https://nix.dev/manual/nix/latest/>
+
+## Amendment History
+
+- **2026-06-17, Amendment 1 — Flake Template Advertisement.** Added the OPTIONAL
+  `templates[]` document member (§1, §7.1), its projection (§7.2), the
+  `GET /papi/templates` endpoint (§4, §7.3), the `templates` discovery resource
+  (§4.1), and the §4.2 envelope and Compatibility updates. Additive and OPTIONAL —
+  no version bump.
+- **2026-06-17, Amendment 2 — Template Resolution and Bootstrap.** Added §8,
+  specifying client-side resolution of a `<domain>` / `<domain>#<id>` target to a
+  template flakeref and bootstrap via `nix flake init -t`, including
+  disambiguation and private-template behavior. Sequenced after Amendment 1; the
+  reference consumer is `conformist conform <domain>`.
