@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-17
-amendments: 3
+amendments: 4
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -182,7 +182,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/sitemap`             | projected `sitemap`, JSON                   | projected          |
 | GET    | `/papi/templates`           | projected `templates[]`, JSON               | projected          |
 | GET    | `/papi/proofs`              | projected `proofs[]`, JSON                  | projected          |
-| GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids recipient template   | projected          |
+| GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids file (recipients + auth ids) | projected          |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
 | POST   | `/papi/auth/challenge`      | challenge JSON (§5)                         | no                 |
 | POST   | `/papi/auth/response`       | session JSON (§5)                           | no                 |
@@ -228,9 +228,12 @@ The two `text/plain` endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`)
 MUST NOT use the envelope; they return a raw body with `Content-Type:
 text/plain`. Clients MUST NOT assume every PAPI response is the JSON envelope.
 
-- `/papi/piggy-ids` MUST emit a piggy-ids recipient template: comment lines
-  beginning with `#`, then one recipient `id` per line (each OPTIONALLY followed
-  by `  # <label>`), for every **visible** encryption recipient.
+- `/papi/piggy-ids` MUST emit a piggy-ids file: comment lines beginning with `#`,
+  then one piggy `id` per line (each OPTIONALLY followed by `  # <label>`) — the
+  **visible** encryption recipients (`piggy-recipient-v1@…`, PIV slot 9D) followed
+  by the **visible** SSH auth ids (`piggy-piv_auth-v1@…`, PIV slot 9A; for any SSH
+  key that records an `id`). It is a complete piggy-ids listing, not only
+  encryption recipients.
 - `/papi/ssh-authorized-keys` MUST emit one `authorized_keys` line per visible
   SSH key, suitable for appending to `~/.ssh/authorized_keys`.
 
@@ -842,3 +845,9 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   version bump. The verification side is the amarbel-llc/papi validator's surface;
   the producing side is a planned `piggy papi` subcommand family (sign / prove /
   verify) over piggy's slot-9A SSH-auth and slot-9D ECDH keys.
+- **2026-06-17, Amendment 4 — Piggy-ids listing parity.** Updated §4 (endpoint
+  table) and §4.2 so `/papi/piggy-ids` emits a complete piggy-ids file — the
+  visible slot-9D encryption recipients (`piggy-recipient-v1@…`) followed by the
+  visible slot-9A SSH auth ids (`piggy-piv_auth-v1@…`) — rather than only
+  encryption recipients, mirroring the reference impl. Spec-parity edit; no new
+  member or endpoint, no version bump.
