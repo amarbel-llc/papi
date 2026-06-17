@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-17
-amendments: 4
+amendments: 5
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -573,7 +573,7 @@ The OPTIONAL top-level `signature` member is a JSON object with:
 | ----------- | ------ | -------- | -------------------------------------------------------------------------------------- |
 | `alg`       | string | MUST     | Signature algorithm: `"ssh-9a"` (piggy slot-9A SSH signature) in `papi/v0`.             |
 | `key`       | string | MUST     | The verifying public key: an `ssh_authorized_keys[]` entry or a published `recipient`.  |
-| `sig`       | string | MUST     | Base64 detached signature over the canonical signing input (§10.2).                     |
+| `sig`       | string | MUST     | Base64 detached signature over the §10.2 input; per-`alg` encoding in §10.4.            |
 | `created`   | int    | SHOULD   | Unix-seconds the signature was produced.                                               |
 
 A verifier MUST skip a `signature` whose `alg` it does not understand (treating
@@ -606,6 +606,31 @@ than no signature), or **unsigned** (no `signature`, or an `alg`/`key` the verif
 cannot use). A verifier MUST NOT treat an unsigned document as invalid — signatures
 are OPTIONAL — but SHOULD surface the distinction so a consumer can require
 signed documents in higher-trust contexts.
+
+#### 10.4. The `ssh-9a` algorithm
+
+For `alg: "ssh-9a"` the signature is produced by a PIV **slot-9A** SSH
+authentication key through the ssh-agent signing operation, and `key` MUST be that
+key's `ecdsa-sha2-nistp256` SSH public key (as it appears in
+`ssh_authorized_keys[]`).
+
+- **Signing.** The signer passes the §10.2 JCS bytes to the agent's sign
+  operation for the slot-9A key. The agent returns an SSH-wire
+  `ecdsa-sha2-nistp256` signature — the string `"ecdsa-sha2-nistp256"` followed by
+  a blob of two `mpint`s `(r, s)` ([RFC 5656] §3.1.2). `sig` MUST be the base64
+  encoding of that raw agent signature blob **verbatim**. It is NOT wrapped in
+  SSHSIG / `ssh-keygen -Y` framing: `papi/v0` pins the bare agent signature so a
+  producer needs only a slot-9A agent sign, not SSHSIG construction.
+- **Verifying.** The verifier base64-decodes `sig`, parses the SSH-wire
+  `ecdsa-sha2-nistp256` structure to recover `(r, s)`, parses the EC point from the
+  `ecdsa-sha2-nistp256` `key`, and checks the ECDSA signature on curve NIST P-256
+  with **SHA-256** over the §10.2 JCS bytes (the digest `ecdsa-sha2-nistp256`
+  mandates). A `key` that is not an `ecdsa-sha2-nistp256` key, or a `sig` that does
+  not parse as that structure, makes the document **signed-but-invalid** (§10.3) —
+  not unsigned, since `alg` was understood.
+
+Future algorithms (e.g. an SSHSIG-framed `alg`) MAY be registered without a version
+bump; a verifier skips an `alg` it does not implement (§10.1).
 
 ## Security Considerations
 
@@ -792,6 +817,9 @@ Normative:
   RFC 8615, May 2019.
 - [RFC 8785] Rundgren, A., Jordan, B., Erdtman, S., "JSON Canonicalization Scheme
   (JCS)", RFC 8785, June 2020. Normative for the §10.2 signing input.
+- [RFC 5656] Stebila, D., Green, J., "Elliptic Curve Algorithm Integration in the
+  Secure Shell Transport Layer", RFC 5656, December 2009. Normative for the
+  `ecdsa-sha2-nistp256` signature encoding (§10.4).
 - [ADR-0004] "Personal API (PAPI): a well-known person-description type on the
   API subdomain", `docs/decisions/0004-personal-api-papi.md` in
   friedenberg/linenisgreat.
@@ -852,3 +880,11 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   visible slot-9A SSH auth ids (`piggy-piv_auth-v1@…`) — rather than only
   encryption recipients, mirroring the reference impl. Spec-parity edit; no new
   member or endpoint, no version bump.
+- **2026-06-17, Amendment 5 — `ssh-9a` signature encoding.** Pinned the §10
+  signature wire encoding (new §10.4, [RFC 5656] reference, §10.1 `sig` cell):
+  `alg: "ssh-9a"` `sig` is base64 of the raw ssh-agent `ecdsa-sha2-nistp256`
+  signature blob (`"ecdsa-sha2-nistp256"` + `(r, s)` mpints), verified as
+  ECDSA-P256 with SHA-256 over the §10.2 JCS bytes — the bare agent signature, NOT
+  SSHSIG framing. Resolves a producer/verifier wire-contract ambiguity flagged by
+  the piggy side (the `piggy papi` sign surface) so both agree. Clarification of an
+  OPTIONAL feature; no version bump.
