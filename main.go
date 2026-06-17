@@ -40,21 +40,27 @@ func main() {
 }
 
 func newValidateCmd() *cobra.Command {
-	return &cobra.Command{
+	var opts inspect.Options
+	cmd := &cobra.Command{
 		Use:   "validate <domain>",
 		Short: "Validate a domain's PAPI against RFC-0001, emitting ndjson-crap",
 		Long: "Fetch <domain>'s PAPI, report what it publishes, and check it against the " +
-			"RFC-0001 public-tier conformance contract — discovery, the {data,meta} " +
-			"envelope and meta.visibility, acl-strip, projection, the text endpoints, and " +
-			"the auth error codes — as an ndjson-crap stream (pipe to crap-present). Accepts " +
-			"a bare domain (https assumed) or a full URL, and exits non-zero on a MUST " +
-			"violation. The scoped projection and the challenge/response handshake (a card) " +
-			"are validated in a later cut.",
+			"RFC-0001 conformance contract — discovery, the {data,meta} envelope and " +
+			"meta.visibility, acl-strip, projection, the text endpoints, the auth error " +
+			"codes, and the §10 document signature — as an ndjson-crap stream (pipe to " +
+			"crap-present). Accepts a bare domain (https assumed) or a full URL, and exits " +
+			"non-zero on a MUST violation. Pass --recipient (and --decrypt-cmd) to also run " +
+			"the §5 challenge/response handshake and validate the authenticated/scoped tier.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return inspect.Run(cmd.Context(), cmd.OutOrStdout(), args[0])
+			return inspect.Run(cmd.Context(), cmd.OutOrStdout(), args[0], opts)
 		},
 	}
+	cmd.Flags().StringVar(&opts.Recipient, "recipient", "",
+		"piggy recipient id to authenticate as; runs the §5 handshake + scoped-tier checks")
+	cmd.Flags().StringVar(&opts.DecryptCmd, "decrypt-cmd", "",
+		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (e.g. a pivy-box/piggy decrypt wrapper)")
+	return cmd
 }
 
 func newPiggyIDsCmd() *cobra.Command {

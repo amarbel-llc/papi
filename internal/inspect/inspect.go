@@ -27,7 +27,7 @@ var ErrNonConformant = errors.New("domain is not RFC-0001 conformant")
 // Run discovers and introspects target's PAPI, writing an ndjson-crap stream to
 // w. It returns an error only on an operational failure (the domain's discovery
 // could not be fetched); per-resource facts are reported as stream points.
-func Run(ctx context.Context, w io.Writer, target string) error {
+func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 	c, err := papi.NewClient(target)
 	if err != nil {
 		return err
@@ -59,6 +59,13 @@ func Run(ctx context.Context, w io.Writer, target string) error {
 	}
 
 	pts = append(pts, conformanceChecks(ctx, c, disc)...)
+	pts = append(pts, unknownSessionPoint(ctx, c))
+	if opts.Recipient != "" {
+		pts = append(pts, authenticatedChecks(ctx, c, opts)...)
+	} else {
+		pts = append(pts, skip("auth: challenge/response handshake + scoped projection (§5, §4.2)",
+			"skipped; pass --recipient <id> [--decrypt-cmd <cmd>] to validate the authenticated tier"))
+	}
 	pts = append(pts, signaturePoint(ctx, c))
 
 	emit(rep, pts)

@@ -64,7 +64,7 @@ func TestRunConformant(t *testing.T) {
 	defer srv.Close()
 
 	var buf bytes.Buffer
-	if err := Run(context.Background(), &buf, srv.URL); err != nil {
+	if err := Run(context.Background(), &buf, srv.URL, Options{}); err != nil {
 		t.Fatalf("Run on a conformant fixture: %v", err)
 	}
 

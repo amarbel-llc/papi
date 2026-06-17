@@ -41,8 +41,6 @@ func conformanceChecks(ctx context.Context, c *papi.Client, disc *papi.Discovery
 	}
 
 	pts = append(pts, authProbes(ctx, c)...)
-	pts = append(pts, skip("conformance: scoped projection + challenge/response handshake",
-		"auth checks skipped (no decryptor); this cut validates the public tier only"))
 	return pts
 }
 

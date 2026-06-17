@@ -77,15 +77,21 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, int, error) {
 // Fetch performs GET path and returns the raw response (status, Content-Type,
 // body) without decoding.
 func (c *Client) Fetch(ctx context.Context, path string) (*Response, error) {
-	return c.do(ctx, http.MethodGet, path, "", nil)
+	return c.do(ctx, http.MethodGet, path, "", nil, "")
+}
+
+// FetchAuthed performs GET path presenting a PiggySession (§5.3) and returns the
+// raw response.
+func (c *Client) FetchAuthed(ctx context.Context, path, session string) (*Response, error) {
+	return c.do(ctx, http.MethodGet, path, "", nil, session)
 }
 
 // Post performs POST path with a JSON request body and returns the raw response.
 func (c *Client) Post(ctx context.Context, path string, jsonBody []byte) (*Response, error) {
-	return c.do(ctx, http.MethodPost, path, "application/json", jsonBody)
+	return c.do(ctx, http.MethodPost, path, "application/json", jsonBody, "")
 }
 
-func (c *Client) do(ctx context.Context, method, path, contentType string, reqBody []byte) (*Response, error) {
+func (c *Client) do(ctx context.Context, method, path, contentType string, reqBody []byte, session string) (*Response, error) {
 	var rdr io.Reader
 	if reqBody != nil {
 		rdr = bytes.NewReader(reqBody)
@@ -97,6 +103,9 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, reqBo
 	req.Header.Set("Accept", "application/json")
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
+	}
+	if session != "" {
+		req.Header.Set("Authorization", "PiggySession "+session)
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {

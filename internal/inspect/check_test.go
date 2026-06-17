@@ -137,7 +137,7 @@ func TestRunNonConformantACLLeak(t *testing.T) {
 	defer srv.Close()
 
 	var buf bytes.Buffer
-	err := Run(context.Background(), &buf, srv.URL)
+	err := Run(context.Background(), &buf, srv.URL, Options{})
 	if !errors.Is(err, ErrNonConformant) {
 		t.Fatalf("expected ErrNonConformant, got %v", err)
 	}
