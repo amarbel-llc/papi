@@ -66,6 +66,7 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 		pts = append(pts, skip("auth: challenge/response handshake + scoped projection (§5, §4.2)",
 			"skipped; pass --recipient <id> [--decrypt-cmd <cmd>] to validate the authenticated tier"))
 	}
+	pts = append(pts, proofsChecks(ctx, c)...)
 	pts = append(pts, signaturePoint(ctx, c))
 
 	emit(rep, pts)

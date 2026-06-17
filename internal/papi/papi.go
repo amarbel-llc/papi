@@ -183,7 +183,18 @@ type Document struct {
 	Organizations []Organization             `json:"organizations"`
 	Sitemap       map[string]json.RawMessage `json:"sitemap"`
 	Templates     []Template                 `json:"templates"`
+	Proofs        []Proof                    `json:"proofs"`
 	Signature     *Signature                 `json:"signature"`
+}
+
+// Proof is an identity-ownership proof entry (RFC-0001 §9.1).
+type Proof struct {
+	ID        string `json:"id"`
+	Recipient string `json:"recipient"`
+	Claim     string `json:"claim"`
+	ProofURI  string `json:"proof_uri"`
+	Service   string `json:"service"`
+	Fmt       string `json:"fmt"`
 }
 
 // Signature is the detached document signature (RFC-0001 §10.1).
