@@ -5,6 +5,7 @@
 package papi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -56,22 +57,57 @@ func normalizeBase(target string) (string, error) {
 	return u.Scheme + "://" + u.Host, nil
 }
 
-func (c *Client) get(ctx context.Context, path string) (body []byte, status int, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
+// Response is a raw PAPI HTTP response captured for conformance checks that must
+// inspect the wire bytes and headers directly.
+type Response struct {
+	Path        string
+	Status      int
+	ContentType string
+	Body        []byte
+}
+
+func (c *Client) get(ctx context.Context, path string) ([]byte, int, error) {
+	resp, err := c.Fetch(ctx, path)
 	if err != nil {
 		return nil, 0, err
+	}
+	return resp.Body, resp.Status, nil
+}
+
+// Fetch performs GET path and returns the raw response (status, Content-Type,
+// body) without decoding.
+func (c *Client) Fetch(ctx context.Context, path string) (*Response, error) {
+	return c.do(ctx, http.MethodGet, path, "", nil)
+}
+
+// Post performs POST path with a JSON request body and returns the raw response.
+func (c *Client) Post(ctx context.Context, path string, jsonBody []byte) (*Response, error) {
+	return c.do(ctx, http.MethodPost, path, "application/json", jsonBody)
+}
+
+func (c *Client) do(ctx context.Context, method, path, contentType string, reqBody []byte) (*Response, error) {
+	var rdr io.Reader
+	if reqBody != nil {
+		rdr = bytes.NewReader(reqBody)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, err = io.ReadAll(io.LimitReader(resp.Body, maxBody))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	if err != nil {
-		return nil, resp.StatusCode, err
+		return nil, err
 	}
-	return body, resp.StatusCode, nil
+	return &Response{Path: path, Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}, nil
 }
 
 // Envelope is the {data, meta} response envelope (RFC-0001 §4.2). The reference

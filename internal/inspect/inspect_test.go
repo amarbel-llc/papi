@@ -4,40 +4,68 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// papiServer is a hermetic PAPI fixture: an enveloped discovery doc (mirroring
-// the reference impl, including an http:// resource link) plus a projected
-// document.
-func papiServer() *httptest.Server {
+// conformantServer is a hermetic, RFC-0001-conformant PAPI fixture: an enveloped
+// discovery doc, a projected /papi with no acl leak and meta.visibility=public,
+// the two text endpoints, and auth endpoints returning the specified error
+// codes. Its resource links are http:// (httptest is plaintext), which is a
+// SHOULD violation, not a MUST — so Run still passes.
+func conformantServer() *httptest.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/papi", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/.well-known/papi", func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":{"version":"papi/v0","handle":"tester",
-			"resources":{"document":"http://example.test/papi","forges":"https://example.test/papi/forges"},
-			"auth":{"scheme":"piggy-challenge-response"}},"meta":{"type":"papi-discovery","count":2}}`))
+		fmt.Fprintf(w, `{"data":{"version":"papi/v0","handle":"tester",
+			"resources":{"document":%q,"piggy_ids":%q,"ssh_authorized_keys":%q},
+			"auth":{"scheme":"piggy-challenge-response"}},"meta":{"type":"papi-discovery","count":3}}`,
+			base+"/papi", base+"/papi/piggy-ids", base+"/papi/ssh-authorized-keys")
 	})
 	mux.HandleFunc("/papi", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"data":{"version":"papi/v0",
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":{"version":"papi/v0",
 			"person":{"handle":"tester","name":"Test User"},
 			"piggy":{"encryption_recipients":[{"id":"r1"}],"ssh_authorized_keys":[{"key":"k1"},{"key":"k2"}]},
 			"forges":[{"id":"gh","kind":"github","repos":[{},{}]}],
-			"templates":[{"id":"eng","flakeref":"github:x/y#eng"}]},"meta":{"type":"papi"}}`))
+			"templates":[{"id":"eng","flakeref":"github:x/y#eng"}]},
+			"meta":{"type":"papi","version":"papi/v0","visibility":"public"}}`)
+	})
+	mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, "# piggy-ids\npiggy-recipient-v1@pivy_ecdh_p256_pub-aaa\n")
+	})
+	mux.HandleFunc("/papi/ssh-authorized-keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, "ecdsa-sha2-nistp256 AAAAfake tester\n")
+	})
+	mux.HandleFunc("/papi/auth/challenge", func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		if s, _ := m["recipient"].(string); s != "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
 	})
 	return httptest.NewServer(mux)
 }
 
-func TestRunEmitsValidNdjsonCrap(t *testing.T) {
-	srv := papiServer()
+func TestRunConformant(t *testing.T) {
+	srv := conformantServer()
 	defer srv.Close()
 
 	var buf bytes.Buffer
 	if err := Run(context.Background(), &buf, srv.URL); err != nil {
-		t.Fatalf("Run: %v", err)
+		t.Fatalf("Run on a conformant fixture: %v", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
@@ -45,11 +73,8 @@ func TestRunEmitsValidNdjsonCrap(t *testing.T) {
 		t.Fatalf("want a multi-record stream, got %d line(s):\n%s", len(lines), buf.String())
 	}
 
-	var (
-		sawHeader, sawPlan, sawSummary bool
-		descriptions                   []string
-		summaryValid                   bool
-	)
+	var sawHeader, sawPlan, sawSummary, summaryValid bool
+	var descriptions []string
 	for i, line := range lines {
 		var rec map[string]any
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
@@ -58,7 +83,7 @@ func TestRunEmitsValidNdjsonCrap(t *testing.T) {
 		switch rec["type"] {
 		case "crap":
 			if i != 0 {
-				t.Errorf("crap header at line %d, want line 0", i)
+				t.Errorf("crap header at line %d, want 0", i)
 			}
 			sawHeader = true
 		case "plan":
@@ -76,11 +101,8 @@ func TestRunEmitsValidNdjsonCrap(t *testing.T) {
 		}
 	}
 
-	if !sawHeader || !sawPlan || !sawSummary {
-		t.Errorf("header=%v plan=%v summary=%v", sawHeader, sawPlan, sawSummary)
-	}
-	if !summaryValid {
-		t.Error("summary.valid = false, want true")
+	if !sawHeader || !sawPlan || !sawSummary || !summaryValid {
+		t.Errorf("header=%v plan=%v summary=%v valid=%v", sawHeader, sawPlan, sawSummary, summaryValid)
 	}
 
 	joined := strings.Join(descriptions, "\n")
@@ -89,11 +111,13 @@ func TestRunEmitsValidNdjsonCrap(t *testing.T) {
 		"Test User",
 		"1 encryption recipient(s), 2 ssh key(s)",
 		"forges: 1 (github/gh) with 2 repo(s)",
-		"http://", // the insecure-resource fact (RFC §4.1 / linenisgreat#26)
 		"templates: 1 (eng)",
+		"http://",                             // insecure-resource fact (§4.1 / linenisgreat#26)
+		"strips acl",                          // conformance verdict (§2.6)
+		"{data,meta}, meta.visibility=public", // envelope verdict (§4.2)
 	} {
 		if !strings.Contains(joined, want) {
-			t.Errorf("introspection missing %q in:\n%s", want, joined)
+			t.Errorf("stream missing %q in:\n%s", want, joined)
 		}
 	}
 }

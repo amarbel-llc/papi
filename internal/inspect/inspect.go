@@ -1,11 +1,15 @@
-// Package inspect drives the first-cut PAPI introspection: discover a domain's
-// PAPI and report what it publishes as an ndjson-crap result stream. Every
-// point is informational (a fact about the document); conformance verdicts
-// (RFC-0001 §2, §4, §5) are layered on in a later cut.
+// Package inspect drives `papi validate`: it discovers a domain's PAPI, reports
+// what it publishes (introspection facts), and checks it against the RFC-0001
+// public-tier conformance contract (discovery, envelope, acl-strip, projection,
+// text endpoints, auth status codes — see check.go). Each entry is an
+// ndjson-crap point: an informational fact, a MUST/SHOULD verdict, or a skip.
+// The scoped projection and the full challenge/response handshake (a card) are
+// out of this cut.
 package inspect
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -14,6 +18,11 @@ import (
 	"github.com/amarbel-llc/crap/go-crap/v2/crap"
 	"github.com/amarbel-llc/papi/internal/papi"
 )
+
+// ErrNonConformant is returned by Run when the domain violates a MUST. The
+// ndjson-crap stream has already been written; the error only signals the
+// process exit code.
+var ErrNonConformant = errors.New("domain is not RFC-0001 conformant")
 
 // Run discovers and introspects target's PAPI, writing an ndjson-crap stream to
 // w. It returns an error only on an operational failure (the domain's discovery
@@ -25,7 +34,7 @@ func Run(ctx context.Context, w io.Writer, target string) error {
 	}
 
 	rep := crap.NewReporter(w, crap.ReporterOptions{
-		Title:  "papi introspect " + c.BaseURL,
+		Title:  "papi validate " + c.BaseURL,
 		Source: "papi",
 	})
 
@@ -33,7 +42,7 @@ func Run(ctx context.Context, w io.Writer, target string) error {
 
 	disc, _, derr := c.Discovery(ctx)
 	if derr != nil {
-		emit(rep, []point{notOk("discovery: GET /.well-known/papi", map[string]any{"error": derr.Error()})})
+		emit(rep, []point{mustFail("discovery: GET /.well-known/papi", map[string]any{"error": derr.Error()})})
 		if rep.Err() != nil {
 			return rep.Err()
 		}
@@ -41,28 +50,66 @@ func Run(ctx context.Context, w io.Writer, target string) error {
 	}
 	pts = append(pts, ok(fmt.Sprintf("discovery: reachable — version %q, handle %q", disc.Version, disc.Handle)))
 	pts = append(pts, discoveryPoints(disc)...)
+	pts = append(pts, discoveryVerdicts(disc)...)
 
 	if doc, _, _, docErr := c.Document(ctx); docErr != nil {
-		pts = append(pts, notOk("introspect: GET /papi", map[string]any{"error": docErr.Error()}))
+		pts = append(pts, mustFail("introspect: GET /papi", map[string]any{"error": docErr.Error()}))
 	} else {
 		pts = append(pts, documentPoints(doc)...)
 	}
 
+	pts = append(pts, conformanceChecks(ctx, c, disc)...)
+
 	emit(rep, pts)
-	return rep.Err()
+	if rep.Err() != nil {
+		return rep.Err()
+	}
+	if anyMustFail(pts) {
+		return ErrNonConformant
+	}
+	return nil
 }
 
-// point is a pending stream entry; emit turns it into the right crap record.
+// point is a pending stream entry; emit turns it into the right crap record. A
+// point with reason != "" is a skip; otherwise ok toggles pass/fail, and must
+// marks a failing point as a MUST violation (which sets the process exit code).
 type point struct {
 	desc   string
 	ok     bool
 	diag   map[string]any
 	reason string // non-empty => skip
+	must   bool   // a failing MUST (vs a SHOULD)
 }
 
-func ok(desc string) point                      { return point{desc: desc, ok: true} }
-func notOk(desc string, d map[string]any) point { return point{desc: desc, diag: d} }
-func skip(desc, reason string) point            { return point{desc: desc, ok: true, reason: reason} }
+func ok(desc string) point           { return point{desc: desc, ok: true} }
+func skip(desc, reason string) point { return point{desc: desc, ok: true, reason: reason} }
+
+// mustFail is a failing MUST verdict (trips the exit code); shouldFail is a
+// failing SHOULD verdict (reported, but does not trip the exit code).
+func mustFail(desc string, d map[string]any) point {
+	return point{desc: desc, diag: d, must: true}
+}
+
+func shouldFail(desc string, d map[string]any) point {
+	return point{desc: desc, diag: withSeverity(d, "should")}
+}
+
+func withSeverity(d map[string]any, sev string) map[string]any {
+	if d == nil {
+		d = map[string]any{}
+	}
+	d["severity"] = sev
+	return d
+}
+
+func anyMustFail(pts []point) bool {
+	for _, p := range pts {
+		if !p.ok && p.reason == "" && p.must {
+			return true
+		}
+	}
+	return false
+}
 
 func emit(rep *crap.Reporter, pts []point) {
 	ts := rep.TestStream(len(pts))

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -29,7 +30,11 @@ func main() {
 	root.AddCommand(newPiggyIDsCmd())
 
 	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, "papi:", err)
+		// A non-conformant verdict is already reported in the ndjson-crap stream;
+		// just set the exit code rather than printing an extra error line.
+		if !errors.Is(err, inspect.ErrNonConformant) {
+			fmt.Fprintln(os.Stderr, "papi:", err)
+		}
 		os.Exit(1)
 	}
 }
@@ -37,11 +42,14 @@ func main() {
 func newValidateCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "validate <domain>",
-		Short: "Discover and introspect a domain's PAPI, emitting ndjson-crap",
-		Long: "Fetch <domain>'s PAPI discovery document and projected document and " +
-			"report what the domain publishes as an ndjson-crap stream. Accepts a " +
-			"bare domain (https assumed) or a full URL. Conformance verdicts and the " +
-			"piggy challenge/response handshake are added in a later cut.",
+		Short: "Validate a domain's PAPI against RFC-0001, emitting ndjson-crap",
+		Long: "Fetch <domain>'s PAPI, report what it publishes, and check it against the " +
+			"RFC-0001 public-tier conformance contract — discovery, the {data,meta} " +
+			"envelope and meta.visibility, acl-strip, projection, the text endpoints, and " +
+			"the auth error codes — as an ndjson-crap stream (pipe to crap-present). Accepts " +
+			"a bare domain (https assumed) or a full URL, and exits non-zero on a MUST " +
+			"violation. The scoped projection and the challenge/response handshake (a card) " +
+			"are validated in a later cut.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return inspect.Run(cmd.Context(), cmd.OutOrStdout(), args[0])
