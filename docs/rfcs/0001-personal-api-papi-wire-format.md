@@ -218,9 +218,10 @@ JSON endpoints MUST wrap their payload in the envelope:
 
     { "data": <payload>, "meta": { "count": <int>, "type": "<string>", ... } }
 
-`/papi` MUST add `meta.version` and `meta.visibility`. The five projected-list
+`/papi` MUST add `meta.version` and `meta.visibility`. The six projected-list
 endpoints (`/papi/forges`, `/papi/repos`, `/papi/organizations`, `/papi/sitemap`,
-`/papi/templates`) MUST add `meta.visibility`. `meta.visibility` MUST be
+`/papi/templates`, `/papi/proofs`) MUST add `meta.visibility`. `meta.visibility`
+MUST be
 `"public"` for the anonymous principal and `"scoped"` for an authenticated
 principal.
 
