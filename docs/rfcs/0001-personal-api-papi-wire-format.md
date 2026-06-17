@@ -2,6 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-17
+amendments: 3
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -18,7 +19,11 @@ endpoints and their response shapes, and the reflexive challenge/response
 authentication handshake by which a caller proves control of a published
 encryption recipient's private key to unlock private nodes. No pre-shared secret
 is involved: the credential is the recipient's PIV key, and the published
-recipients are themselves the authentication identities.
+recipients are themselves the authentication identities. Two OPTIONAL primitives
+anchor the document to a key rather than to a domain: a `proofs[]` member that
+carries Keyoxide-style bidirectional ownership proofs for the identities a
+document asserts, and a detached document **signature** that lets a client verify
+authorship of a fetched document offline, independent of the host that served it.
 
 ## Introduction
 
@@ -74,6 +79,8 @@ The document MAY contain these top-level members; all are OPTIONAL:
 | `organizations[]` | array  | Organization accounts, each with `repos[]`.                               |
 | `sitemap`         | object | A domain → entries map.                                                   |
 | `templates[]`     | array  | Advertised nix flake templates for repo bootstrap (see §7).               |
+| `proofs[]`        | array  | Bidirectional identity-ownership proofs (see §9).                          |
+| `signature`       | object | Detached signature binding the document to a published key (see §10).      |
 | `localsend`       | object | Declared but disabled in `papi/v0`; `enabled` MUST be `false`.            |
 
 `person.handle`, when present, MUST be a string; it is used as the subject label
@@ -174,6 +181,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/organizations`       | projected `organizations[]`, JSON           | projected          |
 | GET    | `/papi/sitemap`             | projected `sitemap`, JSON                   | projected          |
 | GET    | `/papi/templates`           | projected `templates[]`, JSON               | projected          |
+| GET    | `/papi/proofs`              | projected `proofs[]`, JSON                  | projected          |
 | GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids recipient template   | projected          |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
 | POST   | `/papi/auth/challenge`      | challenge JSON (§5)                         | no                 |
@@ -191,10 +199,16 @@ unauthenticated request, the registered principal for an authenticated one.
 - `handle` — the subject handle,
 - `resources` — an object whose values are **absolute** URLs to `/papi`,
   `/papi/piggy-ids`, `/papi/ssh-authorized-keys`, `/papi/forges`, `/papi/repos`,
-  `/papi/organizations`, `/papi/sitemap`, and (when the document advertises
-  templates, §7) `/papi/templates`, and
+  `/papi/organizations`, `/papi/sitemap`, (when the document advertises
+  templates, §7) `/papi/templates`, and (when the document advertises proofs,
+  §9) `/papi/proofs`, and
 - `auth` — `{scheme: "piggy-challenge-response", challenge, response,
 present_session_as}`, where `challenge`/`response` are absolute URLs.
+
+When the document carries a `signature` (§10), the discovery document MUST
+additionally expose a `signature` member equal to the document's `signature`
+object, so a client can verify document authorship (§10.3) from the always-public
+discovery response without first fetching `/papi`.
 
 The discovery document MUST always be public (it is not projected).
 
@@ -423,6 +437,172 @@ support only public templates in a first cut, in which case it MUST treat a doma
 that advertises only private templates as "no templates visible" (§8.2) rather
 than erroring opaquely.
 
+### 9. Identity-Ownership Proofs
+
+A PAPI document **asserts** identities — the forge accounts of §1.1, the
+`person.handle`, the contact endpoints — but §1–§8 give a caller no way to
+**verify** that the subject actually controls them. Any author of a `papi.json`
+can list any GitHub login or Mastodon handle. This section closes that gap with a
+Keyoxide/Ariadne-style **bidirectional proof**: the document claims an external
+identity, the external identity links back to the document's key, and a verifier
+(§9.4) is satisfied only when **both directions** agree. Like every other member,
+`proofs[]` is OPTIONAL and additive within `papi/v0`; a document without it is
+unchanged and a pre-§9 client ignores it.
+
+The proof is anchored not to the serving domain but to a **published encryption
+recipient** (§5) — the same PIV-backed identity the auth handshake already trusts.
+A proof therefore survives a change of host or domain: it is verifiable from the
+key side as well as the document side, which is the portability property a
+domain-bound assertion lacks.
+
+#### 9.1. `proofs[]`
+
+The OPTIONAL top-level `proofs[]` member is an array of **proof entries**. Each
+entry is a JSON object with:
+
+| Member      | Type   | Required | Meaning                                                                                          |
+| ----------- | ------ | -------- | ------------------------------------------------------------------------------------------------ |
+| `id`        | string | MUST     | Stable identifier, unique within `proofs[]`.                                                      |
+| `recipient` | string | MUST     | The published recipient id (§5.1 grammar) this proof binds the claimed identity to.               |
+| `claim`     | string | MUST     | The external identity being proven, as a URI (`https://…`, `dns:…`, `mailto:…`, or a forge `id`). |
+| `proof_uri` | string | MUST     | The URL a verifier fetches to read the backlink (the gist, profile bio, repo file, DNS TXT, …).  |
+| `service`   | string | SHOULD   | Service-provider matcher hint (`github`, `gitlab`, `mastodon`, `dns`, `https`, `forge`, …).       |
+| `fmt`       | string | MAY      | Backlink format; MUST default to `"recipient"` when absent (see §9.3).                            |
+
+A server MAY include additional members; clients MUST ignore members they do not
+recognize (§1.1). `id` MUST be non-empty and unique within the array; a document
+with duplicate `id`s is malformed and a verifier MUST refuse to evaluate a
+duplicated `id` rather than choose arbitrarily. `recipient` MUST satisfy the §5.1
+recipient grammar and SHOULD appear in `piggy.encryption_recipients[]`; a verifier
+MUST treat a `recipient` absent from the document's published recipients as an
+**unverifiable** proof (§9.4), never as verified.
+
+#### 9.2. Projection
+
+`proofs[]` is an ordinary part of the document and MUST be projected through the
+requesting principal exactly as every other node (§2): a `"private"` entry is
+dropped for principals its `acl` does not admit, the `acl` member MUST be stripped
+from every serialized entry, and the array MUST contain only entries visible to
+the principal. The `proof_uri`, `claim`, and `recipient` of a proof are all public
+keys / public locations by construction (§ Security Considerations), so the common
+case is a fully public `proofs[]`; gating exists only so a subject MAY withhold the
+existence of a proof from anonymous callers.
+
+#### 9.3. Backlink format
+
+The **backlink** is the token a verifier expects to find at `proof_uri`. The
+`fmt` member selects which token, so the proof composes with whatever the external
+service lets the subject write:
+
+- `"recipient"` (default) — the document fetched from `proof_uri` MUST contain the
+  literal `recipient` id as a substring. This is the lowest-common-denominator
+  proof: paste the recipient id into a GitHub profile bio, a gist, a pinned
+  toot, or a DNS TXT record.
+- `"signature"` — the document at `proof_uri` MUST contain a piggy slot-9A SSH
+  signature (or the §10 detached signature) over the exact string `claim`,
+  verifiable against an `ssh_authorized_keys[]` entry or the `recipient`. This
+  upgrades a presence check to a cryptographic one for services that allow longer
+  free-form content.
+
+A verifier MUST skip a proof whose `fmt` it does not understand (treating it as
+unverifiable, §9.4) rather than fail the whole list, mirroring the `kind`-skip
+rule of §7.1.
+
+#### 9.4. Verification (the validator's contract)
+
+This section is the normative anchor for the introspection/validation tool that
+is the purpose of this repository (amarbel-llc/papi). A verifier evaluates a proof
+entry to exactly one of three outcomes:
+
+1. **verified** — the entry is well-formed, its `recipient` is a published
+   recipient of the document (§9.1), the resource at `proof_uri` was fetched
+   successfully, and it contains the backlink the `fmt` requires (§9.3) for this
+   `recipient`/`claim`. Both directions agree.
+2. **unverified** — the entry is well-formed but the backlink is absent,
+   malformed, served with the wrong content type, or the fetch failed. The claim
+   is **not** proven; a verifier MUST NOT report it as proven.
+3. **unverifiable** — the entry is malformed (missing/duplicate `id`, a
+   `recipient` outside the published set, an unknown `fmt`). The verifier reports
+   the defect and moves on.
+
+A verifier MUST fetch `proof_uri` over HTTPS (or the scheme the `service` matcher
+defines, e.g. DNS for `dns:`), MUST follow only same-or-explicitly-allowed-host
+redirects, and SHOULD bound the response size and time. The verifier MUST NOT
+treat a TLS error, a redirect to a foreign host, or a non-success status as
+verified. The check is **stateless and reproducible**: it consumes only public
+inputs (the document, the recipient ids, the `proof_uri` contents), so any third
+party can run it and reach the same verdict without trusting the verifier — the
+property §9 imports from Keyoxide.
+
+#### 9.5. `GET /papi/proofs`
+
+A server that advertises proofs MUST serve `GET /papi/proofs`, returning the
+projected `proofs[]` in the JSON envelope (§4.2):
+
+    { "data": [ <proof entry>, ... ],
+      "meta": { "count": <int>, "type": "proofs",
+                "visibility": <"public"|"scoped"> } }
+
+`meta.count` MUST be the number of entries in `data` after projection;
+`meta.visibility` follows §4.2. A server whose projected `proofs[]` is empty MUST
+return a `200` with an empty `data` array (`count: 0`), not a `404`. The endpoint
+serves the **claims**, not verdicts: a PAPI server MUST NOT itself fetch
+`proof_uri` or annotate entries with a verification outcome, because doing so would
+make the server an oracle for its own claims and defeat the third-party-verifier
+property of §9.4. Verification is the client/validator's job.
+
+### 10. Document Signature
+
+§9 binds the document's **assertions** to a key; this section binds the
+**document itself** to a key, so a client can verify authorship of a fetched
+document offline. Without it, PAPI's trust root is "whoever controls the domain":
+a document fetched from a cache, a mirror, or a CDN that has been compromised
+carries no evidence of who authored it. The OPTIONAL `signature` member makes the
+document **self-certifying** — verifiable against a published key rather than
+against the host that served it, the second portability property §9 named.
+
+#### 10.1. `signature`
+
+The OPTIONAL top-level `signature` member is a JSON object with:
+
+| Member      | Type   | Required | Meaning                                                                                |
+| ----------- | ------ | -------- | -------------------------------------------------------------------------------------- |
+| `alg`       | string | MUST     | Signature algorithm: `"ssh-9a"` (piggy slot-9A SSH signature) in `papi/v0`.             |
+| `key`       | string | MUST     | The verifying public key: an `ssh_authorized_keys[]` entry or a published `recipient`.  |
+| `sig`       | string | MUST     | Base64 detached signature over the canonical signing input (§10.2).                     |
+| `created`   | int    | SHOULD   | Unix-seconds the signature was produced.                                               |
+
+A verifier MUST skip a `signature` whose `alg` it does not understand (treating
+the document as unsigned, §10.3) rather than fail. `key` MUST appear in the
+document's published `ssh_authorized_keys[]` or `piggy.encryption_recipients[]`; a
+`key` outside both is **unverifiable** and the document MUST be treated as
+unsigned.
+
+#### 10.2. Signing input (canonicalization)
+
+The signature covers the document **with the `signature` member removed**: a
+signer MUST delete the top-level `signature` key, serialize the remaining document
+by [RFC 8785] JSON Canonicalization Scheme (JCS) — lexicographically sorted keys,
+no insignificant whitespace, canonical number forms — and sign the resulting UTF-8
+bytes. A verifier reconstructs the identical bytes by removing `signature` and
+re-canonicalizing before checking `sig`. The signature is computed over the
+**source** document (pre-projection), so it is stable across principals; a verifier
+MUST therefore verify the signature against `/papi` requested **anonymously** (or
+against the discovery `signature`, §4.1), not against a projected response, whose
+dropped private nodes would not match the signed bytes.
+
+#### 10.3. Verification
+
+A verifier that finds a `signature` (in the discovery document, §4.1, or on an
+anonymous `GET /papi`) MUST: confirm `alg` is understood and `key` is published
+(§10.1); reconstruct the §10.2 signing input; and verify `sig` over those bytes
+with `key`. The outcome is one of **signed-and-valid**, **signed-but-invalid**
+(report prominently; a present-but-broken signature is a stronger negative signal
+than no signature), or **unsigned** (no `signature`, or an `alg`/`key` the verifier
+cannot use). A verifier MUST NOT treat an unsigned document as invalid — signatures
+are OPTIONAL — but SHOULD surface the distinction so a consumer can require
+signed documents in higher-trust contexts.
+
 ## Security Considerations
 
 **Trust boundary on the document.** The document and the principal registry are
@@ -492,6 +672,39 @@ to the operator before initializing it, MUST honor nix's own flake-evaluation tr
 prompts rather than suppressing them, and SHOULD restrict resolution to domains the
 operator named explicitly.
 
+**Proofs prove control, not the document (§9).** A verified proof (§9.4) attests
+that the holder of `recipient` also controls the external `claim` — nothing more.
+It does NOT attest that the PAPI document is authentic (that is §10's job), nor
+that the external account is benign. The backlink is fetched from an
+attacker-influenceable location (a third-party service), so a verifier MUST bound
+the fetch (§9.4), MUST NOT follow redirects to a foreign host, and MUST treat a
+failed or ambiguous fetch as **unverified**, never verified — failing closed
+exactly as §2's visibility does. Because the verdict is computed only from public
+inputs, a malicious verifier can lie about an outcome but cannot forge one that an
+honest third party will reproduce; consumers in a trust-sensitive context SHOULD
+re-verify rather than trust a reported verdict.
+
+**The `fmt: "recipient"` backlink is a presence check, not a signature.** A bare
+recipient id pasted into a profile proves the subject could write that location at
+proof time; it does not cryptographically bind the content. A service that lets
+attackers inject substrings into the fetched page (open redirects, reflected
+parameters, user-controlled fragments at `proof_uri`) could manufacture a false
+positive. Subjects SHOULD prefer `fmt: "signature"` (§9.3) where the service
+allows it, and verifiers SHOULD scope the substring search to the
+service-provider-defined region of the response rather than the whole body.
+
+**A document signature binds authorship, not freshness (§10).** A valid §10
+signature proves the holder of `key` authored these exact bytes; absent `created`
+and a freshness policy, it does not prove the bytes are current. An attacker who
+captures a signed document can replay an older signed version (e.g. one that still
+lists a since-revoked SSH key). Consumers that care about revocation SHOULD honor
+`created` and reject signatures older than a policy bound, and subjects SHOULD
+re-sign on every material change. Canonicalization (§10.2) is load-bearing: a
+verifier that checks `sig` over non-canonical bytes, or that forgets to strip the
+`signature` member first, will reject valid documents or — worse, if it is lenient
+about trailing data — accept manipulated ones. Verify only over the JCS bytes of
+the signature-stripped source document.
+
 ## Conformance Testing
 
 Conformance tests for the reference implementation live in
@@ -520,10 +733,18 @@ repository's integration-test convention):
 | §5.1, error codes            | `test-papi.sh`                  | `503` no box, `403` unknown recipient, `400` malformed             |
 | §5.3, session resolution     | `test-papi.php`                 | header and query-param presentation; unknown → anonymous           |
 | §4, route precedence         | `test-papi.sh`                  | `papi/<segment>` not captured by the generic item route            |
+| §9, `/papi/proofs` serving   | `test-papi.php`, `test-papi.sh` | projected `proofs[]`; server emits claims, never verdicts (§9.5)    |
+| §10, signature serving       | `test-papi.php`                 | `signature` echoed in discovery (§4.1); stripped from signing input |
 
 A future re-implementation in another language SHOULD be able to satisfy the same
 HTTP-level suite (`test-papi.sh`) unchanged, since it exercises only the wire
 contract.
+
+The **verification** side of §9.4 and §10.3 — fetching `proof_uri`, checking the
+backlink, and verifying the `signature` — is the introspection/validation tool's
+own conformance surface (this repository, amarbel-llc/papi), not the server's. The
+validator's checks against a live or fixtured domain are the executable form of
+the §9.4 three-outcome verdict and the §10.3 signed/invalid/unsigned verdict.
 
 A language-agnostic introspection/validation tool — a conformance checker that
 fetches a domain's PAPI endpoints and verifies them against this RFC — is the
@@ -546,6 +767,11 @@ and echoed in `meta.version` on `GET /papi`.
   OPTIONAL extension within `papi/v0`: a document without `templates[]` is
   unchanged, and a client predating §7 ignores both the member and the endpoint.
   No version bump is required.
+- The `proofs[]` member and the `/papi/proofs` endpoint (§9), and the `signature`
+  member (§10), are additive OPTIONAL extensions within `papi/v0` on the same
+  footing: a document without them is unchanged, a client predating §9–§10 ignores
+  the members and the endpoint, and the discovery `proofs`/`signature` fields
+  appear only when the document advertises them. No version bump is required.
 - The `localsend` block and a slot-9A HTTP-signature authentication strategy are
   reserved for `papi/v1`; in `papi/v0` `localsend.enabled` MUST be `false` and a
   server MUST NOT advertise a signature auth scheme in discovery.
@@ -560,6 +786,8 @@ Normative:
   Levels", BCP 14, RFC 2119, March 1997.
 - [RFC 8615] Nottingham, M., "Well-Known Uniform Resource Identifiers (URIs)",
   RFC 8615, May 2019.
+- [RFC 8785] Rundgren, A., Jordan, B., Erdtman, S., "JSON Canonicalization Scheme
+  (JCS)", RFC 8785, June 2020. Normative for the §10.2 signing input.
 - [ADR-0004] "Personal API (PAPI): a well-known person-description type on the
   API subdomain", `docs/decisions/0004-personal-api-papi.md` in
   friedenberg/linenisgreat.
@@ -583,6 +811,11 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
 - [LocalSend] LocalSend protocol. <https://github.com/localsend/protocol>
 - [nix-flakes] Nix Reference Manual — flake references and `nix flake init -t
   <flakeref>`. <https://nix.dev/manual/nix/latest/>
+- [Keyoxide] Keyoxide — decentralized identity verification via bidirectional
+  proofs; the prior art §9 adapts (claim-in-key ↔ backlink-in-account, stateless
+  reproducible verification). <https://keyoxide.org/>
+- [Ariadne] Ariadne Identity / Ariadne Signature Profile — the proof-notation and
+  signed-profile model behind Keyoxide. <https://ariadne.id/>
 
 ## Amendment History
 
@@ -596,3 +829,16 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   template flakeref and bootstrap via `nix flake init -t`, including
   disambiguation and private-template behavior. Sequenced after Amendment 1; the
   reference consumer is `conformist conform <domain>`.
+- **2026-06-17, Amendment 3 — Identity-Ownership Proofs and Document Signature.**
+  Added §9 (the OPTIONAL `proofs[]` document member, its projection, the
+  Keyoxide-style bidirectional backlink formats, the three-outcome verifier
+  contract, and the `GET /papi/proofs` endpoint) and §10 (the OPTIONAL `signature`
+  member, JCS signing input, and signed/invalid/unsigned verification), plus the
+  §1 member table, §4 endpoint table, §4.1 discovery `proofs`/`signature` fields,
+  Security Considerations, Compatibility, and References ([RFC 8785], [Keyoxide],
+  [Ariadne]) updates. Adapts Keyoxide/Ariadne's key-anchored, third-party-verifiable
+  identity model so PAPI **proves** the identities it asserts (§9) and a document is
+  verifiable against a key rather than its host (§10). Additive and OPTIONAL — no
+  version bump. The verification side is the amarbel-llc/papi validator's surface;
+  the producing side is a planned `piggy papi` subcommand family (sign / prove /
+  verify) over piggy's slot-9A SSH-auth and slot-9D ECDH keys.
