@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/amarbel-llc/papi/internal/inspect"
+	"github.com/amarbel-llc/papi/internal/papi"
 	"github.com/spf13/cobra"
 )
 
@@ -25,6 +26,7 @@ func main() {
 		SilenceErrors: true,
 	}
 	root.AddCommand(newValidateCmd())
+	root.AddCommand(newPiggyIDsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "papi:", err)
@@ -45,4 +47,41 @@ func newValidateCmd() *cobra.Command {
 			return inspect.Run(cmd.Context(), cmd.OutOrStdout(), args[0])
 		},
 	}
+}
+
+func newPiggyIDsCmd() *cobra.Command {
+	var recipientsOnly bool
+	cmd := &cobra.Command{
+		Use:   "piggy-ids <domain>",
+		Short: "Print a domain's PAPI piggy-ids file (optionally only encryption recipients)",
+		Long: "Fetch <domain>'s GET /papi/piggy-ids and print it verbatim — the piggy-ids " +
+			"file: comment lines, then slot-9D encryption recipients and slot-9A SSH auth " +
+			"ids. With --recipients-only, emit just the slot-9D encryption recipients " +
+			"(RFC-0001 §5.1), ready to feed as a recipient set to an encryptor.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			body, _, err := c.PiggyIDs(cmd.Context())
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if !recipientsOnly {
+				_, err = out.Write(body)
+				return err
+			}
+			for _, line := range papi.FilterRecipients(body) {
+				if _, err := fmt.Fprintln(out, line); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&recipientsOnly, "recipients-only", false,
+		"emit only slot-9D encryption recipients (drop comments and slot-9A auth ids)")
+	return cmd
 }

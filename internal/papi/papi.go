@@ -201,3 +201,42 @@ func (c *Client) Document(ctx context.Context) (*Document, map[string]any, int, 
 	}
 	return &doc, env.Meta, status, nil
 }
+
+// RecipientPrefix is the slot-9D encryption-recipient id prefix (RFC-0001 §5.1:
+// `piggy-recipient-v1@pivy_ecdh_p256_pub-…`). Slot-9A SSH auth ids carry a
+// different prefix (`piggy-piv_auth-v1@…`) and are not encryption recipients.
+const RecipientPrefix = "piggy-recipient-v1@"
+
+// PiggyIDs fetches GET /papi/piggy-ids and returns the raw text/plain body — the
+// piggy-ids file (comment lines, then one piggy id per line). It is not
+// enveloped (RFC-0001 §4.2).
+func (c *Client) PiggyIDs(ctx context.Context) (body []byte, status int, err error) {
+	body, status, err = c.get(ctx, "/papi/piggy-ids")
+	if err != nil {
+		return nil, status, err
+	}
+	if status != http.StatusOK {
+		return nil, status, fmt.Errorf("/papi/piggy-ids returned HTTP %d", status)
+	}
+	return body, status, nil
+}
+
+// FilterRecipients returns the bare encryption-recipient ids of a piggy-ids file
+// — the first token of each line whose id begins with RecipientPrefix — dropping
+// comment lines, slot-9A auth ids, and any trailing `  # <label>`. This is
+// exactly piggy's encrypt-to set: its RecipientFile parser keys on the bare id
+// (the label is cosmetic), so a bare-id list feeds the encryptor cleanly.
+func FilterRecipients(body []byte) []string {
+	var recipients []string
+	for _, line := range strings.Split(string(body), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if !strings.HasPrefix(trimmed, RecipientPrefix) {
+			continue
+		}
+		recipients = append(recipients, strings.Fields(trimmed)[0])
+	}
+	return recipients
+}
