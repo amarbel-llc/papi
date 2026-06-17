@@ -1,0 +1,5 @@
+# Out-of-nix go build output (build-go).
+/build/
+# nix build symlinks.
+/result
+/result-*
