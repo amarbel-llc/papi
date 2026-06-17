@@ -59,6 +59,7 @@ func Run(ctx context.Context, w io.Writer, target string) error {
 	}
 
 	pts = append(pts, conformanceChecks(ctx, c, disc)...)
+	pts = append(pts, signaturePoint(ctx, c))
 
 	emit(rep, pts)
 	if rep.Err() != nil {

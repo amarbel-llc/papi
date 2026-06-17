@@ -6,6 +6,11 @@ schema = 3
     hash = 'sha256-ZyZNwjoJjDNB3pVJnHXomcQ5EYNOoLVSQu2X1Tj3CCY='
     goVersion = '1.26'
 
+  [mod.'github.com/gowebpki/jcs']
+    version = 'v1.0.1'
+    hash = 'sha256-CONBD/KyKbVVzA/NUob95BGVtIykhnQAZCv32Xqm7DE='
+    goVersion = '1.15'
+
   [mod.'github.com/inconshreveable/mousetrap']
     version = 'v1.1.0'
     hash = 'sha256-XWlYH0c8IcxAwQTnIi6WYqq44nOKUylSWxWO/vi+8pE='
@@ -20,3 +25,13 @@ schema = 3
     version = 'v1.0.9'
     hash = 'sha256-YAjyYpq5BXCosVJtvYLWFG1t4gma2ylzc7ILLoj/hD8='
     goVersion = '1.12'
+
+  [mod.'golang.org/x/crypto']
+    version = 'v0.53.0'
+    hash = 'sha256-TWcccM4d5t0ZbDyHXEm4elxKk5uzlo29i85lVHSZcNw='
+    goVersion = '1.25.0'
+
+  [mod.'golang.org/x/sys']
+    version = 'v0.46.0'
+    hash = 'sha256-NzRXMSEk6upeudJvUEPVnw6clJ3d8UdC/vdfANWAc8g='
+    goVersion = '1.25.0'

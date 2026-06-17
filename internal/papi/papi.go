@@ -174,6 +174,15 @@ type Document struct {
 	Organizations []Organization             `json:"organizations"`
 	Sitemap       map[string]json.RawMessage `json:"sitemap"`
 	Templates     []Template                 `json:"templates"`
+	Signature     *Signature                 `json:"signature"`
+}
+
+// Signature is the detached document signature (RFC-0001 §10.1).
+type Signature struct {
+	Alg     string `json:"alg"`
+	Key     string `json:"key"`
+	Sig     string `json:"sig"`
+	Created int64  `json:"created"`
 }
 
 // Person is the document's subject block (RFC-0001 §1).
