@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-17
-amendments: 5
+amendments: 6
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -589,11 +589,15 @@ signer MUST delete the top-level `signature` key, serialize the remaining docume
 by [RFC 8785] JSON Canonicalization Scheme (JCS) — lexicographically sorted keys,
 no insignificant whitespace, canonical number forms — and sign the resulting UTF-8
 bytes. A verifier reconstructs the identical bytes by removing `signature` and
-re-canonicalizing before checking `sig`. The signature is computed over the
-**source** document (pre-projection), so it is stable across principals; a verifier
-MUST therefore verify the signature against `/papi` requested **anonymously** (or
-against the discovery `signature`, §4.1), not against a projected response, whose
-dropped private nodes would not match the signed bytes.
+re-canonicalizing before checking `sig`. The signed document MUST be the
+**anonymous projection** — the document `GET /papi` serves to the anonymous
+principal (§2), the same bytes any verifier can fetch without authenticating. A
+signer therefore signs the to-be-served anonymous document, NOT the pre-projection
+source: private nodes are dropped before signing, so the signature commits to no
+private content and is verifiable by anyone. A verifier MUST verify against
+anonymous `/papi` (or the discovery `signature`, §4.1) and MUST NOT verify against
+a scoped/authenticated response, whose additional private nodes would not match the
+signed bytes.
 
 #### 10.3. Verification
 
@@ -888,3 +892,11 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   SSHSIG framing. Resolves a producer/verifier wire-contract ambiguity flagged by
   the piggy side (the `piggy papi` sign surface) so both agree. Clarification of an
   OPTIONAL feature; no version bump.
+- **2026-06-17, Amendment 6 — signature over the anonymous document (§10.2).**
+  Resolved the source-vs-anon ambiguity: the signed document MUST be the anonymous
+  projection (the bytes `GET /papi` serves the anonymous principal), not the
+  pre-projection source — so the signature commits to no private content and any
+  verifier can check it against anonymous `/papi`. Matches the validator's verifier
+  and piggy's `papi sign` (operates on the to-be-served-anon document). Surfaced
+  while implementing the §10.4 verifier; agreed with the piggy side. Clarification
+  of an OPTIONAL feature; no version bump.
