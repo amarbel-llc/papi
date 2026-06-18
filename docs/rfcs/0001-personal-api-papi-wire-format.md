@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-06-17
-amendments: 6
+amended: 2026-06-18
+amendments: 7
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -24,6 +24,9 @@ anchor the document to a key rather than to a domain: a `proofs[]` member that
 carries Keyoxide-style bidirectional ownership proofs for the identities a
 document asserts, and a detached document **signature** that lets a client verify
 authorship of a fetched document offline, independent of the host that served it.
+A further OPTIONAL `caches[]` member advertises the nix binary caches a caller may
+substitute from to bootstrap, gated like every other node so a subject's private
+infrastructure stays scoped to authenticated callers.
 
 ## Introduction
 
@@ -81,6 +84,7 @@ The document MAY contain these top-level members; all are OPTIONAL:
 | `templates[]`     | array  | Advertised nix flake templates for repo bootstrap (see §7).               |
 | `proofs[]`        | array  | Bidirectional identity-ownership proofs (see §9).                          |
 | `signature`       | object | Detached signature binding the document to a published key (see §10).      |
+| `caches[]`        | array  | Advertised nix binary caches for substituter bootstrap (see §11).          |
 | `localsend`       | object | Declared but disabled in `papi/v0`; `enabled` MUST be `false`.            |
 
 `person.handle`, when present, MUST be a string; it is used as the subject label
@@ -182,6 +186,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/sitemap`             | projected `sitemap`, JSON                   | projected          |
 | GET    | `/papi/templates`           | projected `templates[]`, JSON               | projected          |
 | GET    | `/papi/proofs`              | projected `proofs[]`, JSON                  | projected          |
+| GET    | `/papi/caches`              | projected `caches[]`, JSON                  | projected          |
 | GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids file (recipients + auth ids) | projected          |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
 | POST   | `/papi/auth/challenge`      | challenge JSON (§5)                         | no                 |
@@ -200,8 +205,9 @@ unauthenticated request, the registered principal for an authenticated one.
 - `resources` — an object whose values are **absolute** URLs to `/papi`,
   `/papi/piggy-ids`, `/papi/ssh-authorized-keys`, `/papi/forges`, `/papi/repos`,
   `/papi/organizations`, `/papi/sitemap`, (when the document advertises
-  templates, §7) `/papi/templates`, and (when the document advertises proofs,
-  §9) `/papi/proofs`, and
+  templates, §7) `/papi/templates`, (when the document advertises proofs,
+  §9) `/papi/proofs`, (when the document advertises caches, §11)
+  `/papi/caches`, and
 - `auth` — `{scheme: "piggy-challenge-response", challenge, response,
 present_session_as}`, where `challenge`/`response` are absolute URLs.
 
@@ -218,10 +224,10 @@ JSON endpoints MUST wrap their payload in the envelope:
 
     { "data": <payload>, "meta": { "count": <int>, "type": "<string>", ... } }
 
-`/papi` MUST add `meta.version` and `meta.visibility`. The six projected-list
+`/papi` MUST add `meta.version` and `meta.visibility`. The seven projected-list
 endpoints (`/papi/forges`, `/papi/repos`, `/papi/organizations`, `/papi/sitemap`,
-`/papi/templates`, `/papi/proofs`) MUST add `meta.visibility`. `meta.visibility`
-MUST be
+`/papi/templates`, `/papi/proofs`, `/papi/caches`) MUST add `meta.visibility`.
+`meta.visibility` MUST be
 `"public"` for the anonymous principal and `"scoped"` for an authenticated
 principal.
 
@@ -636,6 +642,93 @@ key's `ecdsa-sha2-nistp256` SSH public key (as it appears in
 Future algorithms (e.g. an SSHSIG-framed `alg`) MAY be registered without a version
 bump; a verifier skips an `alg` it does not implement (§10.1).
 
+### 11. Nix Binary Cache Advertisement
+
+A PAPI document MAY advertise one or more **nix binary caches** (substituters)
+that a caller configures to fetch the subject's pre-built closures instead of
+compiling from source. This turns "who is this person" into "which caches do they
+let me pull from to bootstrap", served from the same well-known document and gated
+by the same projection (§2) and authentication (§5) as every other node. The
+reference consumer is a host bootstrap: a freshly-provisioned machine, its caller
+authenticated by a forwarded piggy agent, reads the advertised caches and writes
+them into its nix `substituters`/`trusted-public-keys` so the subject's closures
+substitute rather than rebuild. Like every other top-level member, `caches[]` is
+OPTIONAL and additive within `papi/v0`; a document without it is unchanged and a
+pre-§11 client ignores it.
+
+#### 11.1. `caches[]`
+
+The OPTIONAL top-level `caches[]` member is an array of **cache entries**. Each
+entry is a JSON object with:
+
+| Member                | Type            | Required | Meaning                                                                                    |
+| --------------------- | --------------- | -------- | ------------------------------------------------------------------------------------------ |
+| `id`                  | string          | MUST     | Stable identifier, unique within `caches[]`.                                               |
+| `url`                 | string          | MUST     | The substituter base URL, a nix `substituters` entry (e.g. `http://krone:8080`).            |
+| `trusted_public_keys` | array of string | MUST     | One or more nix `trusted-public-keys` lines (`<name>:<base64-ed25519-pub>`); at least one.  |
+| `priority`            | int             | MAY      | The nix substituter priority (lower = preferred).                                          |
+| `kind`                | string          | MAY      | Cache mechanism; MUST default to `"nix-binary-cache"` when absent.                         |
+
+A server MAY include additional members; clients MUST ignore members they do not
+recognize (§1.1). `id` MUST be a non-empty string and MUST be unique within the
+array; a document with duplicate `id`s is malformed, and a client MUST refuse to
+resolve a duplicated `id` rather than choose arbitrarily. `url` MUST be a non-empty
+string and `trusted_public_keys` MUST contain at least one non-empty string; this
+RFC does not constrain their grammar beyond "a value nix accepts as a
+`substituters` / `trusted-public-keys` entry", deferring to nix's configuration
+syntax. The `trusted_public_keys` member is an array — not a single key — so a
+cache mid-rotation can publish both its outgoing and incoming keys.
+
+`kind` exists so future cache mechanisms can be added without a version bump; in
+`papi/v0` the only defined value is `"nix-binary-cache"`. A client MUST skip an
+entry whose `kind` it does not understand rather than fail the whole list,
+mirroring §7.1.
+
+#### 11.2. Projection
+
+`caches[]` is an ordinary part of the document and MUST be projected through the
+requesting principal exactly as every other node (§2): a `"private"` entry is
+dropped for principals its `acl` does not admit, the `acl` member MUST be stripped
+from every serialized entry, and the array MUST contain only entries visible to the
+principal. What gating a cache entry hides is not a secret — the substituter `url`
+is a network locator and the `trusted_public_keys` are verification keys, both
+public by construction — but the **existence and location** of the subject's
+private infrastructure. A domain MAY therefore publish public caches to everyone
+and gate house-internal caches (a tailnet-only substituter, a private build host)
+behind the auth handshake (§5), so an anonymous caller never learns the private
+cache exists.
+
+#### 11.3. `GET /papi/caches`
+
+A server that advertises caches MUST serve `GET /papi/caches`, returning the
+projected `caches[]` in the JSON envelope (§4.2):
+
+    { "data": [ <cache entry>, ... ],
+      "meta": { "count": <int>, "type": "caches",
+                "visibility": <"public"|"scoped"> } }
+
+`meta.count` MUST be the number of entries in `data` after projection;
+`meta.visibility` follows §4.2. A server whose projected `caches[]` is empty MUST
+return a `200` with an empty `data` array (`count: 0`), not a `404`. The discovery
+document (§4.1) MUST list `caches` in `resources` with an absolute URL to
+`/papi/caches`.
+
+#### 11.4. Client consumption and bootstrap
+
+A client turns a visible cache entry into nix configuration by appending `url` to
+its `substituters` and each `trusted_public_keys` entry to its
+`trusted-public-keys`, honoring `priority` where its nix configuration supports it.
+A cache gated under §11.2 is invisible to the anonymous principal, so reading it
+requires presenting an authenticated session (§5.3): the bootstrapping client
+performs the challenge/response handshake (§5) — proving control of a published
+recipient's PIV slot-9D key, which a **forwarded piggy agent satisfies headless**
+(the agent's ECDH-decrypt extension rides the forwarded socket) — before fetching
+`/papi/caches`. The authenticated tier is live only where the server can encrypt a
+challenge, i.e. a box backend is present (§ Security Considerations, "Box
+availability"); against an anonymous-only host the private caches are simply absent
+(the handshake's `/papi/auth/challenge` returns `503`), and a client MUST treat
+that as "no private caches visible" rather than erroring opaquely, mirroring §8.4.
+
 ## Security Considerations
 
 **Trust boundary on the document.** The document and the principal registry are
@@ -704,6 +797,24 @@ to an arbitrary flake. A bootstrapping client SHOULD surface the resolved flaker
 to the operator before initializing it, MUST honor nix's own flake-evaluation trust
 prompts rather than suppressing them, and SHOULD restrict resolution to domains the
 operator named explicitly.
+
+**Advertised caches are configuration trust (§11).** A `caches[]` entry names a
+substituter the consuming host will fetch closures from and a `trusted_public_keys`
+it will trust those closures' signatures against — so advertising a cache extends
+the consuming host the trust to run code substituted from it, exactly as a
+`templates[]` flakeref (§7–§8) extends the trust to scaffold. The `url` and keys
+are chosen by the document author, not the caller, so they are not
+attacker-controlled in the normal case; but a client that resolves a domain it does
+not trust, or that followed a discovery link from a response it did not originate
+(see the `Host` header note above), could be steered to an arbitrary substituter
+and trust key. Critically, a tailnet-local cache is typically served over plain
+HTTP with no transport authentication, so the advertised `trusted_public_keys` IS
+the integrity root for the substituted closures: a consumer that trusts a key
+learned from PAPI is trusting PAPI as the key-distribution channel. A bootstrapping
+client SHOULD therefore require a valid document signature (§10) before honoring an
+advertised `trusted_public_keys`, so the key is verified against the subject's
+published signing key rather than against whatever host served the document, and
+SHOULD restrict cache resolution to domains the operator named explicitly.
 
 **Proofs prove control, not the document (§9).** A verified proof (§9.4) attests
 that the holder of `recipient` also controls the external `claim` — nothing more.
@@ -805,6 +916,11 @@ and echoed in `meta.version` on `GET /papi`.
   footing: a document without them is unchanged, a client predating §9–§10 ignores
   the members and the endpoint, and the discovery `proofs`/`signature` fields
   appear only when the document advertises them. No version bump is required.
+- The `caches[]` member and the `/papi/caches` endpoint (§11) are an additive
+  OPTIONAL extension within `papi/v0` on the same footing: a document without
+  `caches[]` is unchanged, a client predating §11 ignores both, and the discovery
+  `caches` resource appears only when the document advertises caches. No version
+  bump is required.
 - The `localsend` block and a slot-9A HTTP-signature authentication strategy are
   reserved for `papi/v1`; in `papi/v0` `localsend.enabled` MUST be `false` and a
   server MUST NOT advertise a signature auth scheme in discovery.
@@ -900,3 +1016,17 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   and piggy's `papi sign` (operates on the to-be-served-anon document). Surfaced
   while implementing the §10.4 verifier; agreed with the piggy side. Clarification
   of an OPTIONAL feature; no version bump.
+- **2026-06-18, Amendment 7 — Nix Binary Cache Advertisement.** Added the OPTIONAL
+  `caches[]` document member (§1, §11.1), its projection (§11.2), the
+  `GET /papi/caches` endpoint (§4, §11.3), the client-consumption/bootstrap
+  contract (§11.4), the `caches` discovery resource (§4.1), and the §4.2 envelope,
+  Security Considerations, and Compatibility updates. Turns the well-known document
+  into the ACL-gated discovery surface for a subject's nix substituters: a host
+  whose caller is authenticated by a forwarded piggy agent (§5) reads the gated
+  caches and configures nix to substitute the subject's closures instead of
+  rebuilding from source. Captured from a working cross-implementation proof —
+  validated against the reference implementation's live anonymous tier (the gated
+  cache correctly invisible to anonymous) and its hermetic scoped tier (the
+  authenticated reveal with `acl` stripped, §2.6). Additive and OPTIONAL — no
+  version bump. The §10 multi-signature + markl-id re-spec is sequenced after this
+  as Amendment 8, pending the markl→piggy ownership move.
