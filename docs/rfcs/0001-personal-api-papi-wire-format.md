@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-06-18
-amendments: 7
+amended: 2026-06-19
+amendments: 8
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -729,6 +729,83 @@ availability"); against an anonymous-only host the private caches are simply abs
 (the handshake's `/papi/auth/challenge` returns `503`), and a client MUST treat
 that as "no private caches visible" rather than erroring opaquely, mirroring §8.4.
 
+### 12. Identity-Bootstrap Consumption
+
+A PAPI document already carries everything a tool needs to source a person's
+**identity material** — the SSH/signing key behind a published slot-9A key and the
+person's name and contact email — from the well-known document instead of reading a
+local card or prompting an operator. This section documents that **consumption
+contract**: which already-specified affordances a client reads, and through which
+paths. It defines no new document member, endpoint, or projection rule; the server
+behavior it consumes is §2 (projection), §4.2 (the text endpoints), and §5 (the
+handshake), all unchanged. The reference consumer is an identity-bootstrap tool
+that wires a freshly-provisioned machine's git/SSH identity from a domain's PAPI.
+
+#### 12.1. Consumable affordances
+
+A client MAY treat the following published, already-specified data as a bootstrap
+source:
+
+- **`person.contact.email`** — the email on the ACL-gated `person.contact` node
+  (§1, §6). Per §2 the anonymous projection drops it; an authenticated principal
+  whose projection admits the node (§5) sees it. A consumer that needs the email
+  MUST authenticate (§12.2); a consumer MUST treat a missing `contact` (the node
+  was gated and the caller is anonymous, or the document publishes none) as
+  **absent, not an error**, and fall back to another source or proceed without it.
+- **`person.display_name`** (or `person.handle` / `person.name` as fallbacks) — the
+  subject's name, public by default. A consumer SHOULD prefer `display_name`, then
+  `name`, then `handle`.
+- **The `/papi/ssh-authorized-keys` annotations** — each line the endpoint emits
+  (§4.2) is an OpenSSH `authorized_keys` line a server MAY annotate with
+  `guid=<HEX>` (the slot-9A key's PIV card GUID) and `cn=<name>` (its common name)
+  in the line's trailing comment field. A client that knows a card's GUID MAY
+  select that card's published key by matching `guid=<HEX>` case-insensitively
+  against the `guid=` annotation, isolating the one line whose key the card holds.
+  These annotations are an OPTIONAL server affordance; a client MUST tolerate lines
+  that carry neither (treating an un-annotated body as "no GUID-addressable key").
+
+#### 12.2. Client paths
+
+The reference validator/CLI (amarbel-llc/papi) exposes the consumption contract as:
+
+- **`papi person <domain>`** — fetches `GET /papi` and prints the `person` block
+  (handle, display name, contact email) as JSON. Anonymously, `contact.email` is
+  absent (§2). With `--recipient <id>` (and `--decrypt-cmd <cmd>`) it runs the §5
+  handshake to obtain a session, presents it on `GET /papi` (§5.3), and so reveals
+  `contact.email` from the scoped projection. The same handshake core drives
+  `papi validate`'s authenticated tier; a consumer SHOULD reuse a §5
+  implementation rather than reimplement the challenge/response.
+- **`papi ssh-keys <domain>`** — fetches `GET /papi/ssh-authorized-keys` and prints
+  it verbatim; with `--guid <HEX>` it prints only the line whose `guid=<HEX>`
+  annotation matches (§12.1), erroring if none matches. This is how a client pins
+  the signing/SSH key for a specific local card.
+
+#### 12.3. Future bootstrap directions (deferred to `papi/v1`)
+
+The following extend the consumption contract from sourcing **identity material**
+to bootstrapping **secrets and general authentication** against PAPI. They are
+recorded here for design continuity and are **deferred to `papi/v1`**; nothing in
+this subsection is implemented or REQUIRED in `papi/v0`.
+
+- **Scoped SECRETS retrieval.** A future `papi/v1` MAY define a node class that
+  projects an encrypted secret (an ebox) to an authenticated caller, so a client
+  that proves control of a published slot-9D recipient via the §5 handshake unlocks
+  scoped secret nodes and decrypts them locally with the same card. The secret MUST
+  remain encrypted to the recipient on the wire (the server only ever encrypts,
+  §5), and such a node MUST be gated `visibility: "private"` like every other
+  scoped node (§2). The client SHOULD reuse the session minted for the initial
+  unlock for any follow-on secret fetches rather than re-handshaking per node.
+- **General AUTH against PAPI for provisioning.** A future `papi/v1` MAY let a
+  client reuse a §5 session as a general authentication capability for further
+  provisioning steps against the domain (beyond reading projected nodes) — proving
+  control of a published recipient once, then acting as that principal for a
+  bounded session. Any such use MUST honor the §5.2 session TTL and the §5.3 rule
+  that an expired/unknown session degrades to anonymous, and MUST NOT treat the
+  ephemeral session as a durable credential; the durable identity remains the
+  slot-9D card, re-proven by a fresh handshake when the session lapses. A
+  provisioning surface that mutates server state is out of scope for both `papi/v0`
+  and this subsection and would require its own RFC.
+
 ## Security Considerations
 
 **Trust boundary on the document.** The document and the principal registry are
@@ -1028,5 +1105,18 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   validated against the reference implementation's live anonymous tier (the gated
   cache correctly invisible to anonymous) and its hermetic scoped tier (the
   authenticated reveal with `acl` stripped, §2.6). Additive and OPTIONAL — no
-  version bump. The §10 multi-signature + markl-id re-spec is sequenced after this
-  as Amendment 8, pending the markl→piggy ownership move.
+  version bump. The §10 multi-signature + markl-id re-spec is sequenced as a later
+  amendment, pending the markl→piggy ownership move.
+- **2026-06-19, Amendment 8 — Identity-Bootstrap Consumption.** Added §12,
+  documenting the **consumption contract** by which a client sources a person's
+  identity material from a domain's PAPI: the ACL-gated `person.contact.email`
+  (§1, §6), `person.display_name`, and the OPTIONAL `guid=`/`cn=` annotations on
+  `/papi/ssh-authorized-keys` lines (§4.2) as consumable affordances (§12.1), the
+  `papi person` (anonymous + §5-authed) and `papi ssh-keys --guid` client paths
+  (§12.2), and v1-deferred directions for scoped SECRETS retrieval and general AUTH
+  against PAPI (§12.3). Documents consumption of already-specified server behavior
+  (§2 projection, §4.2 text endpoints, §5 handshake) — it defines no new member,
+  endpoint, or projection rule and changes no §2 gating. The producing side is the
+  reference implementation's existing live tier; the consuming side is the
+  amarbel-llc/papi CLI (`papi person`, `papi ssh-keys`) and a downstream
+  identity-bootstrap tool. Additive and OPTIONAL — no version bump.

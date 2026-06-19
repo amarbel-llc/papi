@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os/exec"
@@ -42,25 +43,48 @@ func unknownSessionPoint(ctx context.Context, c *papi.Client) point {
 	return ok("conformance: unknown session -> anonymous/public projection (§5.3)")
 }
 
-// authenticatedChecks runs the §5 challenge/response handshake as opts.Recipient
-// and verifies the scoped projection. The nonce is recovered from the challenge
-// ebox by opts.DecryptCmd (the operator's card/decryptor).
-func authenticatedChecks(ctx context.Context, c *papi.Client, opts Options) []point {
+// Sentinel errors from Handshake, so callers can distinguish "the tier isn't
+// live here" (a skip) from "the handshake is broken" (a hard failure).
+var (
+	// ErrNoBoxBackend is the §5.1 `503` — the server cannot encrypt a challenge.
+	ErrNoBoxBackend = errors.New("auth tier unavailable (no box backend, §5.1 503)")
+	// ErrRecipientUnregistered is the §5.1 `403` — recipient not in the registry.
+	ErrRecipientUnregistered = errors.New("recipient not registered (§5.1 403)")
+	// ErrNoDecryptCmd is returned when the challenge is minted but no DecryptCmd
+	// was supplied to recover the nonce (the card boundary is missing).
+	ErrNoDecryptCmd = errors.New("no decrypt-cmd to recover the challenge nonce")
+)
+
+// Session is the product of a completed §5 handshake plus the response payload
+// that produced it (retained so a caller can replay-test it, §5.2).
+type Session struct {
+	ID        string // the minted session id, presented as `PiggySession <id>` (§5.3)
+	Principal string // the principal the session is bound to (§5.2)
+	respBody  []byte // the consumed /papi/auth/response request body, for the replay check
+}
+
+// Handshake runs the §5 challenge/response handshake as opts.Recipient: POST the
+// challenge, recover the nonce via opts.DecryptCmd (the operator's card boundary),
+// POST the response, and return the minted Session. It returns a sentinel error
+// (ErrNoBoxBackend / ErrRecipientUnregistered / ErrNoDecryptCmd) for the expected
+// "tier not live here" cases and a plain error for a broken handshake. This is the
+// shared core: `papi validate`'s conformance checks and `papi person`'s authed
+// fetch both drive it rather than reimplementing the flow.
+func Handshake(ctx context.Context, c *papi.Client, opts Options) (Session, error) {
 	chBody, _ := json.Marshal(map[string]string{"recipient": opts.Recipient})
 	ch, err := c.Post(ctx, "/papi/auth/challenge", chBody)
 	if err != nil {
-		return []point{mustFail("auth: POST /papi/auth/challenge", map[string]any{"error": err.Error()})}
+		return Session{}, fmt.Errorf("POST /papi/auth/challenge: %w", err)
 	}
 	switch ch.Status {
 	case http.StatusServiceUnavailable:
-		return []point{skip("auth: challenge/response handshake (§5)", "503 — auth tier unavailable (no box backend)")}
+		return Session{}, ErrNoBoxBackend
 	case http.StatusForbidden:
-		return []point{skip("auth: challenge/response handshake (§5)",
-			fmt.Sprintf("recipient %q not registered (403); pass a registered --recipient", opts.Recipient))}
+		return Session{}, fmt.Errorf("%w: %q", ErrRecipientUnregistered, opts.Recipient)
 	case http.StatusOK:
 		// proceed
 	default:
-		return []point{mustFail("auth: challenge -> 200/403/503 (§5.1)", map[string]any{"got": ch.Status})}
+		return Session{}, fmt.Errorf("challenge: want 200/403/503, got %d (§5.1)", ch.Status)
 	}
 
 	var chJSON struct {
@@ -68,44 +92,65 @@ func authenticatedChecks(ctx context.Context, c *papi.Client, opts Options) []po
 		EboxB64     string `json:"ebox_b64"`
 	}
 	if json.Unmarshal(ch.Body, &chJSON) != nil || chJSON.ChallengeID == "" || chJSON.EboxB64 == "" {
-		return []point{mustFail("auth: challenge body has challenge_id + ebox_b64 (§5.1)", nil)}
+		return Session{}, fmt.Errorf("challenge body lacks challenge_id + ebox_b64 (§5.1)")
 	}
 
 	if opts.DecryptCmd == "" {
-		return []point{skip("auth: challenge/response handshake (§5)",
-			"challenge minted, but no --decrypt-cmd to recover the nonce (need the card)")}
+		return Session{}, ErrNoDecryptCmd
 	}
 	nonce, err := runDecrypt(ctx, opts.DecryptCmd, chJSON.EboxB64)
 	if err != nil {
-		return []point{mustFail("auth: decrypt ebox via --decrypt-cmd (§5.2)", map[string]any{"error": err.Error()})}
+		return Session{}, fmt.Errorf("decrypt ebox via --decrypt-cmd (§5.2): %w", err)
 	}
 
 	respBody, _ := json.Marshal(map[string]string{"challenge_id": chJSON.ChallengeID, "nonce": nonce})
 	rs, err := c.Post(ctx, "/papi/auth/response", respBody)
 	if err != nil {
-		return []point{mustFail("auth: POST /papi/auth/response", map[string]any{"error": err.Error()})}
+		return Session{}, fmt.Errorf("POST /papi/auth/response: %w", err)
 	}
 	if rs.Status != http.StatusOK {
-		return []point{mustFail("auth: response -> 200 with the correct nonce (§5.2)", map[string]any{"got": rs.Status})}
+		return Session{}, fmt.Errorf("response: want 200 with the correct nonce, got %d (§5.2)", rs.Status)
 	}
 	var session struct {
 		Session   string `json:"session"`
 		Principal string `json:"principal"`
 	}
 	if json.Unmarshal(rs.Body, &session) != nil || session.Session == "" {
-		return []point{mustFail("auth: response body has session (§5.2)", nil)}
+		return Session{}, fmt.Errorf("response body lacks session (§5.2)")
+	}
+	return Session{ID: session.Session, Principal: session.Principal, respBody: respBody}, nil
+}
+
+// authenticatedChecks runs the §5 handshake via Handshake and verifies the scoped
+// projection, mapping the handshake's sentinel errors onto the right conformance
+// verdicts (skip vs MUST-fail).
+func authenticatedChecks(ctx context.Context, c *papi.Client, opts Options) []point {
+	sess, err := Handshake(ctx, c, opts)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrNoBoxBackend):
+			return []point{skip("auth: challenge/response handshake (§5)", "503 — auth tier unavailable (no box backend)")}
+		case errors.Is(err, ErrRecipientUnregistered):
+			return []point{skip("auth: challenge/response handshake (§5)",
+				fmt.Sprintf("recipient %q not registered (403); pass a registered --recipient", opts.Recipient))}
+		case errors.Is(err, ErrNoDecryptCmd):
+			return []point{skip("auth: challenge/response handshake (§5)",
+				"challenge minted, but no --decrypt-cmd to recover the nonce (need the card)")}
+		default:
+			return []point{mustFail("auth: challenge/response handshake (§5)", map[string]any{"error": err.Error()})}
+		}
 	}
 
-	pts := []point{ok(fmt.Sprintf("auth: handshake -> session as principal %q (§5)", session.Principal))}
+	pts := []point{ok(fmt.Sprintf("auth: handshake -> session as principal %q (§5)", sess.Principal))}
 
-	if authed, err := c.FetchAuthed(ctx, "/papi", session.Session); err != nil {
+	if authed, err := c.FetchAuthed(ctx, "/papi", sess.ID); err != nil {
 		pts = append(pts, mustFail("auth: GET /papi (authed)", map[string]any{"error": err.Error()}))
 	} else {
 		pts = append(pts, scopedPoints(authed)...)
 	}
 
 	// One-time: re-submitting the consumed challenge MUST be rejected (§5.2).
-	if replay, err := c.Post(ctx, "/papi/auth/response", respBody); err == nil {
+	if replay, err := c.Post(ctx, "/papi/auth/response", sess.respBody); err == nil {
 		pts = append(pts, statusPoint("auth: replayed challenge -> 401 one-time (§5.2)", replay.Status, http.StatusUnauthorized))
 	}
 	return pts

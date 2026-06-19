@@ -205,11 +205,22 @@ type Signature struct {
 	Created int64  `json:"created"`
 }
 
-// Person is the document's subject block (RFC-0001 §1).
+// Person is the document's subject block (RFC-0001 §1). DisplayName mirrors the
+// reference impl's `display_name`; Contact is the ACL-gated `person.contact`
+// node (§2, §6) that the anonymous tier strips and the §5 authenticated tier
+// reveals. Lenient as ever: unknown members ignored, missing → zero.
 type Person struct {
-	Handle  string   `json:"handle"`
-	Name    string   `json:"name"`
-	Domains []string `json:"domains"`
+	Handle      string   `json:"handle"`
+	Name        string   `json:"name"`
+	DisplayName string   `json:"display_name"`
+	Domains     []string `json:"domains"`
+	Contact     *Contact `json:"contact"`
+}
+
+// Contact is the gated contact node nested under person (RFC-0001 §6). It is
+// present only when the principal satisfies the node's acl.
+type Contact struct {
+	Email string `json:"email"`
 }
 
 // Piggy carries the encryption recipients and SSH keys (RFC-0001 §1). Entry
@@ -282,6 +293,21 @@ func (c *Client) PiggyIDs(ctx context.Context) (body []byte, status int, err err
 	}
 	if status != http.StatusOK {
 		return nil, status, fmt.Errorf("/papi/piggy-ids returned HTTP %d", status)
+	}
+	return body, status, nil
+}
+
+// SSHAuthorizedKeys fetches GET /papi/ssh-authorized-keys and returns the raw
+// text/plain body — one OpenSSH authorized_keys line per visible slot-9A key,
+// each annotated with `guid=<HEX>` and `cn=<name>` (RFC-0001 §4.2). It is not
+// enveloped.
+func (c *Client) SSHAuthorizedKeys(ctx context.Context) (body []byte, status int, err error) {
+	body, status, err = c.get(ctx, "/papi/ssh-authorized-keys")
+	if err != nil {
+		return nil, status, err
+	}
+	if status != http.StatusOK {
+		return nil, status, fmt.Errorf("/papi/ssh-authorized-keys returned HTTP %d", status)
 	}
 	return body, status, nil
 }
