@@ -30,7 +30,9 @@ ADR-0004.
 
 ## The CLI
 
-`papi` has two subcommands.
+`papi` has four subcommands: `validate` checks a domain against the spec, and
+`piggy-ids` / `ssh-keys` / `person` surface a domain's published identity
+material for downstream consumption.
 
 ### `papi validate <domain>`
 
@@ -50,14 +52,15 @@ Accepts a bare domain (`https` assumed) or a full URL. By default it validates
 only the public/anonymous tier. To also exercise the §5 challenge/response
 handshake and the authenticated/scoped projection, supply a recipient identity
 you control and a `--decrypt-cmd` that reads the challenge ebox (base64) on
-stdin and writes the recovered nonce on stdout. `piggy box challenge respond`
-(a [pivy-box](https://github.com/arekinath/pivy) passthrough) is exactly such a
-command:
+stdin and writes the recovered nonce on stdout. `base64 -d | pivy-box stream
+decrypt` (talking to a running pivy/piggy-agent that holds the recipient's
+slot-9D key) is exactly such a command — it base64-decodes the ebox and decrypts
+it through the card:
 
 ```console
 $ papi validate linenisgreat.com \
     --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'piggy box challenge respond' | crap-present
+    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' | crap-present
 ```
 
 | flag            | meaning                                                                                       |
@@ -74,6 +77,34 @@ With `--recipients-only`, emit just the bare slot-9D encryption recipients
 
 ```console
 $ papi piggy-ids --recipients-only linenisgreat.com
+```
+
+### `papi ssh-keys <domain>`
+
+Fetch `<domain>`'s `GET /papi/ssh-authorized-keys` and print it verbatim — one
+OpenSSH `authorized_keys` line per visible slot-9A key, each annotated with
+`guid=<HEX>` and `cn=<name>`. With `--guid <HEX>`, print only the line whose
+`guid=` annotation matches (case-insensitively), erroring if none does — the
+affordance a bootstrapping client uses to pin its own card's signing key:
+
+```console
+$ papi ssh-keys --guid DEADBEEF linenisgreat.com
+```
+
+### `papi person <domain>`
+
+Fetch `<domain>`'s `GET /papi` and print its `person` block as JSON — handle,
+display name, and contact email. Anonymously the ACL-gated `person.contact` is
+stripped, so no email shows (RFC-0001 §2). Pass `--recipient` (and the same
+`--decrypt-cmd` as `validate`) to run the §5 handshake and fetch the scoped
+projection, revealing `contact.email` — the identity-bootstrap affordance a
+downstream consumer sources name/email from:
+
+```console
+$ papi person linenisgreat.com           # anonymous: handle + display_name
+$ papi person linenisgreat.com \
+    --recipient piggy-recipient-v1@... \
+    --decrypt-cmd 'base64 -d | pivy-box stream decrypt'   # + contact.email
 ```
 
 ## Install
@@ -107,5 +138,5 @@ Run `just --list` for the full recipe set. Dependency changes go through
 docs/rfcs/        the PAPI wire-format spec (RFC-0001)
 internal/papi/    HTTP client + wire-format decoders
 internal/inspect/ the validate command: introspection + conformance checks
-main.go           cobra CLI (validate, piggy-ids)
+main.go           cobra CLI (validate, piggy-ids, ssh-keys, person)
 ```
