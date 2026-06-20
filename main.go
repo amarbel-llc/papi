@@ -87,7 +87,8 @@ func newValidateCmd() *cobra.Command {
 		Long: "Fetch <domain>'s PAPI, report what it publishes, and check it against the " +
 			"RFC-0001 conformance contract — discovery, the {data,meta} envelope and " +
 			"meta.visibility, acl-strip, projection, the text endpoints, the auth error " +
-			"codes, and the §10 document signature — as an ndjson-crap stream (pipe to " +
+			"codes, identity-ownership proofs (§9), the document signatures (§10), and the " +
+			"nix cache entry schema (§11) — as an ndjson-crap stream (pipe to " +
 			"crap-present). Accepts a bare domain (https assumed) or a full URL, and exits " +
 			"non-zero on a MUST violation. Pass --recipient (and --decrypt-cmd) to also run " +
 			"the §5 challenge/response handshake and validate the authenticated/scoped tier.",
