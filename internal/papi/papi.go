@@ -185,6 +185,7 @@ type Document struct {
 	Templates     []Template                 `json:"templates"`
 	Proofs        []Proof                    `json:"proofs"`
 	Caches        []Cache                    `json:"caches"`
+	Signatures    []Signature                `json:"signatures"`
 	Signature     *Signature                 `json:"signature"`
 }
 
@@ -198,7 +199,10 @@ type Proof struct {
 	Fmt       string `json:"fmt"`
 }
 
-// Signature is the detached document signature (RFC-0001 §10.1).
+// Signature is a detached document signature entry (RFC-0001 §10.1). It serves
+// both forms: the Amendment 9 `signatures[]` entry, where Key and Sig are
+// markl-ids and Alg is absent; and the legacy singular `signature`, where
+// Alg is "ssh-9a", Key is an OpenSSH line, and Sig is base64.
 type Signature struct {
 	Alg     string `json:"alg"`
 	Key     string `json:"key"`

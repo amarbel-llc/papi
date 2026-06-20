@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/amarbel-llc/papi/internal/markl"
 	"github.com/amarbel-llc/papi/internal/papi"
 	"github.com/gowebpki/jcs"
 	"golang.org/x/crypto/ssh"
@@ -87,13 +89,34 @@ func serveDoc(data []byte) *httptest.Server {
 
 func signaturePointFor(t *testing.T, data []byte) point {
 	t.Helper()
-	srv := serveDoc(data)
+	pts := signaturePointsFor(t, data, nil)
+	return pts[len(pts)-1]
+}
+
+// signaturePointsFor runs signaturePoints against a server that serves data at
+// /papi and, when piggyIDs is non-nil, those ids at /papi/piggy-ids.
+func signaturePointsFor(t *testing.T, data []byte, piggyIDs []string) []point {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":`))
+		_, _ = w.Write(data)
+		_, _ = w.Write([]byte(`,"meta":{"type":"papi","version":"papi/v0","visibility":"public"}}`))
+	})
+	if piggyIDs != nil {
+		mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			_, _ = w.Write([]byte("# piggy-ids\n" + strings.Join(piggyIDs, "\n") + "\n"))
+		})
+	}
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	c, err := papi.NewClient(srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return signaturePoint(context.Background(), c)
+	return signaturePoints(context.Background(), c)
 }
 
 func TestSignatureValid(t *testing.T) {
@@ -139,5 +162,195 @@ func TestSignatureKeyNotPublished(t *testing.T) {
 	p := signaturePointFor(t, unpub)
 	if p.reason == "" {
 		t.Fatalf("unpublished key should be a skip (unverifiable), got %+v", p)
+	}
+}
+
+// --- Amendment 9: signatures[] (markl-id, conjunctive) ---
+
+// marklSigner is an ephemeral slot-9A-style P-256 signer expressed as the
+// markl-ids an Amendment 9 signatures[] entry uses.
+type marklSigner struct {
+	priv    *ecdsa.PrivateKey
+	keyID   string // piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…
+	sshLine string // OpenSSH ecdsa-sha2-nistp256 line
+}
+
+func newMarklSigner(t *testing.T) marklSigner {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := elliptic.MarshalCompressed(elliptic.P256(), priv.X, priv.Y)
+	keyID, err := markl.Build(markl.PurposePIVAuth, markl.FormatSSHEcdsaNistp256Pub, compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := ssh.NewPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return marklSigner{priv: priv, keyID: keyID, sshLine: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))}
+}
+
+// sigID returns a papi-doc-sig-v1@ecdsa_p256_sig markl-id over input (raw r‖s).
+func (s marklSigner) sigID(t *testing.T, input []byte) string {
+	t.Helper()
+	digest := sha256.Sum256(input)
+	r, ss, err := ecdsa.Sign(rand.Reader, s.priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, 64)
+	r.FillBytes(raw[:32])
+	ss.FillBytes(raw[32:])
+	id, err := markl.Build(markl.PurposeDocSig, markl.FormatEcdsaP256Sig, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// marklInput computes the §10.2 signing input for base, which MUST NOT yet carry
+// a signatures member (it is the JCS bytes a verifier reconstructs after strip).
+func marklInput(t *testing.T, base map[string]any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := jcs.Transform(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return in
+}
+
+func marshalDoc(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+func TestSignaturesValidPointMatch(t *testing.T) {
+	s := newMarklSigner(t)
+	base := map[string]any{
+		"version": "papi/v0",
+		"piggy":   map[string]any{"ssh_authorized_keys": []any{s.sshLine}},
+	}
+	input := marklInput(t, base)
+	base["signatures"] = []any{map[string]any{"key": s.keyID, "sig": s.sigID(t, input)}}
+
+	pts := signaturePointsFor(t, marshalDoc(t, base), nil) // no piggy-ids → ssh-keys point-match
+	if len(pts) != 1 || !pts[0].ok || pts[0].reason != "" {
+		t.Fatalf("valid markl signature not accepted: %+v", pts)
+	}
+	if !strings.Contains(pts[0].desc, "papi-doc-sig-v1") {
+		t.Errorf("desc = %q", pts[0].desc)
+	}
+}
+
+func TestSignaturesValidViaPiggyIDs(t *testing.T) {
+	s := newMarklSigner(t)
+	// Key published ONLY as a piggy-ids markl-id (ssh_authorized_keys empty),
+	// exercising the canonical string-equality match.
+	base := map[string]any{
+		"version": "papi/v0",
+		"piggy":   map[string]any{"ssh_authorized_keys": []any{}},
+	}
+	input := marklInput(t, base)
+	base["signatures"] = []any{map[string]any{"key": s.keyID, "sig": s.sigID(t, input)}}
+
+	pts := signaturePointsFor(t, marshalDoc(t, base), []string{s.keyID})
+	if len(pts) != 1 || !pts[0].ok || pts[0].reason != "" {
+		t.Fatalf("piggy-ids string-match not accepted: %+v", pts)
+	}
+}
+
+func TestSignaturesMultiAllValid(t *testing.T) {
+	a, b := newMarklSigner(t), newMarklSigner(t)
+	base := map[string]any{
+		"version": "papi/v0",
+		"piggy":   map[string]any{"ssh_authorized_keys": []any{a.sshLine, b.sshLine}},
+	}
+	input := marklInput(t, base)
+	base["signatures"] = []any{
+		map[string]any{"key": a.keyID, "sig": a.sigID(t, input)},
+		map[string]any{"key": b.keyID, "sig": b.sigID(t, input)},
+	}
+
+	pts := signaturePointsFor(t, marshalDoc(t, base), nil)
+	if len(pts) != 2 {
+		t.Fatalf("want 2 verdicts, got %d: %+v", len(pts), pts)
+	}
+	for i, p := range pts {
+		if !p.ok || p.reason != "" {
+			t.Errorf("entry %d not signed-and-valid: %+v", i, p)
+		}
+	}
+}
+
+func TestSignaturesOneInvalidFailsConjunctive(t *testing.T) {
+	a, b := newMarklSigner(t), newMarklSigner(t)
+	base := map[string]any{
+		"version": "papi/v0",
+		"piggy":   map[string]any{"ssh_authorized_keys": []any{a.sshLine, b.sshLine}},
+	}
+	input := marklInput(t, base)
+	base["signatures"] = []any{
+		map[string]any{"key": a.keyID, "sig": a.sigID(t, input)},
+		// b signs the wrong bytes: a well-formed markl-id that fails to verify.
+		map[string]any{"key": b.keyID, "sig": b.sigID(t, []byte("not the signing input"))},
+	}
+
+	pts := signaturePointsFor(t, marshalDoc(t, base), nil)
+	if len(pts) != 2 {
+		t.Fatalf("want 2 verdicts, got %d: %+v", len(pts), pts)
+	}
+	if !pts[0].ok {
+		t.Errorf("entry 0 should be valid: %+v", pts[0])
+	}
+	if pts[1].ok || !pts[1].must {
+		t.Errorf("entry 1 should be a signed-but-invalid MUST failure: %+v", pts[1])
+	}
+}
+
+func TestSignaturesUnknownFormatSkipped(t *testing.T) {
+	s := newMarklSigner(t)
+	base := map[string]any{
+		"version": "papi/v0",
+		"piggy":   map[string]any{"ssh_authorized_keys": []any{s.sshLine}},
+	}
+	base["signatures"] = []any{
+		// sig is a well-formed markl-id but not papi-doc-sig-v1@ecdsa_p256_sig.
+		map[string]any{"key": s.keyID, "sig": s.keyID},
+	}
+	pts := signaturePointsFor(t, marshalDoc(t, base), nil)
+	if len(pts) != 1 || pts[0].reason == "" {
+		t.Fatalf("entry with a non-doc-sig markl-id should be a skip: %+v", pts)
+	}
+}
+
+func TestSignaturesTamperedFails(t *testing.T) {
+	s := newMarklSigner(t)
+	base := map[string]any{
+		"version": "papi/v0",
+		"person":  map[string]any{"handle": "tester"},
+		"piggy":   map[string]any{"ssh_authorized_keys": []any{s.sshLine}},
+	}
+	input := marklInput(t, base)
+	base["signatures"] = []any{map[string]any{"key": s.keyID, "sig": s.sigID(t, input)}}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(marshalDoc(t, base), &m); err != nil {
+		t.Fatal(err)
+	}
+	m["person"] = json.RawMessage(`{"handle":"attacker"}`) // mutate a signed field
+	pts := signaturePointsFor(t, marshalDoc(t, m), nil)
+	if len(pts) != 1 || pts[0].ok || !pts[0].must {
+		t.Fatalf("tampered doc should be signed-but-invalid: %+v", pts)
 	}
 }

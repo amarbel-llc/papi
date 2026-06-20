@@ -83,7 +83,7 @@ The document MAY contain these top-level members; all are OPTIONAL:
 | `sitemap`         | object | A domain → entries map.                                                   |
 | `templates[]`     | array  | Advertised nix flake templates for repo bootstrap (see §7).               |
 | `proofs[]`        | array  | Bidirectional identity-ownership proofs (see §9).                          |
-| `signature`       | object | Detached signature binding the document to a published key (see §10).      |
+| `signatures[]`    | array  | Detached signatures binding the document to published keys (see §10).      |
 | `caches[]`        | array  | Advertised nix binary caches for substituter bootstrap (see §11).          |
 | `localsend`       | object | Declared but disabled in `papi/v0`; `enabled` MUST be `false`.            |
 
@@ -211,9 +211,9 @@ unauthenticated request, the registered principal for an authenticated one.
 - `auth` — `{scheme: "piggy-challenge-response", challenge, response,
 present_session_as}`, where `challenge`/`response` are absolute URLs.
 
-When the document carries a `signature` (§10), the discovery document MUST
-additionally expose a `signature` member equal to the document's `signature`
-object, so a client can verify document authorship (§10.3) from the always-public
+When the document carries `signatures[]` (§10), the discovery document MUST
+additionally expose a `signatures` member equal to the document's `signatures`
+array, so a client can verify document authorship (§10.3) from the always-public
 discovery response without first fetching `/papi`.
 
 The discovery document MUST always be public (it is not projected).
@@ -567,80 +567,117 @@ property of §9.4. Verification is the client/validator's job.
 **document itself** to a key, so a client can verify authorship of a fetched
 document offline. Without it, PAPI's trust root is "whoever controls the domain":
 a document fetched from a cache, a mirror, or a CDN that has been compromised
-carries no evidence of who authored it. The OPTIONAL `signature` member makes the
-document **self-certifying** — verifiable against a published key rather than
-against the host that served it, the second portability property §9 named.
+carries no evidence of who authored it. The OPTIONAL `signatures[]` member makes
+the document **self-certifying** — one or more detached signatures, each
+verifiable against a published key rather than against the host that served it,
+the second portability property §9 named.
 
-#### 10.1. `signature`
+#### 10.1. `signatures[]`
 
-The OPTIONAL top-level `signature` member is a JSON object with:
+The OPTIONAL top-level `signatures[]` member is an array of **signature entries**.
+Each entry is a JSON object with:
 
-| Member      | Type   | Required | Meaning                                                                                |
-| ----------- | ------ | -------- | -------------------------------------------------------------------------------------- |
-| `alg`       | string | MUST     | Signature algorithm: `"ssh-9a"` (piggy slot-9A SSH signature) in `papi/v0`.             |
-| `key`       | string | MUST     | The verifying public key: an `ssh_authorized_keys[]` entry or a published `recipient`.  |
-| `sig`       | string | MUST     | Base64 detached signature over the §10.2 input; per-`alg` encoding in §10.4.            |
-| `created`   | int    | SHOULD   | Unix-seconds the signature was produced.                                               |
+| Member    | Type   | Required | Meaning                                                                                                   |
+| --------- | ------ | -------- | --------------------------------------------------------------------------------------------------------- |
+| `key`     | string | MUST     | The verifying public key, as a published markl-id: a `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…` (§10.4). |
+| `sig`     | string | MUST     | The detached signature, as a `papi-doc-sig-v1@ecdsa_p256_sig-…` markl-id over the §10.2 input (§10.4).      |
+| `created` | int    | SHOULD   | Unix-seconds the signature was produced.                                                                  |
 
-A verifier MUST skip a `signature` whose `alg` it does not understand (treating
-the document as unsigned, §10.3) rather than fail. `key` MUST appear in the
-document's published `ssh_authorized_keys[]` or `piggy.encryption_recipients[]`; a
-`key` outside both is **unverifiable** and the document MUST be treated as
-unsigned.
+There is no `alg` member: the signing method is carried **natively by the
+markl-ids** (the wire form madder [RFC-0002] defines). The `key`'s purpose
+(`piggy-piv_auth-v1` ⇒ a PIV slot-9A authentication key) and the `sig`'s format
+(`ecdsa_p256_sig` ⇒ ECDSA P-256, raw `r‖s`, verified with SHA-256) together fully
+determine verification, so a separate algorithm selector would be redundant.
+
+A verifier MUST skip an entry whose markl-id purpose or format it does not
+understand (treating that entry as absent, §10.3) rather than fail. An entry's
+`key` MUST be **published**: either string-equal to a slot-9A id advertised on
+`/papi/piggy-ids`, or — for a document that publishes only OpenSSH keys — decoding
+to the same P-256 public point as an `ssh_authorized_keys[]` entry. A `key`
+matching neither is **unverifiable** and that entry MUST be treated as absent.
+
+Multiple entries let several keys co-sign the identical §10.2 bytes — e.g. two PIV
+slot-9A keys (two hardware tokens), or an outgoing and an incoming key across a
+rotation. The document's verdict over the array is **conjunctive** (§10.3).
+
+The pre-Amendment-9 singular `signature` object — `{ alg: "ssh-9a", key, sig }`
+with an OpenSSH `key` line and a base64 SSH-wire `sig` — is **superseded** by
+`signatures[]` and retained only for backward compatibility; a verifier MAY still
+accept it when no `signatures[]` is present (§10.4, "Legacy").
 
 #### 10.2. Signing input (canonicalization)
 
-The signature covers the document **with the `signature` member removed**: a
-signer MUST delete the top-level `signature` key, serialize the remaining document
-by [RFC 8785] JSON Canonicalization Scheme (JCS) — lexicographically sorted keys,
-no insignificant whitespace, canonical number forms — and sign the resulting UTF-8
-bytes. A verifier reconstructs the identical bytes by removing `signature` and
-re-canonicalizing before checking `sig`. The signed document MUST be the
-**anonymous projection** — the document `GET /papi` serves to the anonymous
-principal (§2), the same bytes any verifier can fetch without authenticating. A
-signer therefore signs the to-be-served anonymous document, NOT the pre-projection
-source: private nodes are dropped before signing, so the signature commits to no
-private content and is verifiable by anyone. A verifier MUST verify against
-anonymous `/papi` (or the discovery `signature`, §4.1) and MUST NOT verify against
-a scoped/authenticated response, whose additional private nodes would not match the
-signed bytes.
+The signature covers the document **with the `signature` and `signatures` members
+removed**: a signer MUST delete both top-level keys, serialize the remaining
+document by [RFC 8785] JSON Canonicalization Scheme (JCS) — lexicographically
+sorted keys, no insignificant whitespace, canonical number forms — and sign the
+resulting UTF-8 bytes. A verifier reconstructs the identical bytes by removing both
+`signature` and `signatures` and re-canonicalizing before checking each `sig`;
+stripping both forms lets producer and verifier agree on the bytes regardless of
+which form a document carries. The signed document MUST be the **anonymous
+projection** — the document `GET /papi` serves to the anonymous principal (§2), the
+same bytes any verifier can fetch without authenticating. A signer therefore signs
+the to-be-served anonymous document, NOT the pre-projection source: private nodes
+are dropped before signing, so the signature commits to no private content and is
+verifiable by anyone. A verifier MUST verify against anonymous `/papi` (or the
+discovery `signatures`, §4.1) and MUST NOT verify against a scoped/authenticated
+response, whose additional private nodes would not match the signed bytes.
 
 #### 10.3. Verification
 
-A verifier that finds a `signature` (in the discovery document, §4.1, or on an
-anonymous `GET /papi`) MUST: confirm `alg` is understood and `key` is published
-(§10.1); reconstruct the §10.2 signing input; and verify `sig` over those bytes
-with `key`. The outcome is one of **signed-and-valid**, **signed-but-invalid**
-(report prominently; a present-but-broken signature is a stronger negative signal
-than no signature), or **unsigned** (no `signature`, or an `alg`/`key` the verifier
-cannot use). A verifier MUST NOT treat an unsigned document as invalid — signatures
-are OPTIONAL — but SHOULD surface the distinction so a consumer can require
-signed documents in higher-trust contexts.
+A verifier that finds `signatures[]` (in the discovery document, §4.1, or on an
+anonymous `GET /papi`) MUST evaluate **each** entry: confirm the `key` and `sig`
+markl-id purposes/formats are understood and the `key` is published (§10.1);
+reconstruct the §10.2 signing input; and verify the `sig` over those bytes with
+`key`. Each entry is one of **signed-and-valid**, **signed-but-invalid** (the
+markl-ids were understood but the signature does not verify), or **unverifiable**
+(a markl-id purpose/format the verifier cannot use, or a `key` that is not
+published).
 
-#### 10.4. The `ssh-9a` algorithm
+The document's verdict is **conjunctive**: **signed-and-valid** iff at least one
+entry is evaluable and every evaluable entry is valid; **signed-but-invalid** if
+any evaluable entry fails (report prominently — a present-but-broken signature is a
+stronger negative signal than no signature); **unsigned** if no `signatures[]`/
+`signature` is present, or no entry is evaluable. A verifier MUST NOT treat an
+unsigned document as invalid — signatures are OPTIONAL — but SHOULD surface the
+distinction so a consumer can require signed documents in higher-trust contexts.
 
-For `alg: "ssh-9a"` the signature is produced by a PIV **slot-9A** SSH
-authentication key through the ssh-agent signing operation, and `key` MUST be that
-key's `ecdsa-sha2-nistp256` SSH public key (as it appears in
-`ssh_authorized_keys[]`).
+#### 10.4. The `papi-doc-sig-v1` signature
 
-- **Signing.** The signer passes the §10.2 JCS bytes to the agent's sign
-  operation for the slot-9A key. The agent returns an SSH-wire
-  `ecdsa-sha2-nistp256` signature — the string `"ecdsa-sha2-nistp256"` followed by
-  a blob of two `mpint`s `(r, s)` ([RFC 5656] §3.1.2). `sig` MUST be the base64
-  encoding of that raw agent signature blob **verbatim**. It is NOT wrapped in
-  SSHSIG / `ssh-keygen -Y` framing: `papi/v0` pins the bare agent signature so a
-  producer needs only a slot-9A agent sign, not SSHSIG construction.
-- **Verifying.** The verifier base64-decodes `sig`, parses the SSH-wire
-  `ecdsa-sha2-nistp256` structure to recover `(r, s)`, parses the EC point from the
-  `ecdsa-sha2-nistp256` `key`, and checks the ECDSA signature on curve NIST P-256
-  with **SHA-256** over the §10.2 JCS bytes (the digest `ecdsa-sha2-nistp256`
-  mandates). A `key` that is not an `ecdsa-sha2-nistp256` key, or a `sig` that does
-  not parse as that structure, makes the document **signed-but-invalid** (§10.3) —
-  not unsigned, since `alg` was understood.
+A `signatures[]` entry binds a PIV **slot-9A** authentication key to the §10.2
+bytes, expressed entirely as markl-ids (madder [RFC-0002]):
 
-Future algorithms (e.g. an SSHSIG-framed `alg`) MAY be registered without a version
-bump; a verifier skips an `alg` it does not implement (§10.1).
+- `key` is a `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<blech32>` markl-id whose
+  payload is the 33-byte SEC1-compressed P-256 public point. The purpose
+  `piggy-piv_auth-v1` denotes the slot (9A, Authentication); the format
+  `ssh_ecdsa_nistp256_pub` denotes an SSH-suitable P-256 key.
+- `sig` is a `papi-doc-sig-v1@ecdsa_p256_sig-<blech32>` markl-id whose payload is
+  the raw 64-byte ECDSA signature `r‖s` (two 32-byte big-endian integers, no DER,
+  no SSH-wire framing).
+
+- **Signing.** The signer passes the §10.2 JCS bytes to the slot-9A agent sign
+  operation (ECDSA P-256 over **SHA-256**, the digest `ecdsa-sha2-nistp256`
+  mandates), strips the SSH-wire framing to the bare 64-byte `r‖s`, and blech32-
+  encodes it under the `papi-doc-sig-v1@ecdsa_p256_sig` markl-id. The published key
+  is the matching `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub` markl-id.
+- **Verifying.** The verifier decodes the `sig` markl-id to 64 bytes
+  (`r` = bytes 0–31, `s` = bytes 32–63), decodes the `key` markl-id to the P-256
+  point, and checks the ECDSA signature on curve NIST P-256 with **SHA-256** over
+  the §10.2 JCS bytes. A `sig`/`key` whose markl-id parses with the expected
+  purpose/format but fails to verify makes that entry **signed-but-invalid**
+  (§10.3); a markl-id whose purpose/format is not understood makes the entry
+  **unverifiable** (skipped, §10.1).
+
+**Legacy (`ssh-9a`, pre-Amendment 9).** The superseded singular `signature` object
+carries `alg: "ssh-9a"`, an OpenSSH `ecdsa-sha2-nistp256` `key` line, and a `sig`
+that is base64 of the raw SSH-wire agent signature (`"ecdsa-sha2-nistp256"` +
+`(r, s)` mpints, [RFC 5656] §3.1.2) — the same ECDSA-P256/SHA-256 verification over
+the §10.2 bytes, differing only in encoding. A verifier MAY accept it when no
+`signatures[]` is present.
+
+Future formats or purposes (e.g. a software-signer or SSHSIG-framed variant) MAY be
+registered in [RFC-0002] without a version bump; a verifier skips a markl-id whose
+purpose/format it does not implement (§10.1).
 
 ### 11. Nix Binary Cache Advertisement
 
@@ -922,9 +959,9 @@ lists a since-revoked SSH key). Consumers that care about revocation SHOULD hono
 `created` and reject signatures older than a policy bound, and subjects SHOULD
 re-sign on every material change. Canonicalization (§10.2) is load-bearing: a
 verifier that checks `sig` over non-canonical bytes, or that forgets to strip the
-`signature` member first, will reject valid documents or — worse, if it is lenient
-about trailing data — accept manipulated ones. Verify only over the JCS bytes of
-the signature-stripped source document.
+`signature` and `signatures` members first, will reject valid documents or —
+worse, if it is lenient about trailing data — accept manipulated ones. Verify only
+over the JCS bytes of the signature-stripped source document.
 
 ## Conformance Testing
 
@@ -955,14 +992,14 @@ repository's integration-test convention):
 | §5.3, session resolution     | `test-papi.php`                 | header and query-param presentation; unknown → anonymous           |
 | §4, route precedence         | `test-papi.sh`                  | `papi/<segment>` not captured by the generic item route            |
 | §9, `/papi/proofs` serving   | `test-papi.php`, `test-papi.sh` | projected `proofs[]`; server emits claims, never verdicts (§9.5)    |
-| §10, signature serving       | `test-papi.php`                 | `signature` echoed in discovery (§4.1); stripped from signing input |
+| §10, signature serving       | `test-papi.php`                 | `signatures` echoed in discovery (§4.1); stripped from signing input |
 
 A future re-implementation in another language SHOULD be able to satisfy the same
 HTTP-level suite (`test-papi.sh`) unchanged, since it exercises only the wire
 contract.
 
 The **verification** side of §9.4 and §10.3 — fetching `proof_uri`, checking the
-backlink, and verifying the `signature` — is the introspection/validation tool's
+backlink, and verifying the `signatures` — is the introspection/validation tool's
 own conformance surface (this repository, amarbel-llc/papi), not the server's. The
 validator's checks against a live or fixtured domain are the executable form of
 the §9.4 three-outcome verdict and the §10.3 signed/invalid/unsigned verdict.
@@ -988,11 +1025,12 @@ and echoed in `meta.version` on `GET /papi`.
   OPTIONAL extension within `papi/v0`: a document without `templates[]` is
   unchanged, and a client predating §7 ignores both the member and the endpoint.
   No version bump is required.
-- The `proofs[]` member and the `/papi/proofs` endpoint (§9), and the `signature`
-  member (§10), are additive OPTIONAL extensions within `papi/v0` on the same
-  footing: a document without them is unchanged, a client predating §9–§10 ignores
-  the members and the endpoint, and the discovery `proofs`/`signature` fields
-  appear only when the document advertises them. No version bump is required.
+- The `proofs[]` member and the `/papi/proofs` endpoint (§9), and the
+  `signatures[]` member (§10), are additive OPTIONAL extensions within `papi/v0`
+  on the same footing: a document without them is unchanged, a client predating
+  §9–§10 ignores the members and the endpoint, and the discovery
+  `proofs`/`signatures` fields appear only when the document advertises them. No
+  version bump is required.
 - The `caches[]` member and the `/papi/caches` endpoint (§11) are an additive
   OPTIONAL extension within `papi/v0` on the same footing: a document without
   `caches[]` is unchanged, a client predating §11 ignores both, and the discovery
@@ -1016,7 +1054,12 @@ Normative:
   (JCS)", RFC 8785, June 2020. Normative for the §10.2 signing input.
 - [RFC 5656] Stebila, D., Green, J., "Elliptic Curve Algorithm Integration in the
   Secure Shell Transport Layer", RFC 5656, December 2009. Normative for the
-  `ecdsa-sha2-nistp256` signature encoding (§10.4).
+  `ecdsa-sha2-nistp256` signature encoding (§10.4, Legacy).
+- [RFC-0002] "markl-id: self-describing identifier wire format", `docs/rfcs/` in
+  amarbel-llc/madder. Normative for the §10 `signatures[]` markl-id encoding
+  (blech32, the `papi-doc-sig-v1`/`piggy-piv_auth-v1` purposes, the
+  `ecdsa_p256_sig`/`ssh_ecdsa_nistp256_pub` formats).
+  <https://github.com/amarbel-llc/madder>
 - [ADR-0004] "Personal API (PAPI): a well-known person-description type on the
   API subdomain", `docs/decisions/0004-personal-api-papi.md` in
   friedenberg/linenisgreat.
@@ -1120,3 +1163,24 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   reference implementation's existing live tier; the consuming side is the
   amarbel-llc/papi CLI (`papi person`, `papi ssh-keys`) and a downstream
   identity-bootstrap tool. Additive and OPTIONAL — no version bump.
+- **2026-06-20, Amendment 9 — `signatures[]` + markl-id re-spec.** Re-spec'd §10
+  from the singular `signature` object to a `signatures[]` **array** of
+  `{ key, sig, created? }` entries, verified with a **conjunctive** verdict
+  (authentic only if every evaluable entry verifies), to support multiple
+  co-signing keys (e.g. two PIV slot-9A tokens). `key` and `sig` are now
+  **markl-ids** (madder [RFC-0002]): `key` =
+  `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…` (33-byte SEC1 point), `sig` =
+  `papi-doc-sig-v1@ecdsa_p256_sig-…` (raw 64-byte `r‖s`). The `alg` member is
+  **dropped** — the signing method is carried natively by the markl-ids (the key
+  purpose ⇒ slot 9A; the sig format ⇒ ECDSA P-256/SHA-256). Updated §1, §4.1
+  (discovery echoes `signatures`), §10.1–§10.4, §10.2 (the signing input strips
+  **both** `signature` and `signatures`), Security Considerations, Compatibility,
+  References ([RFC-0002]), and the conformance table. A `key` is published by
+  string-equality against a `/papi/piggy-ids` slot-9A id **or** a P-256
+  point-match against `ssh_authorized_keys[]` (so OpenSSH-only documents still
+  verify). The pre-Amendment-9 singular `signature` (`ssh-9a`) is **superseded**
+  but retained as a verifier fallback when no `signatures[]` is present.
+  Supersedes the Amendment 5/6 single-signature form. The validator
+  (amarbel-llc/papi) parses markl-ids via a minimal blech32 port validated against
+  [RFC-0002]'s conformance vectors. Clarification/re-spec of an OPTIONAL feature —
+  no version bump.
