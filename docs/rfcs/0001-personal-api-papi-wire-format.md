@@ -508,11 +508,20 @@ service lets the subject write:
   literal `recipient` id as a substring. This is the lowest-common-denominator
   proof: paste the recipient id into a GitHub profile bio, a gist, a pinned
   toot, or a DNS TXT record.
-- `"signature"` — the document at `proof_uri` MUST contain a piggy slot-9A SSH
-  signature (or the §10 detached signature) over the exact string `claim`,
-  verifiable against an `ssh_authorized_keys[]` entry or the `recipient`. This
-  upgrades a presence check to a cryptographic one for services that allow longer
-  free-form content.
+- `"signature"` — the resource at `proof_uri` MUST contain a
+  `papi-proof-sig-v1@ecdsa_p256_sig-…` **markl-id** (madder [RFC-0002]): a slot-9A
+  ECDSA P-256 signature (raw 64-byte `r‖s`) over the **exact `claim` string's
+  bytes**, hashed SHA-256. A verifier extracts the markl-id from the `proof_uri`
+  document (or TXT records, §9.4) and checks the signature against the subject's
+  **published slot-9A keys** — the `ssh_authorized_keys[]` entries and the
+  `piggy-piv_auth-v1@…` ids on `/papi/piggy-ids` (the same union match as §10.1).
+  The signature alone proves "the holder of a published slot-9A key signed this
+  `claim`"; the proof's co-published `recipient` (§9.1) binds that to the asserted
+  identity. This upgrades the presence check to a cryptographic one and reuses the
+  §10 markl-id machinery — the proof signature (`papi-proof-sig-v1`) signs the
+  `claim` string, where the §10 document signature (`papi-doc-sig-v1`) signs the
+  JCS document bytes. (The `recipient`, a slot-9D ECDH id, cannot itself verify an
+  ECDSA signature, so the signing key is always a published slot-9A key.)
 
 A verifier MUST skip a proof whose `fmt` it does not understand (treating it as
 unverifiable, §9.4) rather than fail the whole list, mirroring the `kind`-skip
@@ -1184,3 +1193,18 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   (amarbel-llc/papi) parses markl-ids via a minimal blech32 port validated against
   [RFC-0002]'s conformance vectors. Clarification/re-spec of an OPTIONAL feature —
   no version bump.
+- **2026-06-20, Amendment 10 — `fmt="signature"` proof signatures (§9.3).** Pinned
+  the §9.3 `fmt="signature"` backlink as a `papi-proof-sig-v1@ecdsa_p256_sig-…`
+  markl-id (madder [RFC-0002], the proof-claim sibling of §10's `papi-doc-sig-v1`):
+  a slot-9A ECDSA P-256 signature over the **exact `claim` string** (SHA-256),
+  embedded at `proof_uri` (https body or dns TXT, §9.4) and verified against the
+  subject's published slot-9A keys (the §10.1 union match — `ssh_authorized_keys[]`
+  point-match or `/papi/piggy-ids` string-equality). Resolved the prior §9.3
+  ambiguity ("verifiable against … the `recipient`"): a `recipient` is a slot-9D
+  ECDH id and cannot verify an ECDSA signature, so the signing key is always a
+  published slot-9A key, and the proof's co-published `recipient` provides the
+  identity binding. The signing-input + key-binding were pinned jointly with the
+  piggy producer side. Implemented in the validator (amarbel-llc/papi,
+  `internal/inspect/proofs.go`), reusing the §10 markl-id machinery; the
+  `papi-proof-sig-v1` purpose is registered in piggy's go/markl. Additive
+  clarification of an OPTIONAL feature — no version bump.

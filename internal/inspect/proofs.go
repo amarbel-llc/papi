@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/amarbel-llc/papi/internal/markl"
 	"github.com/amarbel-llc/papi/internal/papi"
 )
 
@@ -51,18 +53,49 @@ func proofsChecks(ctx context.Context, c *papi.Client) []point {
 		recipients = doc.Piggy.EncryptionRecipients
 	}
 	published := recipientIDSet(recipients)
+	signingKeys := publishedSigningKeys(ctx, c, doc)
 	hc := proofHTTPClient()
 	seen := map[string]bool{}
 
 	pts := make([]point, 0, len(doc.Proofs))
 	for i, pr := range doc.Proofs {
-		pts = append(pts, verifyProof(ctx, hc, pr, i, published, seen))
+		pts = append(pts, verifyProof(ctx, hc, pr, i, published, seen, signingKeys))
 	}
 	return pts
 }
 
-// verifyProof evaluates one proof entry to the §9.4 outcome.
-func verifyProof(ctx context.Context, hc *http.Client, pr papi.Proof, i int, published, seen map[string]bool) point {
+// publishedSigningKeys collects the P-256 public keys a §9.3 fmt="signature"
+// proof may verify against: the subject's slot-9A keys, sourced from both
+// ssh_authorized_keys[] (OpenSSH lines) and the piggy-piv_auth-v1 ids on
+// /papi/piggy-ids (the canonical markl-id representation).
+func publishedSigningKeys(ctx context.Context, c *papi.Client, doc *papi.Document) []*ecdsa.PublicKey {
+	var keys []*ecdsa.PublicKey
+	if doc.Piggy != nil {
+		for _, entry := range doc.Piggy.SSHAuthorizedKeys {
+			for _, cand := range candidateKeyLines(entry) {
+				if cp, ok := sshKeyCompressedPoint(cand); ok {
+					if pub, err := p256FromCompressed(cp); err == nil {
+						keys = append(keys, pub)
+					}
+				}
+			}
+		}
+	}
+	for _, id := range fetchPiggyAuthIDs(ctx, c) {
+		mid, err := markl.Parse(id)
+		if err != nil || mid.Purpose != markl.PurposePIVAuth || mid.Format != markl.FormatSSHEcdsaNistp256Pub {
+			continue
+		}
+		if pub, err := p256FromCompressed(mid.Payload); err == nil {
+			keys = append(keys, pub)
+		}
+	}
+	return keys
+}
+
+// verifyProof evaluates one proof entry to the §9.4 outcome. signingKeys are the
+// subject's published slot-9A keys, used by the fmt="signature" path.
+func verifyProof(ctx context.Context, hc *http.Client, pr papi.Proof, i int, published, seen map[string]bool, signingKeys []*ecdsa.PublicKey) point {
 	label := fmt.Sprintf("proof[%d] %q", i, pr.ID)
 
 	switch {
@@ -90,80 +123,126 @@ func verifyProof(ctx context.Context, hc *http.Client, pr papi.Proof, i int, pub
 	case "recipient":
 		return verifyRecipientProof(ctx, hc, pr, label)
 	case "signature":
-		return skip("proofs: "+label+" unverifiable",
-			`fmt "signature" not yet implemented — awaits markl-id proof signatures (§9.3)`)
+		return verifySignatureProof(ctx, hc, pr, label, signingKeys)
 	default:
 		return skip("proofs: "+label+" unverifiable", fmt.Sprintf("unknown fmt %q (§9.3)", format))
 	}
 }
 
 // verifyRecipientProof handles fmt="recipient": the resource at proof_uri MUST
-// contain the recipient id (§9.3). It dispatches on the proof_uri scheme — the
-// "scheme the service matcher defines" (§9.4) — to the https or dns backlink
-// reader; an unsupported scheme is unverifiable, not a failure.
+// contain the recipient id as a substring (§9.3). It reads the backlink material
+// via proofBody (https body or dns TXT) and searches it for the recipient id.
 func verifyRecipientProof(ctx context.Context, hc *http.Client, pr papi.Proof, label string) point {
-	u, err := url.Parse(pr.ProofURI)
-	if err != nil {
-		return skip("proofs: "+label+" unverifiable", "bad proof_uri: "+err.Error())
+	body, source, bad, fetched := proofBody(ctx, hc, pr, label)
+	if !fetched {
+		return bad
 	}
-	switch u.Scheme {
-	case "https":
-		return verifyRecipientProofHTTPS(ctx, hc, pr, label)
-	case "dns":
-		return verifyRecipientProofDNS(ctx, pr, label, dnsName(u))
-	default:
-		return skip("proofs: "+label+" unverifiable",
-			fmt.Sprintf("proof_uri scheme %q unsupported — https or dns (§9.4)", u.Scheme))
+	if strings.Contains(body, pr.Recipient) {
+		return ok(fmt.Sprintf("proofs: %s verified — %s %sbacklinks the recipient (§9.4)", label, pr.Claim, source))
 	}
-}
-
-// verifyRecipientProofHTTPS reads the backlink from an https document: it MUST
-// contain the recipient id as a substring (§9.3). The fetch is same-host-
-// redirect-only and bounded (§9.4).
-func verifyRecipientProofHTTPS(ctx context.Context, hc *http.Client, pr papi.Proof, label string) point {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pr.ProofURI, nil)
-	if err != nil {
-		return skip("proofs: "+label+" unverifiable", "bad proof_uri: "+err.Error())
-	}
-	resp, err := hc.Do(req)
-	if err != nil {
-		return shouldFail("proofs: "+label+" unverified — proof_uri fetch failed (§9.4)",
-			map[string]any{"claim": pr.Claim, "error": err.Error()})
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return shouldFail("proofs: "+label+" unverified — proof_uri non-success (§9.4)",
-			map[string]any{"claim": pr.Claim, "status": resp.StatusCode})
-	}
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, proofMaxBody))
-	if strings.Contains(string(body), pr.Recipient) {
-		return ok(fmt.Sprintf("proofs: %s verified — %s backlinks the recipient (§9.4)", label, pr.Claim))
-	}
-	return shouldFail("proofs: "+label+" unverified — backlink (recipient id) not found at proof_uri (§9.4)",
+	return shouldFail("proofs: "+label+" unverified — recipient id not found at proof_uri (§9.4)",
 		map[string]any{"claim": pr.Claim})
 }
 
-// verifyRecipientProofDNS reads the backlink from a dns: proof_uri: one of the
-// name's TXT records MUST contain the recipient id (§9.3) — the recipient id
-// pasted into a DNS TXT record. The lookup is bounded (§9.4).
-func verifyRecipientProofDNS(ctx context.Context, pr papi.Proof, label, name string) point {
+// proofSigGrammar matches a papi-proof-sig-v1@ecdsa_p256_sig markl-id embedded in
+// a proof_uri body (§9.3); markl.Parse then validates its blech32 checksum.
+var proofSigGrammar = regexp.MustCompile(`papi-proof-sig-v1@ecdsa_p256_sig-[qpzry9x8gf2tvdw0s3jn54khce6mua7l]+`)
+
+// verifySignatureProof handles fmt="signature" (§9.3, Amendment 9 sibling of
+// §10): the resource at proof_uri MUST contain a `papi-proof-sig-v1@ecdsa_p256_sig`
+// markl-id — a slot-9A signature over the exact `claim` string — that verifies
+// against one of the subject's published slot-9A keys. The signature alone proves
+// "the holder of a published slot-9A key signed this claim"; co-publication of
+// the proof's recipient binds it to the asserted identity.
+func verifySignatureProof(ctx context.Context, hc *http.Client, pr papi.Proof, label string, signingKeys []*ecdsa.PublicKey) point {
+	body, _, bad, fetched := proofBody(ctx, hc, pr, label)
+	if !fetched {
+		return bad
+	}
+	id, found := findProofSigMarklID(body)
+	if !found {
+		return shouldFail("proofs: "+label+" unverified — no papi-proof-sig-v1 markl-id at proof_uri (§9.3)",
+			map[string]any{"claim": pr.Claim})
+	}
+	if len(signingKeys) == 0 {
+		return skip("proofs: "+label+" unverifiable",
+			"no published slot-9A key to verify the signature against (§9.3)")
+	}
+	for _, k := range signingKeys {
+		if ecdsaVerifyRaw(k, []byte(pr.Claim), id.Payload) {
+			return ok(fmt.Sprintf("proofs: %s verified — papi-proof-sig-v1 signs the claim %q (§9.3)", label, pr.Claim))
+		}
+	}
+	return shouldFail("proofs: "+label+" unverified — signature verifies against no published slot-9A key (§9.3)",
+		map[string]any{"claim": pr.Claim})
+}
+
+// findProofSigMarklID returns the first valid papi-proof-sig-v1@ecdsa_p256_sig
+// markl-id embedded in body.
+func findProofSigMarklID(body string) (markl.ID, bool) {
+	for _, m := range proofSigGrammar.FindAllString(body, -1) {
+		id, err := markl.Parse(m)
+		if err == nil && id.Purpose == markl.PurposeProofSig && id.Format == markl.FormatEcdsaP256Sig {
+			return id, true
+		}
+	}
+	return markl.ID{}, false
+}
+
+// proofBody fetches the verification material at pr.ProofURI, dispatching on the
+// scheme (§9.4): the https response body, or the joined dns TXT records. source
+// is a noun for the verified message ("" for https, "TXT record " for dns). On a
+// fetch problem it returns a verdict point and ok=false.
+func proofBody(ctx context.Context, hc *http.Client, pr papi.Proof, label string) (body, source string, bad point, ok bool) {
+	u, err := url.Parse(pr.ProofURI)
+	if err != nil {
+		return "", "", skip("proofs: "+label+" unverifiable", "bad proof_uri: "+err.Error()), false
+	}
+	switch u.Scheme {
+	case "https":
+		return proofBodyHTTPS(ctx, hc, pr, label)
+	case "dns":
+		return proofBodyDNS(ctx, pr, label, dnsName(u))
+	default:
+		return "", "", skip("proofs: "+label+" unverifiable",
+			fmt.Sprintf("proof_uri scheme %q unsupported — https or dns (§9.4)", u.Scheme)), false
+	}
+}
+
+// proofBodyHTTPS reads the https proof_uri document, same-host-redirect-only and
+// bounded (§9.4).
+func proofBodyHTTPS(ctx context.Context, hc *http.Client, pr papi.Proof, label string) (string, string, point, bool) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pr.ProofURI, nil)
+	if err != nil {
+		return "", "", skip("proofs: "+label+" unverifiable", "bad proof_uri: "+err.Error()), false
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return "", "", shouldFail("proofs: "+label+" unverified — proof_uri fetch failed (§9.4)",
+			map[string]any{"claim": pr.Claim, "error": err.Error()}), false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", "", shouldFail("proofs: "+label+" unverified — proof_uri non-success (§9.4)",
+			map[string]any{"claim": pr.Claim, "status": resp.StatusCode}), false
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, proofMaxBody))
+	return string(body), "", point{}, true
+}
+
+// proofBodyDNS reads the dns: proof_uri's TXT records, bounded (§9.4).
+func proofBodyDNS(ctx context.Context, pr papi.Proof, label, name string) (string, string, point, bool) {
 	if name == "" {
-		return skip("proofs: "+label+" unverifiable", "dns: proof_uri has no hostname (§9.4)")
+		return "", "", skip("proofs: "+label+" unverifiable", "dns: proof_uri has no hostname (§9.4)"), false
 	}
 	ctx, cancel := context.WithTimeout(ctx, proofDNSTimeout)
 	defer cancel()
 	records, err := txtLookup(ctx, name)
 	if err != nil {
-		return shouldFail("proofs: "+label+" unverified — TXT lookup failed (§9.4)",
-			map[string]any{"claim": pr.Claim, "name": name, "error": err.Error()})
+		return "", "", shouldFail("proofs: "+label+" unverified — TXT lookup failed (§9.4)",
+			map[string]any{"claim": pr.Claim, "name": name, "error": err.Error()}), false
 	}
-	for _, rec := range records {
-		if strings.Contains(rec, pr.Recipient) {
-			return ok(fmt.Sprintf("proofs: %s verified — %s TXT record backlinks the recipient (§9.4)", label, pr.Claim))
-		}
-	}
-	return shouldFail("proofs: "+label+" unverified — recipient id not found in TXT records (§9.4)",
-		map[string]any{"claim": pr.Claim, "name": name, "records": len(records)})
+	return strings.Join(records, "\n"), "TXT record ", point{}, true
 }
 
 // dnsName extracts the hostname from a parsed dns: proof_uri. RFC-0001 uses the

@@ -2,6 +2,9 @@ package inspect
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/amarbel-llc/papi/internal/markl"
 	"github.com/amarbel-llc/papi/internal/papi"
 )
 
@@ -28,7 +32,7 @@ func dnsProof() papi.Proof {
 func verifyDNSProof(t *testing.T, pr papi.Proof) point {
 	t.Helper()
 	return verifyProof(context.Background(), http.DefaultClient, pr, 0,
-		map[string]bool{proofRecipient: true}, map[string]bool{})
+		map[string]bool{proofRecipient: true}, map[string]bool{}, nil)
 }
 
 func TestVerifyProofDNSVerified(t *testing.T) {
@@ -97,7 +101,7 @@ func TestVerifyProofVerified(t *testing.T) {
 	srv := proofServer("github bio: " + proofRecipient + " — verified me")
 	defer srv.Close()
 	pr := papi.Proof{ID: "p1", Recipient: proofRecipient, Claim: "https://github.com/tester", ProofURI: srv.URL + "/proof"}
-	p := verifyProof(context.Background(), srv.Client(), pr, 0, map[string]bool{proofRecipient: true}, map[string]bool{})
+	p := verifyProof(context.Background(), srv.Client(), pr, 0, map[string]bool{proofRecipient: true}, map[string]bool{}, nil)
 	if !p.ok || p.reason != "" {
 		t.Fatalf("verified proof not accepted: %+v", p)
 	}
@@ -110,7 +114,7 @@ func TestVerifyProofUnverified(t *testing.T) {
 	srv := proofServer("this page has no backlink")
 	defer srv.Close()
 	pr := papi.Proof{ID: "p1", Recipient: proofRecipient, Claim: "https://github.com/tester", ProofURI: srv.URL + "/proof"}
-	p := verifyProof(context.Background(), srv.Client(), pr, 0, map[string]bool{proofRecipient: true}, map[string]bool{})
+	p := verifyProof(context.Background(), srv.Client(), pr, 0, map[string]bool{proofRecipient: true}, map[string]bool{}, nil)
 	if p.ok || p.must || p.reason != "" {
 		t.Fatalf("missing backlink should be unverified (a flag, not ok/must/skip): %+v", p)
 	}
@@ -126,11 +130,10 @@ func TestVerifyProofUnverifiable(t *testing.T) {
 		"bad recipient":  {ID: "p", Recipient: "not-a-recipient", Claim: "c", ProofURI: "https://x/y"},
 		"unpublished":    {ID: "p", Recipient: "piggy-recipient-v1@pivy_ecdh_p256_pub-zzz", Claim: "c", ProofURI: "https://x/y"},
 		"unknown fmt":    {ID: "p", Recipient: proofRecipient, Claim: "c", ProofURI: "https://x/y", Fmt: "carrier-pigeon"},
-		"signature fmt":  {ID: "p", Recipient: proofRecipient, Claim: "c", ProofURI: "https://x/y", Fmt: "signature"},
 		"http proof_uri": {ID: "p", Recipient: proofRecipient, Claim: "c", ProofURI: "http://x/y"},
 	}
 	for name, pr := range cases {
-		p := verifyProof(context.Background(), http.DefaultClient, pr, 0, published, map[string]bool{})
+		p := verifyProof(context.Background(), http.DefaultClient, pr, 0, published, map[string]bool{}, nil)
 		if p.reason == "" {
 			t.Errorf("%s: expected unverifiable (a skip), got %+v", name, p)
 		}
@@ -140,9 +143,11 @@ func TestVerifyProofUnverifiable(t *testing.T) {
 func TestVerifyProofDuplicateID(t *testing.T) {
 	seen := map[string]bool{}
 	published := map[string]bool{proofRecipient: true}
-	pr := papi.Proof{ID: "dup", Recipient: proofRecipient, Claim: "c", ProofURI: "https://x/y", Fmt: "signature"}
-	_ = verifyProof(context.Background(), http.DefaultClient, pr, 0, published, seen)
-	p := verifyProof(context.Background(), http.DefaultClient, pr, 1, published, seen)
+	// An unsupported scheme keeps the first call hermetic (no network); the
+	// duplicate-id check fires before scheme dispatch on the second call anyway.
+	pr := papi.Proof{ID: "dup", Recipient: proofRecipient, Claim: "c", ProofURI: "ftp://x/y"}
+	_ = verifyProof(context.Background(), http.DefaultClient, pr, 0, published, seen, nil)
+	p := verifyProof(context.Background(), http.DefaultClient, pr, 1, published, seen, nil)
 	if p.reason == "" || !strings.Contains(p.reason, "duplicate") {
 		t.Fatalf("duplicate id not flagged unverifiable: %+v", p)
 	}
@@ -160,5 +165,92 @@ func TestRecipientIDSet(t *testing.T) {
 	}
 	if len(set) != 2 {
 		t.Errorf("recipientIDSet size = %d, want 2: %v", len(set), set)
+	}
+}
+
+// --- §9.3 fmt="signature" (papi-proof-sig-v1 markl-id) ---
+
+// proofSig signs the claim string with priv (slot-9A style) and returns a
+// papi-proof-sig-v1@ecdsa_p256_sig markl-id — the backlink a producer embeds.
+func proofSig(t *testing.T, priv *ecdsa.PrivateKey, claim string) string {
+	t.Helper()
+	digest := sha256.Sum256([]byte(claim))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, 64)
+	r.FillBytes(raw[:32])
+	s.FillBytes(raw[32:])
+	id, err := markl.Build(markl.PurposeProofSig, markl.FormatEcdsaP256Sig, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+const sigClaim = "https://github.com/tester"
+
+func sigProof(uri string) papi.Proof {
+	return papi.Proof{ID: "ps", Recipient: proofRecipient, Claim: sigClaim, ProofURI: uri, Fmt: "signature"}
+}
+
+func TestVerifySignatureProofVerified(t *testing.T) {
+	s := newMarklSigner(t)
+	srv := proofServer("my identity proof: " + proofSig(t, s.priv, sigClaim) + " — done")
+	defer srv.Close()
+	p := verifySignatureProof(context.Background(), srv.Client(), sigProof(srv.URL+"/p"),
+		`proof[0] "ps"`, []*ecdsa.PublicKey{&s.priv.PublicKey})
+	if !p.ok || p.reason != "" {
+		t.Fatalf("valid proof signature not accepted: %+v", p)
+	}
+	if !strings.Contains(p.desc, "papi-proof-sig-v1") {
+		t.Errorf("desc = %q", p.desc)
+	}
+}
+
+func TestVerifySignatureProofWrongKey(t *testing.T) {
+	s, other := newMarklSigner(t), newMarklSigner(t)
+	srv := proofServer(proofSig(t, s.priv, sigClaim))
+	defer srv.Close()
+	// Verified against a different published key only → unverified (a flag).
+	p := verifySignatureProof(context.Background(), srv.Client(), sigProof(srv.URL+"/p"),
+		`proof[0] "ps"`, []*ecdsa.PublicKey{&other.priv.PublicKey})
+	if p.ok || p.must || p.reason != "" {
+		t.Fatalf("signature matching no published key should be unverified: %+v", p)
+	}
+}
+
+func TestVerifySignatureProofNoMarklID(t *testing.T) {
+	s := newMarklSigner(t)
+	srv := proofServer("this page has no proof signature")
+	defer srv.Close()
+	p := verifySignatureProof(context.Background(), srv.Client(), sigProof(srv.URL+"/p"),
+		`proof[0] "ps"`, []*ecdsa.PublicKey{&s.priv.PublicKey})
+	if p.ok || p.reason != "" || !strings.Contains(p.desc, "no papi-proof-sig-v1") {
+		t.Fatalf("missing markl-id should be unverified: %+v", p)
+	}
+}
+
+func TestVerifySignatureProofNoPublishedKeys(t *testing.T) {
+	s := newMarklSigner(t)
+	srv := proofServer(proofSig(t, s.priv, sigClaim))
+	defer srv.Close()
+	// A well-formed signature but no published slot-9A key to check it → skip.
+	p := verifySignatureProof(context.Background(), srv.Client(), sigProof(srv.URL+"/p"), `proof[0] "ps"`, nil)
+	if p.reason == "" {
+		t.Fatalf("no published signing key should be unverifiable (a skip): %+v", p)
+	}
+}
+
+func TestFindProofSigMarklID(t *testing.T) {
+	s := newMarklSigner(t)
+	id := proofSig(t, s.priv, sigClaim)
+	got, ok := findProofSigMarklID("noise " + id + " trailing words")
+	if !ok || got.Raw != id {
+		t.Fatalf("findProofSigMarklID = %q,%v, want %q", got.Raw, ok, id)
+	}
+	if _, ok := findProofSigMarklID("no markl-id here"); ok {
+		t.Error("findProofSigMarklID matched nothing-string")
 	}
 }
