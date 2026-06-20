@@ -194,9 +194,9 @@ func documentPoints(d *papi.Document) []point {
 		pts = append(pts, ok(fmt.Sprintf("organizations: %d", len(d.Organizations))))
 	}
 
-	if len(d.Sitemap) > 0 {
+	if domains := contentKeys(d.Sitemap); len(domains) > 0 {
 		pts = append(pts, ok(fmt.Sprintf("sitemap: %d domain(s): %s",
-			len(d.Sitemap), strings.Join(sortedRawKeys(d.Sitemap), ", "))))
+			len(domains), strings.Join(domains, ", "))))
 	}
 
 	if len(d.Templates) > 0 {
@@ -228,9 +228,22 @@ func sortedKeys(m map[string]string) []string {
 	return ks
 }
 
-func sortedRawKeys[V any](m map[string]V) []string {
+// nodeControlKeys are the per-node projection-control members (RFC-0001 §2):
+// they configure visibility/gating, not document content. Introspection
+// summaries of lenient objects must exclude them so control markers aren't
+// miscounted as content (e.g. a sitemap's "visibility" key reported as a
+// domain — amarbel-llc/papi#5).
+var nodeControlKeys = map[string]bool{"visibility": true, "acl": true}
+
+// contentKeys returns m's keys sorted, excluding the §2 node-control keys so a
+// lenient-object summary counts content (sitemap domains, etc.), not projection
+// markers.
+func contentKeys[V any](m map[string]V) []string {
 	ks := make([]string, 0, len(m))
 	for k := range m {
+		if nodeControlKeys[k] {
+			continue
+		}
 		ks = append(ks, k)
 	}
 	sort.Strings(ks)

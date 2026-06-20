@@ -33,6 +33,7 @@ func conformantServer() *httptest.Server {
 			"person":{"handle":"tester","name":"Test User"},
 			"piggy":{"encryption_recipients":[{"id":"r1"}],"ssh_authorized_keys":[{"key":"k1"},{"key":"k2"}]},
 			"forges":[{"id":"gh","kind":"github","repos":[{},{}]}],
+			"sitemap":{"domains":{"visibility":"public"},"visibility":"public"},
 			"templates":[{"id":"eng","flakeref":"github:x/y#eng"}]},
 			"meta":{"type":"papi","version":"papi/v0","visibility":"public"}}`)
 	})
@@ -112,12 +113,34 @@ func TestRunConformant(t *testing.T) {
 		"1 encryption recipient(s), 2 ssh key(s)",
 		"forges: 1 (github/gh) with 2 repo(s)",
 		"templates: 1 (eng)",
+		"sitemap: 1 domain(s): domains",       // control keys excluded (§2 / amarbel-llc/papi#5)
 		"http://",                             // insecure-resource fact (§4.1 / linenisgreat#26)
 		"strips acl",                          // conformance verdict (§2.6)
 		"{data,meta}, meta.visibility=public", // envelope verdict (§4.2)
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("stream missing %q in:\n%s", want, joined)
+		}
+	}
+}
+
+// TestContentKeysExcludesNodeControl pins that lenient-object summaries (e.g. the
+// sitemap domain list) drop the §2 node-control keys instead of counting them as
+// content — amarbel-llc/papi#5, where "visibility" was reported as a domain.
+func TestContentKeysExcludesNodeControl(t *testing.T) {
+	got := contentKeys(map[string]int{
+		"visibility": 1,
+		"acl":        1,
+		"domains":    1,
+		"blog":       1,
+	})
+	want := []string{"blog", "domains"}
+	if len(got) != len(want) {
+		t.Fatalf("contentKeys = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("contentKeys = %v, want %v", got, want)
 		}
 	}
 }
