@@ -13,6 +13,7 @@
     igloo.url = "github:amarbel-llc/igloo";
     igloo.inputs.nixpkgs-master.follows = "nixpkgs";
     nixpkgs.follows = "conformist/nixpkgs-master";
+    nixpkgs-master.url = "github:NixOS/nixpkgs/d233902339c02a9c334e7e593de68855ad26c4cb";
     utils.follows = "conformist/utils";
 
     # purse-first provides `dagnabit`, the code-organization tool that tiers
@@ -33,6 +34,7 @@
       conformist,
       igloo,
       nixpkgs,
+      nixpkgs-master,
       purse-first,
       utils,
     }:
