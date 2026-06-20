@@ -63,6 +63,15 @@ codemod-fmt: codemod-fmt-tree
 codemod-fmt-tree:
     nix fmt
 
+codemod-reposition: codemod-reposition-go
+
+# Rebalance internal/ package tiers by dependency depth via dagnabit (from
+# purse-first; on the devShell PATH). Run after adding or moving packages;
+# preview with `nix develop --command dagnabit -n internal`. The one-time
+# initial tiering of the flat layout used `dagnabit --initial internal`.
+codemod-reposition-go:
+    nix develop --command dagnabit internal
+
 # --- maintenance ---
 
 # `go mod tidy`, then regenerate gomod2nix.toml (the && dependency).

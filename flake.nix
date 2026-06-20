@@ -14,6 +14,17 @@
     igloo.inputs.nixpkgs-master.follows = "nixpkgs";
     nixpkgs.follows = "conformist/nixpkgs-master";
     utils.follows = "conformist/utils";
+
+    # purse-first provides `dagnabit`, the code-organization tool that tiers
+    # internal/ packages by dependency depth (the internal/0|alfa layout) and
+    # is on the devShell PATH for `just codemod-reposition`; its nix package
+    # also installs dagnabit(1). Follow the shared inputs to collapse the lock.
+    purse-first = {
+      url = "github:amarbel-llc/purse-first";
+      inputs.igloo.follows = "igloo";
+      inputs.nixpkgs-master.follows = "nixpkgs";
+      inputs.utils.follows = "utils";
+    };
   };
 
   outputs =
@@ -22,6 +33,7 @@
       conformist,
       igloo,
       nixpkgs,
+      purse-first,
       utils,
     }:
     utils.lib.eachDefaultSystem (
@@ -88,6 +100,9 @@
             pkgs.go
             pkgs.just
             conformistPkg
+            # dagnabit(1): tiers internal/ packages by dependency depth — see
+            # `just codemod-reposition` and the README Layout section.
+            purse-first.packages.${system}.dagnabit
           ];
         };
       }
