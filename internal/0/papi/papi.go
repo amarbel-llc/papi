@@ -269,29 +269,82 @@ type Cache struct {
 	Kind              string   `json:"kind"`
 }
 
-// Document fetches GET /papi and returns the projected document (unwrapping the
-// envelope when present) plus the raw meta block.
-func (c *Client) Document(ctx context.Context) (*Document, map[string]any, int, error) {
-	body, status, err := c.get(ctx, "/papi")
+// Repo is a flattened, provenance-annotated repository entry from the
+// GET /papi/repos endpoint (RFC-0001 §1.1, §4). Lenient: unknown members are
+// ignored, missing ones default to zero.
+type Repo struct {
+	Name          string `json:"name"`
+	URL           string `json:"url"`
+	Owner         string `json:"owner"`
+	Forge         string `json:"forge"`
+	Kind          string `json:"kind"`
+	Visibility    string `json:"visibility"`
+	DefaultBranch string `json:"default_branch"`
+	Description   string `json:"description"`
+}
+
+// envelope GETs path, requires 200, and returns the unwrapped {data,meta} data
+// bytes plus the meta block (tolerating an un-enveloped body).
+func (c *Client) envelope(ctx context.Context, path string) (json.RawMessage, map[string]any, int, error) {
+	body, status, err := c.get(ctx, path)
 	if err != nil {
 		return nil, nil, status, err
 	}
 	if status != http.StatusOK {
-		return nil, nil, status, fmt.Errorf("/papi returned HTTP %d", status)
+		return nil, nil, status, fmt.Errorf("%s returned HTTP %d", path, status)
 	}
 	var env Envelope
 	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, nil, status, fmt.Errorf("/papi is not JSON: %w", err)
+		return nil, nil, status, fmt.Errorf("%s is not JSON: %w", path, err)
 	}
 	data := env.Data
 	if len(data) == 0 {
-		data = body // tolerate an un-enveloped document
+		data = body // tolerate an un-enveloped body
+	}
+	return data, env.Meta, status, nil
+}
+
+// Document fetches GET /papi and returns the projected document (unwrapping the
+// envelope when present) plus the raw meta block.
+func (c *Client) Document(ctx context.Context) (*Document, map[string]any, int, error) {
+	data, meta, status, err := c.envelope(ctx, "/papi")
+	if err != nil {
+		return nil, meta, status, err
 	}
 	var doc Document
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, env.Meta, status, fmt.Errorf("/papi data: %w", err)
+		return nil, meta, status, fmt.Errorf("/papi data: %w", err)
 	}
-	return &doc, env.Meta, status, nil
+	return &doc, meta, status, nil
+}
+
+// Repos fetches GET /papi/repos and returns the flattened repository list,
+// unwrapping the {data,meta} envelope.
+func (c *Client) Repos(ctx context.Context) ([]Repo, int, error) {
+	data, _, status, err := c.envelope(ctx, "/papi/repos")
+	if err != nil {
+		return nil, status, err
+	}
+	var repos []Repo
+	if err := json.Unmarshal(data, &repos); err != nil {
+		return nil, status, fmt.Errorf("/papi/repos data: %w", err)
+	}
+	return repos, status, nil
+}
+
+// RawDocument fetches GET /papi and returns its projected data as a generic JSON
+// value (map/slice/scalar), unwrapping the envelope — for ad-hoc querying over
+// the whole document (the `papi query` facility).
+func (c *Client) RawDocument(ctx context.Context) (any, int, error) {
+	data, _, status, err := c.envelope(ctx, "/papi")
+	if err != nil {
+		return nil, status, err
+	}
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, status, fmt.Errorf("/papi data: %w", err)
+	}
+	return v, status, nil
 }
 
 // RecipientPrefix is the slot-9D encryption-recipient id prefix (RFC-0001 §5.1:

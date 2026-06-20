@@ -18,6 +18,7 @@ import (
 
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
+	"github.com/itchyny/gojq"
 	"github.com/spf13/cobra"
 )
 
@@ -52,6 +53,8 @@ func main() {
 	root.AddCommand(newPiggyIDsCmd())
 	root.AddCommand(newSSHKeysCmd())
 	root.AddCommand(newPersonCmd())
+	root.AddCommand(newReposCmd())
+	root.AddCommand(newQueryCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -271,4 +274,126 @@ func printPerson(out io.Writer, p *papi.Person) error {
 	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
+}
+
+// repoView is the projected subset of a repository the `repos` command prints.
+type repoView struct {
+	Name          string `json:"name,omitempty"`
+	URL           string `json:"url,omitempty"`
+	Owner         string `json:"owner,omitempty"`
+	Forge         string `json:"forge,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	Visibility    string `json:"visibility,omitempty"`
+	DefaultBranch string `json:"default_branch,omitempty"`
+}
+
+func newReposCmd() *cobra.Command {
+	var owner string
+	var urlOnly bool
+	cmd := &cobra.Command{
+		Use:   "repos <domain>",
+		Short: "List a domain's PAPI repositories (GET /papi/repos)",
+		Long: "Fetch <domain>'s GET /papi/repos — the flattened, provenance-annotated " +
+			"repository list — and print it. By default emits the repos as JSON; --url " +
+			"prints one repository url per line (a curl+jq replacement for consumers that " +
+			"clone them); --owner filters to a single owner.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			repos, _, err := c.Repos(cmd.Context())
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			views := make([]repoView, 0, len(repos))
+			for _, r := range repos {
+				if owner != "" && r.Owner != owner {
+					continue
+				}
+				if urlOnly {
+					if r.URL != "" {
+						if _, err := fmt.Fprintln(out, r.URL); err != nil {
+							return err
+						}
+					}
+					continue
+				}
+				views = append(views, repoView{
+					Name: r.Name, URL: r.URL, Owner: r.Owner, Forge: r.Forge,
+					Kind: r.Kind, Visibility: r.Visibility, DefaultBranch: r.DefaultBranch,
+				})
+			}
+			if urlOnly {
+				return nil
+			}
+			enc := json.NewEncoder(out)
+			enc.SetIndent("", "  ")
+			return enc.Encode(views)
+		},
+	}
+	cmd.Flags().StringVar(&owner, "owner", "", "only list repositories with this owner")
+	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one repository url per line instead of JSON")
+	return cmd
+}
+
+func newQueryCmd() *cobra.Command {
+	var raw bool
+	cmd := &cobra.Command{
+		Use:   "query <domain> <jq-expr>",
+		Short: "Run a jq expression over a domain's PAPI document (GET /papi)",
+		Long: "Fetch <domain>'s GET /papi document and evaluate the jq expression against " +
+			"it — an embedded gojq, no external jq binary — printing each result as JSON. " +
+			"--raw/-r prints string results unquoted (like jq -r). Lets consumers pluck " +
+			"arbitrary fields (forges[], organizations[], repos[], person, …) without " +
+			"bespoke curl+jq.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			query, err := gojq.Parse(args[1])
+			if err != nil {
+				return fmt.Errorf("parse jq query: %w", err)
+			}
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			input, _, err := c.RawDocument(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return runQuery(cmd.OutOrStdout(), query, input, raw)
+		},
+	}
+	cmd.Flags().BoolVarP(&raw, "raw", "r", false, "print string results unquoted (like jq -r)")
+	return cmd
+}
+
+// runQuery evaluates query over input, writing each result to out: a string
+// result is printed unquoted under raw, otherwise every result is indented JSON.
+// A query runtime error (e.g. from `error`/`halt`) is returned.
+func runQuery(out io.Writer, query *gojq.Query, input any, raw bool) error {
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	iter := query.Run(input)
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if err, ok := v.(error); ok {
+			return err
+		}
+		if s, ok := v.(string); ok && raw {
+			if _, err := fmt.Fprintln(out, s); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := enc.Encode(v); err != nil {
+			return err
+		}
+	}
+	return nil
 }

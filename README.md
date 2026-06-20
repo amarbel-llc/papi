@@ -30,9 +30,10 @@ ADR-0004.
 
 ## The CLI
 
-`papi` has four subcommands: `validate` checks a domain against the spec, and
-`piggy-ids` / `ssh-keys` / `person` surface a domain's published identity
-material for downstream consumption.
+`papi` has these subcommands: `validate` checks a domain against the spec;
+`piggy-ids` / `ssh-keys` / `person` / `repos` surface a domain's published
+identity material, keys, and repositories for downstream consumption; and
+`query` runs a jq expression over the document.
 
 ### `papi validate <domain>`
 
@@ -106,6 +107,35 @@ $ papi person linenisgreat.com           # anonymous: handle + display_name
 $ papi person linenisgreat.com \
     --recipient piggy-recipient-v1@... \
     --decrypt-cmd 'base64 -d | pivy-box stream decrypt'   # + contact.email
+```
+
+### `papi repos <domain>`
+
+Fetch `<domain>`'s `GET /papi/repos` — the flattened, provenance-annotated
+repository list — and print it. By default emits the repos as JSON; `--url`
+prints one repository url per line (a `curl`+`jq` replacement for consumers that
+clone them); `--owner` filters to a single owner:
+
+```console
+$ papi repos linenisgreat.com                          # JSON: name/url/owner/forge/…
+$ papi repos linenisgreat.com --owner amarbel-llc --url
+https://github.com/amarbel-llc/papi
+https://github.com/amarbel-llc/eng
+…
+```
+
+### `papi query <domain> <jq-expr>`
+
+Fetch `<domain>`'s `GET /papi` document and evaluate a jq expression against it —
+an embedded [gojq](https://github.com/itchyny/gojq), so no external `jq` is
+needed — printing each result as JSON, or unquoted strings under `--raw`/`-r`.
+Lets consumers pluck arbitrary fields (`forges[]`, `organizations[]`, `repos[]`,
+`person`, …) without bespoke `curl`+`jq`:
+
+```console
+$ papi query linenisgreat.com '.person.handle' -r
+linenisgreat
+$ papi query linenisgreat.com '.forges[].repos[].url' -r
 ```
 
 ## Install

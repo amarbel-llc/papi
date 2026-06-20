@@ -16,6 +16,16 @@ schema = 3
     hash = 'sha256-XWlYH0c8IcxAwQTnIi6WYqq44nOKUylSWxWO/vi+8pE='
     goVersion = '1.18'
 
+  [mod.'github.com/itchyny/gojq']
+    version = 'v0.12.19'
+    hash = 'sha256-egaBNHKKzwDwaUN4GT+Xvt11Nz6ojNMSIrXbcEisyI4='
+    goVersion = '1.24.0'
+
+  [mod.'github.com/itchyny/timefmt-go']
+    version = 'v0.1.8'
+    hash = 'sha256-6h57JsmWju1QAx+mI9HZ+XceAeRnfLcA5HMWCHdymYE='
+    goVersion = '1.24'
+
   [mod.'github.com/spf13/cobra']
     version = 'v1.10.2'
     hash = 'sha256-nbRCTFiDCC2jKK7AHi79n7urYCMP5yDZnWtNVJrDi+k='

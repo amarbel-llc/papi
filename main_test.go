@@ -157,3 +157,126 @@ func TestPersonDisplayNameFallback(t *testing.T) {
 		t.Errorf("anonymous projection should reveal no email, got %q", v.Email)
 	}
 }
+
+// reposServer serves a /papi/repos flattened list spanning two owners/forges.
+func reposServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[`+
+			`{"name":"papi","url":"https://github.com/amarbel-llc/papi","owner":"amarbel-llc","forge":"github","kind":"github","visibility":"public","default_branch":"master"},`+
+			`{"name":"eng","url":"https://github.com/amarbel-llc/eng","owner":"amarbel-llc","forge":"github","kind":"github","visibility":"public","default_branch":"master"},`+
+			`{"name":"dotfiles","url":"https://codeberg.org/someone/dotfiles","owner":"someone","forge":"codeberg","kind":"codeberg","visibility":"public","default_branch":"main"}`+
+			`],"meta":{"type":"repos","visibility":"public","count":3}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func runRepos(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newReposCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+func TestReposJSON(t *testing.T) {
+	srv := reposServer(t)
+	defer srv.Close()
+	out, err := runRepos(t, srv.URL)
+	if err != nil {
+		t.Fatalf("repos: %v", err)
+	}
+	var views []repoView
+	if err := json.Unmarshal([]byte(out), &views); err != nil {
+		t.Fatalf("repos output not JSON: %v\n%s", err, out)
+	}
+	if len(views) != 3 {
+		t.Fatalf("want 3 repos, got %d", len(views))
+	}
+	if views[0].Name != "papi" || views[0].Owner != "amarbel-llc" || views[0].URL == "" {
+		t.Errorf("repo[0] = %+v", views[0])
+	}
+}
+
+func TestReposURLOwnerFilter(t *testing.T) {
+	srv := reposServer(t)
+	defer srv.Close()
+	out, err := runRepos(t, srv.URL, "--owner", "amarbel-llc", "--url")
+	if err != nil {
+		t.Fatalf("repos --owner --url: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 urls, got %d: %q", len(lines), out)
+	}
+	for _, l := range lines {
+		if !strings.Contains(l, "amarbel-llc") {
+			t.Errorf("unexpected url %q", l)
+		}
+	}
+	if strings.Contains(out, "codeberg") {
+		t.Errorf("--owner filter leaked another owner:\n%s", out)
+	}
+}
+
+// queryDocServer serves a /papi document with nested forges[].repos[] for jq.
+func queryDocServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":{"version":"papi/v0","person":{"handle":"tester"},`+
+			`"forges":[{"id":"gh","kind":"github","repos":[`+
+			`{"url":"https://github.com/amarbel-llc/papi"},{"url":"https://github.com/amarbel-llc/eng"}]}]},`+
+			`"meta":{"type":"papi","visibility":"public"}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func runQueryCmd(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newQueryCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+func TestQueryRawScalar(t *testing.T) {
+	srv := queryDocServer(t)
+	defer srv.Close()
+	out, err := runQueryCmd(t, srv.URL, ".person.handle", "-r")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if strings.TrimSpace(out) != "tester" {
+		t.Errorf("query .person.handle -r = %q, want tester", out)
+	}
+}
+
+func TestQueryListURLs(t *testing.T) {
+	srv := queryDocServer(t)
+	defer srv.Close()
+	out, err := runQueryCmd(t, srv.URL, ".forges[].repos[].url", "-r")
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 || lines[0] != "https://github.com/amarbel-llc/papi" {
+		t.Errorf("query urls = %q", lines)
+	}
+}
+
+func TestQueryBadExpr(t *testing.T) {
+	// A parse error short-circuits before any network call.
+	_, err := runQueryCmd(t, "example.invalid", "{")
+	if err == nil {
+		t.Fatal("malformed jq expr should error")
+	}
+}
