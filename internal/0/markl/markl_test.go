@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -138,5 +139,85 @@ func TestWrongSizeKnownFormat(t *testing.T) {
 	}
 	if _, err := Parse(bad); !errors.Is(err, ErrWrongSize) {
 		t.Fatalf("Parse(wrong-size) error = %v, want ErrWrongSize", err)
+	}
+}
+
+// ecdsaP256Body returns the blech32 body of an ...@ecdsa_p256_sig markl-id (the
+// part after the format prefix), independent of the purpose decoration.
+func ecdsaP256Body(t *testing.T, encoded string) string {
+	t.Helper()
+	const marker = FormatEcdsaP256Sig + "-"
+	i := strings.LastIndex(encoded, marker)
+	if i < 0 {
+		t.Fatalf("no %s body in %q", FormatEcdsaP256Sig, encoded)
+	}
+	return encoded[i+len(marker):]
+}
+
+// TestPapiOwnedVectors validates the papi-owned conformance vectors
+// (testdata/papi-sig-vectors.json) — the purposes papi registers itself under
+// ADR-0006 (papi-doc-sig-v1, papi-proof-sig-v1). Each round-trips through
+// Parse/Build, and its ecdsa_p256_sig body is cross-checked against the vendored
+// RFC-0002 framework vector: the blech32 checksum binds to the format, so the
+// body is purpose-independent and must equal the framework's canonical encoding.
+// This anchors papi's vectors to the shared framework rather than to themselves.
+func TestPapiOwnedVectors(t *testing.T) {
+	var frameworkBody string
+	for _, v := range loadVectors(t).Vectors {
+		if v.Format == FormatEcdsaP256Sig && v.Purpose == "" {
+			frameworkBody = ecdsaP256Body(t, v.Encoded)
+		}
+	}
+	if frameworkBody == "" {
+		t.Fatal("no framework ecdsa_p256_sig vector in the vendored fixture")
+	}
+
+	raw, err := os.ReadFile(filepath.Join("testdata", "papi-sig-vectors.json"))
+	if err != nil {
+		t.Fatalf("read papi vectors: %v", err)
+	}
+	var pf struct {
+		Vectors []vector `json:"vectors"`
+	}
+	if err := json.Unmarshal(raw, &pf); err != nil {
+		t.Fatalf("parse papi vectors: %v", err)
+	}
+
+	want := map[string]bool{PurposeDocSig: false, PurposeProofSig: false}
+	for _, v := range pf.Vectors {
+		t.Run(v.Name, func(t *testing.T) {
+			payload, err := hex.DecodeString(v.PayloadHex)
+			if err != nil {
+				t.Fatalf("bad payload_hex: %v", err)
+			}
+			id, err := Parse(v.Encoded)
+			if err != nil {
+				t.Fatalf("Parse(%q): %v", v.Encoded, err)
+			}
+			if id.Purpose != v.Purpose || id.Format != FormatEcdsaP256Sig {
+				t.Errorf("Parse purpose/format = %q/%q, want %q/%s", id.Purpose, id.Format, v.Purpose, FormatEcdsaP256Sig)
+			}
+			if hex.EncodeToString(id.Payload) != v.PayloadHex {
+				t.Errorf("Parse payload = %x, want %s", id.Payload, v.PayloadHex)
+			}
+			got, err := Build(v.Purpose, v.Format, payload)
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			if got != v.Encoded {
+				t.Errorf("Build = %q, want %q", got, v.Encoded)
+			}
+			if body := ecdsaP256Body(t, v.Encoded); body != frameworkBody {
+				t.Errorf("ecdsa_p256_sig body %q != framework %q", body, frameworkBody)
+			}
+		})
+		if _, ok := want[v.Purpose]; ok {
+			want[v.Purpose] = true
+		}
+	}
+	for p, seen := range want {
+		if !seen {
+			t.Errorf("missing papi-owned vector for purpose %q", p)
+		}
 	}
 }
