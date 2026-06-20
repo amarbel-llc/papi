@@ -184,6 +184,7 @@ type Document struct {
 	Sitemap       map[string]json.RawMessage `json:"sitemap"`
 	Templates     []Template                 `json:"templates"`
 	Proofs        []Proof                    `json:"proofs"`
+	Caches        []Cache                    `json:"caches"`
 	Signature     *Signature                 `json:"signature"`
 }
 
@@ -251,6 +252,17 @@ type Template struct {
 	Flakeref    string `json:"flakeref"`
 	Description string `json:"description"`
 	Kind        string `json:"kind"`
+}
+
+// Cache is an advertised nix binary cache / substituter (RFC-0001 §11.1).
+// TrustedPublicKeys is an array — not a single key — so a cache mid-rotation can
+// publish both its outgoing and incoming keys.
+type Cache struct {
+	ID                string   `json:"id"`
+	URL               string   `json:"url"`
+	TrustedPublicKeys []string `json:"trusted_public_keys"`
+	Priority          int      `json:"priority"`
+	Kind              string   `json:"kind"`
 }
 
 // Document fetches GET /papi and returns the projected document (unwrapping the

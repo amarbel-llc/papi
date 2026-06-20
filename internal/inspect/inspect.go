@@ -56,6 +56,7 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 		pts = append(pts, mustFail("introspect: GET /papi", map[string]any{"error": docErr.Error()}))
 	} else {
 		pts = append(pts, documentPoints(doc)...)
+		pts = append(pts, cacheChecks(doc)...)
 	}
 
 	pts = append(pts, conformanceChecks(ctx, c, disc)...)
@@ -209,7 +210,19 @@ func documentPoints(d *papi.Document) []point {
 		pts = append(pts, skip("templates (RFC-0001 §7)", "no templates[] advertised"))
 	}
 
+	if n := len(d.Caches); n > 0 {
+		pts = append(pts, ok(fmt.Sprintf("caches: %d %s", n, plural(n, "entry", "entries"))))
+	}
+
 	return pts
+}
+
+// plural picks the singular or plural noun for a count.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 func forgeLabel(f papi.Forge) string {

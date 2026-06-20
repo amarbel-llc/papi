@@ -34,7 +34,8 @@ func conformantServer() *httptest.Server {
 			"piggy":{"encryption_recipients":[{"id":"r1"}],"ssh_authorized_keys":[{"key":"k1"},{"key":"k2"}]},
 			"forges":[{"id":"gh","kind":"github","repos":[{},{}]}],
 			"sitemap":{"domains":{"visibility":"public"},"visibility":"public"},
-			"templates":[{"id":"eng","flakeref":"github:x/y#eng"}]},
+			"templates":[{"id":"eng","flakeref":"github:x/y#eng"}],
+			"caches":[{"id":"krone","url":"http://krone:8080","trusted_public_keys":["krone:AAAApub"]}]},
 			"meta":{"type":"papi","version":"papi/v0","visibility":"public"}}`)
 	})
 	mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
@@ -114,6 +115,8 @@ func TestRunConformant(t *testing.T) {
 		"forges: 1 (github/gh) with 2 repo(s)",
 		"templates: 1 (eng)",
 		"sitemap: 1 domain(s): domains",       // control keys excluded (§2 / amarbel-llc/papi#5)
+		"caches: 1 entry",                     // typed caches[] summary (§11.1 / amarbel-llc/papi#6)
+		`cache[0] "krone" well-formed`,        // §11.1 entry-schema verdict
 		"http://",                             // insecure-resource fact (§4.1 / linenisgreat#26)
 		"strips acl",                          // conformance verdict (§2.6)
 		"{data,meta}, meta.visibility=public", // envelope verdict (§4.2)
