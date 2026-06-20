@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amarbel-llc/papi/internal/markl"
-	"github.com/amarbel-llc/papi/internal/papi"
+	"github.com/amarbel-llc/papi/internal/0/markl"
+	"github.com/amarbel-llc/papi/internal/0/papi"
 )
 
 // withTXTLookup swaps the package txtLookup resolver for the duration of a test.

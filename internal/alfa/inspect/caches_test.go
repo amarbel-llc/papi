@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amarbel-llc/papi/internal/papi"
+	"github.com/amarbel-llc/papi/internal/0/papi"
 )
 
 func wellFormedCache() papi.Cache {

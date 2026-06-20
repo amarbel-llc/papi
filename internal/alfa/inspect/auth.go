@@ -10,7 +10,7 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/amarbel-llc/papi/internal/papi"
+	"github.com/amarbel-llc/papi/internal/0/papi"
 )
 
 // Options configures the authenticated tier of Run. With an empty Recipient the

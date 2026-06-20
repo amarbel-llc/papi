@@ -1204,7 +1204,7 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   ECDH id and cannot verify an ECDSA signature, so the signing key is always a
   published slot-9A key, and the proof's co-published `recipient` provides the
   identity binding. The signing-input + key-binding were pinned jointly with the
-  piggy producer side. Implemented in the validator (amarbel-llc/papi,
-  `internal/inspect/proofs.go`), reusing the §10 markl-id machinery; the
-  `papi-proof-sig-v1` purpose is registered in piggy's go/markl. Additive
-  clarification of an OPTIONAL feature — no version bump.
+  piggy producer side. Implemented in the validator (amarbel-llc/papi), reusing
+  the §10 markl-id machinery; the `papi-proof-sig-v1` purpose is registered in
+  piggy's go/markl. Additive clarification of an OPTIONAL feature — no version
+  bump.

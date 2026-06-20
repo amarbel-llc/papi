@@ -136,8 +136,14 @@ Run `just --list` for the full recipe set. Dependency changes go through
 ## Layout
 
 ```
-docs/rfcs/        the PAPI wire-format spec (RFC-0001)
-internal/papi/    HTTP client + wire-format decoders
-internal/inspect/ the validate command: introspection + conformance checks
-main.go           cobra CLI (validate, piggy-ids, ssh-keys, person)
+docs/rfcs/             the PAPI wire-format spec (RFC-0001)
+internal/0/papi/       HTTP client + wire-format decoders
+internal/0/markl/      markl-id (blech32) parser (RFC-0002)
+internal/alfa/inspect/ the validate command: introspection + conformance checks
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, person)
 ```
+
+Packages under `internal/` are tiered by dependency depth — NATO-phonetic
+levels where `0` is a leaf (no internal deps), `alfa` depends only on level
+`0`, and so on — repositioned with [dagnabit](https://github.com/amarbel-llc/purse-first)
+(`nix run github:amarbel-llc/purse-first#dagnabit -- --initial internal`).

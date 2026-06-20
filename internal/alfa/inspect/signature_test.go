@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amarbel-llc/papi/internal/markl"
-	"github.com/amarbel-llc/papi/internal/papi"
+	"github.com/amarbel-llc/papi/internal/0/markl"
+	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/gowebpki/jcs"
 	"golang.org/x/crypto/ssh"
 )

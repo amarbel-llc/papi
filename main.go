@@ -16,8 +16,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/amarbel-llc/papi/internal/inspect"
-	"github.com/amarbel-llc/papi/internal/papi"
+	"github.com/amarbel-llc/papi/internal/0/papi"
+	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 	"github.com/spf13/cobra"
 )
 
