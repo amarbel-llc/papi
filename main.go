@@ -21,15 +21,30 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// version is injected via -ldflags at build time (eng-versioning(7)); it stays
-// "dev" for a plain `go build`.
-var version = "dev"
+// version and commit are injected via -ldflags at build time (eng-versioning(7),
+// via igloo's buildGoApplication from version.env + src.rev); they stay
+// "dev"/"unknown" for a plain `go build`.
+var (
+	version = "dev"
+	commit  = "unknown"
+)
+
+// selfID is the eng-versioning(7) self-identification line, "papi VERSION+COMMIT"
+// — papi pins no downstream components, so the version subcommand emits only it.
+// igloo burns in the full src.rev; the line shows a short commit to match the
+// family style (e.g. "papi 0.2.0+974a56a").
+func selfID() string {
+	c := commit
+	if len(c) > 7 {
+		c = c[:7]
+	}
+	return fmt.Sprintf("papi %s+%s", version, c)
+}
 
 func main() {
 	root := &cobra.Command{
 		Use:           "papi",
 		Short:         "Personal API (PAPI) conformance tool",
-		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -37,6 +52,7 @@ func main() {
 	root.AddCommand(newPiggyIDsCmd())
 	root.AddCommand(newSSHKeysCmd())
 	root.AddCommand(newPersonCmd())
+	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
 		// A non-conformant verdict is already reported in the ndjson-crap stream;
@@ -45,6 +61,18 @@ func main() {
 			fmt.Fprintln(os.Stderr, "papi:", err)
 		}
 		os.Exit(1)
+	}
+}
+
+// newVersionCmd prints the eng-versioning(7) self-identification line.
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print papi's version and commit",
+		Args:  cobra.NoArgs,
+		Run: func(cmd *cobra.Command, _ []string) {
+			fmt.Fprintln(cmd.OutOrStdout(), selfID())
+		},
 	}
 }
 

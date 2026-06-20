@@ -111,12 +111,32 @@ $ papi person linenisgreat.com \
 ## Install
 
 The CLI is distributed as a Nix flake package — there is no non-Nix install
-path:
+path. Run it ad-hoc, install it onto your profile, or pin a tagged release:
 
 ```console
-$ nix build github:amarbel-llc/papi#papi   # ./result/bin/papi
-$ nix run   github:amarbel-llc/papi -- validate linenisgreat.com
+$ nix run   github:amarbel-llc/papi -- validate linenisgreat.com   # ad-hoc
+$ nix profile install github:amarbel-llc/papi#papi                 # onto PATH
+$ nix build github:amarbel-llc/papi#papi                           # ./result/bin/papi
 ```
+
+For a reproducible consumer, pin a released tag rather than the floating
+default branch:
+
+```console
+$ nix run github:amarbel-llc/papi/v0.2.0 -- validate linenisgreat.com
+```
+
+```nix
+# flake.nix
+inputs.papi.url = "github:amarbel-llc/papi/v0.2.0";
+```
+
+`papi version` reports the burned-in `papi <version>+<commit>` (the version
+comes from `version.env`, injected by igloo's `buildGoApplication`).
+
+Releases are cut with `just release <new>` from `master` (eng-versioning(7)):
+it generates the changelog, bumps `version.env`, and creates a signed `v<sem>`
+tag plus a GitHub release.
 
 ## Development
 

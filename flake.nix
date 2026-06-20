@@ -103,6 +103,10 @@
             # dagnabit(1): tiers internal/ packages by dependency depth — see
             # `just codemod-reposition` and the README Layout section.
             purse-first.packages.${system}.dagnabit
+            # gum + gh drive the eng-versioning(7) release recipes
+            # (`just bump-version` / `tag` / `release`).
+            pkgs.gum
+            pkgs.gh
           ];
         };
       }

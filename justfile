@@ -77,3 +77,51 @@ codemod-reposition-go:
 # `go mod tidy`, then regenerate gomod2nix.toml (the && dependency).
 update-go: && build-gomod2nix
     nix develop --command go mod tidy
+
+# Rewrite PAPI_VERSION in version.env (pure mutation; `release` stages + commits).
+[group("maintenance")]
+bump-version new_version:
+    sed -E -i "s/^(export PAPI_VERSION)=.*/\1={{new_version}}/" version.env
+
+# Create + push a signed annotated v<sem> tag from version.env, then verify it.
+[group("maintenance")]
+tag $message:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    . version.env
+    tag="v${PAPI_VERSION:?missing PAPI_VERSION in version.env}"
+    git tag -s -m "$message" "$tag"
+    gum log --level info "Created tag: $tag"
+    git push origin "$tag"
+    gum log --level info "Pushed $tag"
+    git tag -v "$tag"
+
+# Full release from master (eng-versioning(7)): changelog -> idempotent
+# bump+commit -> signed tag -> gh release.
+[group("maintenance")]
+release new_version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    if [[ "$branch" != "master" ]]; then
+        gum log --level error "release only allowed from master (on '$branch')"
+        exit 1
+    fi
+    prev=$(git tag --sort=-v:refname -l "v*" | head -1)
+    header="release v{{new_version}}"
+    if [[ -n "$prev" ]]; then
+        summary=$(git log --format='- %s' "$prev"..HEAD)
+        msg="$header"$'\n\n'"$summary"
+    else
+        msg="$header"
+    fi
+    . version.env
+    if [[ "${PAPI_VERSION:-}" != "{{new_version}}" ]]; then
+        just bump-version "{{new_version}}"
+        git add version.env
+        git commit -m "$header"
+    else
+        gum log --level info "version.env already at {{new_version}}; skipping bump/commit"
+    fi
+    just tag "$msg"
+    gh release create "v{{new_version}}" --title "$header" --notes "$msg"
