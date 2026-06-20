@@ -39,8 +39,9 @@ material for downstream consumption.
 Fetch `<domain>`'s PAPI, report what it publishes, and check it against the
 RFC-0001 conformance contract — discovery, the `{data, meta}` envelope and
 `meta.visibility`, ACL-strip, projection, the `text/plain` endpoints, the auth
-error codes, identity-ownership proofs (§9), and the detached document signature
-(§10). Output is an [ndjson-crap](https://github.com/amarbel-llc/crap) stream
+error codes, identity-ownership proofs (§9), the detached document signature
+(§10), and the nix binary cache entry schema (§11). Output is an
+[ndjson-crap](https://github.com/amarbel-llc/crap) stream
 (pipe it to `crap-present` to render); the process exits non-zero on any MUST
 violation.
 
