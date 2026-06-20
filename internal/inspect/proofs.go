@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -13,6 +14,17 @@ import (
 
 	"github.com/amarbel-llc/papi/internal/papi"
 )
+
+// txtLookup resolves a hostname's DNS TXT records. It is a package var so the
+// hermetic test suite can substitute a fake resolver (§9.4 DNS proofs); in
+// production it is the system resolver.
+var txtLookup = func(ctx context.Context, name string) ([]string, error) {
+	return net.DefaultResolver.LookupTXT(ctx, name)
+}
+
+// proofDNSTimeout bounds a single TXT lookup (§9.4 "SHOULD bound the response"),
+// mirroring the proofHTTPClient timeout.
+const proofDNSTimeout = 10 * time.Second
 
 // recipientGrammar is the §5.1 published-recipient id grammar.
 var recipientGrammar = regexp.MustCompile(`^piggy-recipient-v1@pivy_ecdh_p256_pub-[0-9a-z-]+$`)
@@ -78,20 +90,37 @@ func verifyProof(ctx context.Context, hc *http.Client, pr papi.Proof, i int, pub
 	case "recipient":
 		return verifyRecipientProof(ctx, hc, pr, label)
 	case "signature":
-		return skip("proofs: "+label+" unverifiable", `fmt "signature" not yet implemented by this validator (§9.3)`)
+		return skip("proofs: "+label+" unverifiable",
+			`fmt "signature" not yet implemented — awaits markl-id proof signatures (§9.3)`)
 	default:
 		return skip("proofs: "+label+" unverifiable", fmt.Sprintf("unknown fmt %q (§9.3)", format))
 	}
 }
 
-// verifyRecipientProof handles fmt="recipient": the document at proof_uri MUST
-// contain the recipient id as a substring (§9.3). The fetch is HTTPS-only,
-// same-host-redirect-only, and bounded (§9.4).
+// verifyRecipientProof handles fmt="recipient": the resource at proof_uri MUST
+// contain the recipient id (§9.3). It dispatches on the proof_uri scheme — the
+// "scheme the service matcher defines" (§9.4) — to the https or dns backlink
+// reader; an unsupported scheme is unverifiable, not a failure.
 func verifyRecipientProof(ctx context.Context, hc *http.Client, pr papi.Proof, label string) point {
 	u, err := url.Parse(pr.ProofURI)
-	if err != nil || u.Scheme != "https" {
-		return skip("proofs: "+label+" unverifiable", "proof_uri must be an https URL (§9.4)")
+	if err != nil {
+		return skip("proofs: "+label+" unverifiable", "bad proof_uri: "+err.Error())
 	}
+	switch u.Scheme {
+	case "https":
+		return verifyRecipientProofHTTPS(ctx, hc, pr, label)
+	case "dns":
+		return verifyRecipientProofDNS(ctx, pr, label, dnsName(u))
+	default:
+		return skip("proofs: "+label+" unverifiable",
+			fmt.Sprintf("proof_uri scheme %q unsupported — https or dns (§9.4)", u.Scheme))
+	}
+}
+
+// verifyRecipientProofHTTPS reads the backlink from an https document: it MUST
+// contain the recipient id as a substring (§9.3). The fetch is same-host-
+// redirect-only and bounded (§9.4).
+func verifyRecipientProofHTTPS(ctx context.Context, hc *http.Client, pr papi.Proof, label string) point {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pr.ProofURI, nil)
 	if err != nil {
 		return skip("proofs: "+label+" unverifiable", "bad proof_uri: "+err.Error())
@@ -112,6 +141,39 @@ func verifyRecipientProof(ctx context.Context, hc *http.Client, pr papi.Proof, l
 	}
 	return shouldFail("proofs: "+label+" unverified — backlink (recipient id) not found at proof_uri (§9.4)",
 		map[string]any{"claim": pr.Claim})
+}
+
+// verifyRecipientProofDNS reads the backlink from a dns: proof_uri: one of the
+// name's TXT records MUST contain the recipient id (§9.3) — the recipient id
+// pasted into a DNS TXT record. The lookup is bounded (§9.4).
+func verifyRecipientProofDNS(ctx context.Context, pr papi.Proof, label, name string) point {
+	if name == "" {
+		return skip("proofs: "+label+" unverifiable", "dns: proof_uri has no hostname (§9.4)")
+	}
+	ctx, cancel := context.WithTimeout(ctx, proofDNSTimeout)
+	defer cancel()
+	records, err := txtLookup(ctx, name)
+	if err != nil {
+		return shouldFail("proofs: "+label+" unverified — TXT lookup failed (§9.4)",
+			map[string]any{"claim": pr.Claim, "name": name, "error": err.Error()})
+	}
+	for _, rec := range records {
+		if strings.Contains(rec, pr.Recipient) {
+			return ok(fmt.Sprintf("proofs: %s verified — %s TXT record backlinks the recipient (§9.4)", label, pr.Claim))
+		}
+	}
+	return shouldFail("proofs: "+label+" unverified — recipient id not found in TXT records (§9.4)",
+		map[string]any{"claim": pr.Claim, "name": name, "records": len(records)})
+}
+
+// dnsName extracts the hostname from a parsed dns: proof_uri. RFC-0001 uses the
+// opaque form (dns:example.com), which url.Parse exposes as Opaque; the //-host
+// form is tolerated for robustness.
+func dnsName(u *url.URL) string {
+	if u.Opaque != "" {
+		return u.Opaque
+	}
+	return u.Host
 }
 
 // proofHTTPClient is the §9.4 fetch client: bounded time, and redirects only to

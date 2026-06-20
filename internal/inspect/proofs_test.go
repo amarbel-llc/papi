@@ -3,6 +3,7 @@ package inspect
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,78 @@ import (
 
 	"github.com/amarbel-llc/papi/internal/papi"
 )
+
+// withTXTLookup swaps the package txtLookup resolver for the duration of a test.
+func withTXTLookup(t *testing.T, fn func(context.Context, string) ([]string, error)) {
+	t.Helper()
+	prev := txtLookup
+	txtLookup = fn
+	t.Cleanup(func() { txtLookup = prev })
+}
+
+func dnsProof() papi.Proof {
+	return papi.Proof{ID: "d1", Recipient: proofRecipient, Claim: "dns:linenisgreat.com", ProofURI: "dns:linenisgreat.com"}
+}
+
+func verifyDNSProof(t *testing.T, pr papi.Proof) point {
+	t.Helper()
+	return verifyProof(context.Background(), http.DefaultClient, pr, 0,
+		map[string]bool{proofRecipient: true}, map[string]bool{})
+}
+
+func TestVerifyProofDNSVerified(t *testing.T) {
+	withTXTLookup(t, func(_ context.Context, name string) ([]string, error) {
+		if name != "linenisgreat.com" {
+			t.Errorf("looked up %q, want linenisgreat.com (the opaque dns: name)", name)
+		}
+		return []string{"v=spf1 -all", "papi-proof=" + proofRecipient}, nil
+	})
+	p := verifyDNSProof(t, dnsProof())
+	if !p.ok || p.reason != "" {
+		t.Fatalf("dns proof whose TXT backlinks the recipient should verify: %+v", p)
+	}
+	if !strings.Contains(p.desc, "TXT record backlinks") {
+		t.Errorf("desc = %q", p.desc)
+	}
+}
+
+func TestVerifyProofDNSUnverified(t *testing.T) {
+	withTXTLookup(t, func(context.Context, string) ([]string, error) {
+		return []string{"v=spf1 -all"}, nil
+	})
+	p := verifyDNSProof(t, dnsProof())
+	if p.ok || p.must || p.reason != "" {
+		t.Fatalf("a TXT set without the recipient id should be unverified (a flag): %+v", p)
+	}
+}
+
+func TestVerifyProofDNSLookupFails(t *testing.T) {
+	withTXTLookup(t, func(context.Context, string) ([]string, error) {
+		return nil, errors.New("NXDOMAIN")
+	})
+	p := verifyDNSProof(t, dnsProof())
+	if p.ok || p.must || p.reason != "" {
+		t.Fatalf("a failed TXT lookup should be unverified (a flag), never verified: %+v", p)
+	}
+}
+
+func TestVerifyProofDNSNoHostname(t *testing.T) {
+	pr := dnsProof()
+	pr.ProofURI = "dns:"
+	p := verifyDNSProof(t, pr)
+	if p.reason == "" {
+		t.Fatalf("a dns: proof_uri with no hostname should be unverifiable (a skip): %+v", p)
+	}
+}
+
+func TestVerifyProofUnsupportedScheme(t *testing.T) {
+	pr := dnsProof()
+	pr.ProofURI = "ftp://x/y"
+	p := verifyDNSProof(t, pr)
+	if p.reason == "" || !strings.Contains(p.reason, "scheme") {
+		t.Fatalf("an unsupported proof_uri scheme should be unverifiable (a skip): %+v", p)
+	}
+}
 
 const proofRecipient = "piggy-recipient-v1@pivy_ecdh_p256_pub-aaa"
 
