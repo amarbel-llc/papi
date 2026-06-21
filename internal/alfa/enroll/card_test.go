@@ -2,12 +2,7 @@ package enroll
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
 	"fmt"
-	"math/big"
 	"strings"
 	"testing"
 )
@@ -110,45 +105,43 @@ func TestReadCard(t *testing.T) {
 	}
 }
 
-func TestPivySignerReframesDER(t *testing.T) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+func TestPiggySignBytesSigner(t *testing.T) {
+	want := make([]byte, 64)
+	for i := range want {
+		want[i] = byte(i + 1)
 	}
 	var gotStdin []byte
 	var gotArgs []string
 	run := func(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
-		if name != "pivy-tool" {
-			t.Errorf("ran %q, want pivy-tool", name)
+		if name != "piggy" {
+			t.Errorf("ran %q, want piggy", name)
 		}
 		gotStdin = stdin
 		gotArgs = args
-		// pivy-tool hashes SHA-256 internally and emits DER.
-		digest := sha256.Sum256(stdin)
-		return ecdsa.SignASN1(rand.Reader, priv, digest[:])
+		return want, nil // piggy sign-bytes --format raw returns the raw 64-byte r‖s
 	}
 
-	msg := []byte("the bytes to attest")
-	rs, err := PivySigner{Run: run, PIN: "123456"}.SignSlot9A(context.Background(), cardGUID, msg)
+	msg := []byte("the bytes to sign")
+	rs, err := PiggySignBytesSigner{Run: run, PIN: "123456"}.SignSlot9A(context.Background(), cardGUID, msg)
 	if err != nil {
 		t.Fatal(err)
 	}
-
+	if string(rs) != string(want) {
+		t.Errorf("returned %x, want the runner's raw r‖s %x", rs, want)
+	}
 	if string(gotStdin) != string(msg) {
 		t.Errorf("signer fed %q, want the bare message %q", gotStdin, msg)
 	}
-	wantArgs := []string{"-P", "123456", "-g", cardGUID, "sign", "9a"}
+	wantArgs := []string{"sign-bytes", "--slot", "9a", "--format", "raw", "--guid", cardGUID, "-P", "123456"}
 	if strings.Join(gotArgs, " ") != strings.Join(wantArgs, " ") {
 		t.Errorf("args = %v, want %v", gotArgs, wantArgs)
 	}
 
-	if len(rs) != 64 {
-		t.Fatalf("raw r‖s is %d bytes, want 64", len(rs))
+	// A signature of the wrong length (not raw 64-byte r‖s) must error.
+	short := func(_ context.Context, _ []byte, _ string, _ ...string) ([]byte, error) {
+		return []byte("not 64 bytes"), nil
 	}
-	digest := sha256.Sum256(msg)
-	r := new(big.Int).SetBytes(rs[:32])
-	s := new(big.Int).SetBytes(rs[32:])
-	if !ecdsa.Verify(&priv.PublicKey, digest[:], r, s) {
-		t.Error("raw r‖s from the signer does not verify against the card key")
+	if _, err := (PiggySignBytesSigner{Run: short}).SignSlot9A(context.Background(), "G", nil); err == nil {
+		t.Error("a non-64-byte signature should error")
 	}
 }

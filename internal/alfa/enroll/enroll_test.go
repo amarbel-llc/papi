@@ -7,7 +7,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -165,37 +164,6 @@ func TestBuildReceiptPropagatesSignerError(t *testing.T) {
 		"linenisgreat.com", "BBBB", "k", 1)
 	if err == nil {
 		t.Fatal("a signer that cannot find the card should surface an error")
-	}
-}
-
-func TestDERToRawRS(t *testing.T) {
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	digest := sha256.Sum256([]byte("attest these bytes"))
-	der, err := ecdsa.SignASN1(rand.Reader, priv, digest[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	rs, err := DERToRawRS(der)
-	if err != nil {
-		t.Fatalf("DERToRawRS: %v", err)
-	}
-	if len(rs) != 64 {
-		t.Fatalf("raw r‖s is %d bytes, want 64", len(rs))
-	}
-	r := new(big.Int).SetBytes(rs[:32])
-	s := new(big.Int).SetBytes(rs[32:])
-	if !ecdsa.Verify(&priv.PublicKey, digest[:], r, s) {
-		t.Error("raw r‖s recovered from DER does not verify")
-	}
-}
-
-func TestDERToRawRSMalformed(t *testing.T) {
-	if _, err := DERToRawRS([]byte{0x01, 0x02, 0x03}); err == nil {
-		t.Error("malformed DER should error")
 	}
 }
 

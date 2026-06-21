@@ -10,11 +10,8 @@ package enroll
 
 import (
 	"context"
-	"crypto/elliptic"
-	"encoding/asn1"
 	"encoding/json"
 	"fmt"
-	"math/big"
 	"strings"
 
 	"github.com/amarbel-llc/papi/internal/0/markl"
@@ -136,30 +133,4 @@ func guid8(guid string) string {
 		return g[:8]
 	}
 	return g
-}
-
-// DERToRawRS converts an ASN.1 DER ECDSA signature (SEQUENCE { INTEGER r, INTEGER
-// s }) to the raw 64-byte r‖s the markl ecdsa_p256_sig format wants — r and s each
-// left-padded to 32 bytes. `pivy-tool sign 9a` emits DER, so the pivy-tool Signer
-// adapter calls this; a `piggy sign-bytes` returning raw r‖s would not need it.
-func DERToRawRS(der []byte) ([]byte, error) {
-	var sig struct{ R, S *big.Int }
-	rest, err := asn1.Unmarshal(der, &sig)
-	if err != nil {
-		return nil, fmt.Errorf("parse DER ECDSA signature: %w", err)
-	}
-	if len(rest) != 0 {
-		return nil, fmt.Errorf("parse DER ECDSA signature: %d trailing bytes", len(rest))
-	}
-	if sig.R == nil || sig.S == nil || sig.R.Sign() < 0 || sig.S.Sign() < 0 {
-		return nil, fmt.Errorf("DER ECDSA signature has a missing or negative r/s")
-	}
-	order := elliptic.P256().Params().N
-	if sig.R.Cmp(order) >= 0 || sig.S.Cmp(order) >= 0 {
-		return nil, fmt.Errorf("DER ECDSA signature r/s out of range for P-256")
-	}
-	rs := make([]byte, 64)
-	sig.R.FillBytes(rs[:32])
-	sig.S.FillBytes(rs[32:])
-	return rs, nil
 }

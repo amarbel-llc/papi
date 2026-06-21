@@ -34,39 +34,38 @@ func ExecRunner(ctx context.Context, stdin []byte, name string, args ...string) 
 	return out.Bytes(), nil
 }
 
-// PivySigner implements Signer via `pivy-tool [-P <pin>] -g <guid> sign 9a`, the
-// papi-agnostic slot-9A byte-signer available today (direct PCSC, GUID-selectable).
-// pivy-tool hashes SHA-256 internally and emits an ASN.1 DER signature, which
-// DERToRawRS reframes to the raw r‖s the markl ecdsa_p256_sig format wants. When
-// piggy ships the neutral `piggy sign-bytes --slot 9a` (raw r‖s, piggy#190), swap
-// this implementation for one shelling out to it — no DER parse needed.
-type PivySigner struct {
+// PiggySignBytesSigner implements Signer via `piggy sign-bytes --slot 9a --guid
+// <guid> --format raw [-P <pin>]` (piggy#190) — the papi-agnostic, fibby-verified
+// slot-9A byte-signer. piggy hashes SHA-256 intrinsically and returns the raw
+// 64-byte r‖s, exactly the markl ecdsa_p256_sig payload (no DER/SSH-wire framing
+// to parse). It is direct-PCSC (no agent) and GUID-selectable, so it signs both
+// the new card's self_proof and the operator-presented trusted card's attestation.
+type PiggySignBytesSigner struct {
 	Run Runner // defaults to ExecRunner when nil
-	PIN string // optional; passed as -P when set (slot-9A PIN policy may require it)
+	PIN string // optional; passed as -P (slot-9A PIN policy may require it)
 }
 
 // SignSlot9A signs msg with the slot-9A key of the card identified by guid and
-// returns the raw 64-byte r‖s. msg is the bare bytes (pivy-tool hashes SHA-256).
-func (p PivySigner) SignSlot9A(ctx context.Context, guid string, msg []byte) ([]byte, error) {
+// returns the raw 64-byte r‖s. msg is the bare bytes (piggy hashes SHA-256).
+func (p PiggySignBytesSigner) SignSlot9A(ctx context.Context, guid string, msg []byte) ([]byte, error) {
 	run := p.Run
 	if run == nil {
 		run = ExecRunner
 	}
-	args := make([]string, 0, 6)
+	args := make([]string, 0, 9)
+	args = append(args, "sign-bytes", "--slot", "9a", "--format", "raw")
+	if guid != "" {
+		args = append(args, "--guid", guid)
+	}
 	if p.PIN != "" {
 		args = append(args, "-P", p.PIN)
 	}
-	if guid != "" {
-		args = append(args, "-g", guid)
-	}
-	args = append(args, "sign", "9a")
-	der, err := run(ctx, msg, "pivy-tool", args...)
+	rs, err := run(ctx, msg, "piggy", args...)
 	if err != nil {
-		return nil, fmt.Errorf("pivy-tool sign 9a (guid %q): %w", guid, err)
+		return nil, fmt.Errorf("piggy sign-bytes --slot 9a (guid %q): %w", guid, err)
 	}
-	rs, err := DERToRawRS(der)
-	if err != nil {
-		return nil, fmt.Errorf("pivy-tool sign 9a (guid %q): %w", guid, err)
+	if len(rs) != 64 {
+		return nil, fmt.Errorf("piggy sign-bytes --slot 9a (guid %q): got %d bytes, want 64 raw r‖s", guid, len(rs))
 	}
 	return rs, nil
 }

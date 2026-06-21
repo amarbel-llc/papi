@@ -444,7 +444,7 @@ func newEnrollCmd() *cobra.Command {
 				return fmt.Errorf("read trusted card: %w", err)
 			}
 
-			signer := enroll.PivySigner{PIN: pin}
+			signer := enroll.PiggySignBytesSigner{PIN: pin}
 			receipt, err := enroll.BuildReceipt(ctx, signer, newCard, domain, trustedGUID, trustedCard.SSHID, time.Now().Unix())
 			if err != nil {
 				return err
