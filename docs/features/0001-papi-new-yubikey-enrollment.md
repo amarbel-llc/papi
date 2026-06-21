@@ -43,11 +43,34 @@ receipt carries **both**. They are distinct mechanisms and must not be conflated
 §5 is a **slot-9D box decrypt**; signing/attestation is always a **slot-9A**
 operation (a 9D ECDH key cannot produce an ECDSA signature).
 
+### Dependency direction: papi is downstream of piggy
+
+papi **depends on piggy, never the reverse**, and piggy's interface stays
+**low-level and papi-agnostic**: piggy knows nothing of enrollment receipts, the
+`papi-*` markl purposes, or the §9.3/§10 claim and canonicalization rules. papi
+calls only generic PIV/age primitives and composes the papi-specific artifact
+itself. piggy (and the `pivy-tool` / `age-plugin-piggy` it fronts) exposes three
+papi-agnostic primitives:
+
+1. **generate** — provision slot 9D + 9A on a fresh card;
+2. **read back** — emit the card's identity material (the slot-9D recipient id,
+   the slot-9A `authorized_keys` line, the age recipient), keyed by GUID;
+3. **sign** — produce a slot-9A ECDSA P-256 signature over *arbitrary bytes* for
+   a given card GUID, returned as the raw `r‖s` (or SSH-wire papi strips to it).
+
+papi owns everything papi-shaped: the claim strings, the `papi-proof-sig-v1` /
+`papi-enroll-att-v1` markl-id wrapping, the `papi-enroll-receipt-v1` schema, and
+the §10.2 canonicalization. The **sign** primitive signs bytes and returns a bare
+signature — it does **not** mint a papi purpose or assemble a receipt; papi
+decorates the raw signature with its own purpose afterward. This keeps
+markl-purpose ownership (ADR-0006) and the layering aligned: **piggy mints keys
+and signs bytes; papi gives those bytes their papi meaning.**
+
 ### The command: `papi enroll <domain>`
 
 A new cobra subcommand alongside `validate`/`person`/`ssh-keys`/`repos`/`query`,
-driving an interactive [huh](https://github.com/charmbracelet/huh) TUI. It
-orchestrates three actors and emits one artifact:
+driving an interactive [huh](https://github.com/charmbracelet/huh) TUI. It runs
+four steps over the low-level piggy primitives above and emits one artifact:
 
 1. **Generate the fresh card** (the *new* YubiKey) — papi shells out to the C
    `pivy-tool` binary (piggy has no fresh-card command; it exposes `pivy-tool`
@@ -78,9 +101,29 @@ orchestrates three actors and emits one artifact:
    variant.) papi always passes `--format=ndjson` explicitly so a piped capture
    never falls back to the human format.
 
-3. **Authenticate the trusted card** (the *already-bootstrapped* YubiKey) and
-   **attest** the new key. The TUI prompts the operator to present the trusted
-   card and signs the receipt's canonical bytes with its slot-9A key.
+3. **Self-sign the binding** — papi builds the `self_proof` claim (naming both
+   the new card's 9D recipient id and 9A key id) and calls the generic slot-9A
+   **sign** primitive on the *new* card (`pivy-tool -g <new-guid> sign 9a`, direct
+   PCSC) over the claim bytes, then wraps the returned signature in a
+   `papi-proof-sig-v1` markl-id. piggy signs bytes; papi owns the purpose.
+
+4. **Authenticate the trusted card and attest** — the TUI prompts the operator to
+   present the *already-bootstrapped* YubiKey; papi computes the receipt's
+   canonical bytes (§10.2, `attestation` stripped), calls the same generic slot-9A
+   **sign** primitive on the *trusted* card (`pivy-tool -g <trusted-guid> sign 9a`),
+   and wraps the result in a `papi-enroll-att-v1` markl-id. The receipt now binds
+   the new key (self_proof) and is authorized by an existing trusted key
+   (attestation).
+
+The slot-9A **sign** primitive is the one piggy capability papi still needs as a
+clean contract. `pivy-tool -g <guid> sign 9a` works today (signs stdin, hashes
+SHA-256 internally, emits ASN.1 DER — papi parses `SEQUENCE{r,s}` → the raw `r‖s`
+the markl `ecdsa_p256_sig` format wants); a focused `piggy sign-bytes --slot 9a
+[--guid X]` that signs bytes verbatim would be the papi-agnostic long-term seam.
+papi never asks piggy to mint a `papi-*` purpose or assemble a receipt — it drives
+**both** signatures itself (the existing `piggy papi prove`/`piggy papi sign` are
+claim/doc signers with piggy's own strip rules, so papi does not reuse them for
+the receipt).
 
 #### The enrollment receipt (`papi-enroll-receipt-v1`)
 
@@ -211,8 +254,9 @@ Non-interactive generation building block (what the TUI runs under the hood):
   `piggy list --format=ndjson|ssh` and `age-plugin-piggy generate` shapes the
   receipt is built from are documented in source + man pages but not pinned by a
   versioned RFC (RFC-0003 covers the piggy-ids file, RFC-0005 the show-batch
-  NDJSON). A first-class `piggy card enroll` command (see More Information) would
-  replace this orchestration with one stable contract.
+  NDJSON). A pinned set of low-level, papi-agnostic piggy primitives (generate /
+  readback / sign-bytes; see More Information) would replace this loose
+  orchestration with stable contracts papi composes.
 - **Single new card per run.** The TUI enrolls one card; bulk enrollment is out
   of scope.
 - **No card generation in Go.** Key generation is the C `pivy-tool`; papi shells
@@ -229,7 +273,7 @@ Non-interactive generation building block (what the TUI runs under the hood):
 | 9A PIN policy | `once` | one PIN entry per session for signing without re-prompting every op | operators want per-signature confirmation for a higher-trust card |
 | 9A touch policy | `cached` | touch-to-sign without a touch per op inside a window | phishing-resistance review wants `always` |
 | deploy-verify failure mode | hard-fail (`just papi-verify-keys`, off the hermetic gate) | a key that fails attestation must never publish; but crypto can't run on the hermetic pre-merge lane | site operators want a warn-only grace period during rollout |
-| card generation tool | `pivy-tool` orchestrated by papi | piggy has no enroll command today | `piggy card enroll` ships a single-contract receipt → papi shells out to it instead |
+| piggy primitives | papi orchestrates `pivy-tool` (generate + slot-9A sign) + piggy/age readback | piggy exposes only low-level, papi-agnostic ops; papi composes the receipt and owns the `papi-*` purposes | piggy pins a `piggy sign-bytes --slot 9a` + stable generate/readback → papi shells out to the pinned primitives instead of `pivy-tool` directly |
 
 ## More Information
 
@@ -249,11 +293,14 @@ Non-interactive generation building block (what the TUI runs under the hood):
 - **piggy#187** — cross-domain fixture-assembly format being settled; the
   receipt format should align. Confirms the attestation-purpose decision: papi
   mints its own `papi-enroll-att-v1` rather than reusing `papi-doc-sig-v1`.
-- **piggy#190** — `piggy card enroll`: a first-class generate-9D+9A +
-  single-receipt command ({markl recipient, age recipient, ssh authorized-key,
-  guid, cn} + version tag), filed against this FDR. Replaces papi's v0 pivy-tool
-  orchestration with one pinned contract once it lands (the card-generation
-  Tuning Lever).
+- **piggy#190** — re-scoped per the downstream-of-piggy directive: piggy exposes
+  **low-level, papi-agnostic primitives**, NOT a papi-shaped receipt — generate
+  (9D+9A), read back identity material (recipient id / ssh line / age recipient by
+  GUID), and a generic slot-9A **sign-bytes** (`piggy sign-bytes --slot 9a [--guid
+  X]`, signing stdin verbatim → today fillable by `pivy-tool -g X sign 9a`, DER
+  output papi parses to raw `r‖s`). papi composes the `papi-enroll-receipt-v1` and
+  owns the `papi-*` purposes; piggy never learns papi's schema. Both `self_proof`
+  and `attestation` are papi-driven over this byte-signer.
 - **site-linenisgreat** — deploy input is `api/protected/data/papi.json`'s
   `piggy` object; `PersonalApi.php` serves `/papi/piggy-ids` + `/papi/ssh-authorized-keys`.
   Adjacent: site #27 (request-time read-through), #32 (`_papi` DNS TXT backlink).
