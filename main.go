@@ -15,8 +15,10 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/amarbel-llc/papi/internal/0/papi"
+	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 	"github.com/itchyny/gojq"
 	"github.com/spf13/cobra"
@@ -55,6 +57,7 @@ func main() {
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newQueryCmd())
+	root.AddCommand(newEnrollCmd())
 	root.AddCommand(newVerifyReceiptCmd())
 	root.AddCommand(newVersionCmd())
 
@@ -398,6 +401,93 @@ func runQuery(out io.Writer, query *gojq.Query, input any, raw bool) error {
 		}
 	}
 	return nil
+}
+
+// enrollGUIDFile is the default receipt filename for a new card's GUID.
+func enrollGUIDFile(guid string) string {
+	g := strings.ToLower(strings.TrimSpace(guid))
+	if len(g) > 8 {
+		g = g[:8]
+	}
+	return "enroll-receipt-" + g + ".json"
+}
+
+func newEnrollCmd() *cobra.Command {
+	var newGUID, trustedGUID, pin, out string
+	cmd := &cobra.Command{
+		Use:   "enroll <domain>",
+		Short: "Emit a signed enrollment receipt for a new YubiKey (FDR-0001)",
+		Long: "Read a freshly-provisioned NEW card's identity material and emit a signed " +
+			"papi-enroll-receipt-v1 for <domain>'s deploy side to publish. Drives the " +
+			"papi-agnostic piggy primitives (piggy list / age-plugin-piggy to read back, " +
+			"pivy-tool sign 9a to sign): the new card (--new-guid) self-signs its slot-9D↔9A " +
+			"binding, and the trusted card (--trusted-guid, an already-bootstrapped card " +
+			"already published on <domain>) attests the receipt. The receipt is written and " +
+			"then verified against <domain>. Card generation is upstream (pivy-tool / piggy); " +
+			"this enrolls an already-provisioned card. Requires both cards present (PCSC) and " +
+			"may prompt for the PIN unless --pin is given.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			domain := args[0]
+			if newGUID == "" || trustedGUID == "" {
+				return fmt.Errorf("--new-guid and --trusted-guid are required")
+			}
+			ctx := cmd.Context()
+			run := enroll.ExecRunner
+
+			newCard, err := enroll.ReadCard(ctx, run, newGUID)
+			if err != nil {
+				return fmt.Errorf("read new card: %w", err)
+			}
+			trustedCard, err := enroll.ReadCard(ctx, run, trustedGUID)
+			if err != nil {
+				return fmt.Errorf("read trusted card: %w", err)
+			}
+
+			signer := enroll.PivySigner{PIN: pin}
+			receipt, err := enroll.BuildReceipt(ctx, signer, newCard, domain, trustedGUID, trustedCard.SSHID, time.Now().Unix())
+			if err != nil {
+				return err
+			}
+
+			if out == "" {
+				out = enrollGUIDFile(newGUID)
+			}
+			if err := os.WriteFile(out, receipt, 0o644); err != nil {
+				return fmt.Errorf("write receipt: %w", err)
+			}
+			w := cmd.OutOrStdout()
+			fmt.Fprintf(w, "wrote %s\n", out)
+
+			// The trusted card is already published on <domain>, so the receipt
+			// must verify end-to-end now — a fail means the attester isn't trusted
+			// there or the signing went wrong.
+			c, err := papi.NewClient(domain)
+			if err != nil {
+				return err
+			}
+			res, err := inspect.VerifyReceipt(ctx, c, receipt)
+			if err != nil {
+				return err
+			}
+			for _, ck := range res.Checks {
+				status := "verified"
+				if !ck.OK {
+					status = "FAILED"
+				}
+				fmt.Fprintf(w, "%s: %s — %s\n", ck.Name, status, ck.Detail)
+			}
+			if !res.OK {
+				return fmt.Errorf("receipt did not verify against %s", domain)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&newGUID, "new-guid", "", "GUID of the NEW provisioned card to enroll (required)")
+	cmd.Flags().StringVar(&trustedGUID, "trusted-guid", "", "GUID of the TRUSTED card (already published on <domain>) that attests the receipt (required)")
+	cmd.Flags().StringVar(&pin, "pin", "", "PIV PIN for slot-9A signing (passed to pivy-tool -P; may be required by the card's PIN policy)")
+	cmd.Flags().StringVar(&out, "out", "", "receipt output path (default: enroll-receipt-<new-guid8>.json)")
+	return cmd
 }
 
 func newVerifyReceiptCmd() *cobra.Command {

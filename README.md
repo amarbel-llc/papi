@@ -33,8 +33,9 @@ ADR-0004.
 `papi` has these subcommands: `validate` checks a domain against the spec;
 `piggy-ids` / `ssh-keys` / `person` / `repos` surface a domain's published
 identity material, keys, and repositories for downstream consumption;
-`query` runs a jq expression over the document; and `verify-receipt` checks a
-card-enrollment receipt against a domain's published keys (FDR-0001).
+`query` runs a jq expression over the document; `enroll` emits a signed
+enrollment receipt for a new YubiKey; and `verify-receipt` checks that receipt
+against a domain's published keys (FDR-0001).
 
 ### `papi validate <domain>`
 
@@ -137,6 +138,26 @@ Lets consumers pluck arbitrary fields (`forges[]`, `organizations[]`, `repos[]`,
 $ papi query linenisgreat.com '.person.handle' -r
 linenisgreat
 $ papi query linenisgreat.com '.forges[].repos[].url' -r
+```
+
+### `papi enroll <domain> --new-guid <G> --trusted-guid <G>`
+
+Emit a signed card-enrollment receipt (`papi-enroll-receipt-v1`,
+[FDR-0001](docs/features/0001-papi-new-yubikey-enrollment.md)) for a freshly
+provisioned **new** YubiKey, attested by an **already-bootstrapped** trusted
+card, for `<domain>`'s deploy side to publish. It reads the new card's slot-9D
+recipient + slot-9A key back via the papi-agnostic piggy primitives (`piggy
+list`, `age-plugin-piggy`), has the new card self-sign its 9D↔9A binding and the
+trusted card attest the receipt (`pivy-tool sign 9a`), writes the receipt, and
+verifies it against `<domain>`. Both cards must be present (PCSC); card
+*generation* is upstream (`pivy-tool` / piggy), not papi's. Pair it with
+`verify-receipt` on the deploy side.
+
+```console
+$ papi enroll linenisgreat.com --new-guid A1B2C3D4 --trusted-guid E5F6A7B8 --pin ******
+wrote enroll-receipt-a1b2c3d4.json
+self_proof: verified — new card's slot-9A key signs the 9D↔9A binding claim
+attestation: verified — an already-published slot-9A key attests the receipt
 ```
 
 ### `papi verify-receipt <receipt-file> --domain <domain>`
