@@ -62,6 +62,43 @@ test-go:
 debug-sample-receipt:
     PAPI_GEN_SAMPLE=1 nix develop --command go test ./internal/alfa/enroll/ -run TestGenerateSampleReceipt -v
 
+# Inspect attached PIV cards (read-only, PIN-free) to verify provisioning state
+# before a live `papi enroll` run — which card is provisioned (slot 9D+9A) vs
+# blank. piggy/age-plugin-piggy come from the nix profile, not the devShell, so
+# they're called directly. Serves the papi#15 live-test prep.
+[group("debug")]
+debug-cards:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "=== piggy list (human) ==="
+    piggy list || echo "(piggy list failed: $?)"
+    echo
+    echo "=== piggy list --format=ndjson (populated slots per card) ==="
+    piggy list --format=ndjson || echo "(piggy list ndjson failed: $?)"
+    echo
+    echo "=== piggy list --format=ssh (slot-9A/9C/9E authorized_keys lines) ==="
+    piggy list --format=ssh || echo "(piggy list ssh failed: $?)"
+
+# Run the current papi against a live domain (go run, so it picks up uncommitted
+# changes). For live-test verification, e.g. `just debug-papi piggy-ids
+# linenisgreat.com`. Serves the papi#15 live-test prep.
+[group("debug")]
+debug-papi *ARGS:
+    nix develop --command go run . {{ARGS}}
+
+# Read a card's slot-9D age recipient (read-only, PIN-free) to validate the
+# age-plugin-piggy readback parser. Serves the papi#15 live-test prep.
+[group("debug")]
+debug-age guid:
+    age-plugin-piggy generate --guid {{guid}}
+
+# Run pivy-tool (via piggy's passthrough) for live-test exploration — e.g.
+# `just debug-pivy list` to enumerate all PIV cards incl. blank ones that
+# `piggy list` hides. Read-only ops only here. Serves the papi#15 live-test prep.
+[group("debug")]
+debug-pivy *ARGS:
+    piggy tool {{ARGS}}
+
 # --- codemod ---
 
 codemod-fmt: codemod-fmt-tree
