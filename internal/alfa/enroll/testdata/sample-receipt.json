@@ -1,0 +1,30 @@
+{
+  "schema": "papi-enroll-receipt-v1",
+  "domain": "linenisgreat.com",
+  "guid": "A1B2C3D4E5F60718293A4B5C6D7E8F90",
+  "created": 1750000000,
+  "recipient": {
+    "visibility": "public",
+    "label": "yubikey-9d-a1b2c3d4",
+    "scheme": "piggy-recipient-v1",
+    "id": "piggy-recipient-v1@pivy_ecdh_p256_pub-qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0jqr9fwqu"
+  },
+  "ssh": {
+    "visibility": "public",
+    "label": "yubikey-9a-a1b2c3d4",
+    "id": "piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-qtc4lu9kwag5t7nzcqlm6vgyg92hs8rgln87uwccu80ean27u80d2yspu3k",
+    "purpose": "piggy-piv_auth-v1",
+    "key_type": "ecdsa-sha2-nistp256",
+    "line": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBPFf8LZ3UUX6YsA/vTEEQVV4HGj8z+47GOHfns1e4d7VR7EUYT6aURYtGT5jXGV2T5tkClvVD0LTGUG1lmBQUkg= piggy slot=9A guid=A1B2C3D4E5F60718293A4B5C6D7E8F90 cn=piv-auth@a1b2c3d4"
+  },
+  "age_recipient": "age1piggy1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0",
+  "self_proof": {
+    "claim": "papi-enroll-receipt-v1 binds piggy-recipient-v1@pivy_ecdh_p256_pub-qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0jqr9fwqu to piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-qtc4lu9kwag5t7nzcqlm6vgyg92hs8rgln87uwccu80ean27u80d2yspu3k",
+    "sig": "papi-proof-sig-v1@ecdsa_p256_sig-jrx7090ag2jjddzk20xd83gfza28l0f6dpta6dw9zm9jxtf5q56pqceujgc43qaxkfwc2ew9lfshnl8rwz3yz74c4ghk6kjwwphsqwqlg5cxz"
+  },
+  "attestation": {
+    "key": "piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-qdk7sv5htehwqj75x4zllr4zjzh05z2l9ekgp3tyt2u9udffyar8uuhfnqm",
+    "sig": "papi-enroll-att-v1@ecdsa_p256_sig-9ffk7xq467dv5l2cvz3fkeulzsrc9hrjwm08043hch2f988lgjkhynhnshpjvwqsvm78m57p7tjcuslw3nczzx8n86qamcpw5yetcjqpghnup",
+    "created": 1750000000
+  }
+}

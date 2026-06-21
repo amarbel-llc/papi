@@ -10,6 +10,8 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -194,5 +196,70 @@ func TestDERToRawRS(t *testing.T) {
 func TestDERToRawRSMalformed(t *testing.T) {
 	if _, err := DERToRawRS([]byte{0x01, 0x02, 0x03}); err == nil {
 		t.Error("malformed DER should error")
+	}
+}
+
+// sample fixture paths — a committed papi-enroll-receipt-v1 plus the attester's
+// authorized_keys line, shared with the deploy side (site-linenisgreat) to scope
+// its verify recipe + splice before a real fibby-signed receipt exists.
+var (
+	sampleReceiptPath  = filepath.Join("testdata", "sample-receipt.json")
+	sampleAttesterPath = filepath.Join("testdata", "sample-attester-authorized-key.txt")
+)
+
+// TestGenerateSampleReceipt regenerates the committed sample fixtures. It writes
+// files, so normal runs skip it; regenerate via `just debug-sample-receipt`
+// (sets PAPI_GEN_SAMPLE=1). The keys are ephemeral, so the bytes differ each
+// regeneration — TestSampleReceiptVerifies keeps whatever is committed honest.
+func TestGenerateSampleReceipt(t *testing.T) {
+	if os.Getenv("PAPI_GEN_SAMPLE") == "" {
+		t.Skip("set PAPI_GEN_SAMPLE=1 (just debug-sample-receipt) to regenerate the sample fixtures")
+	}
+	newCard := newTestCard(t, "A1B2C3D4E5F60718293A4B5C6D7E8F90")
+	trusted := newTestCard(t, "0F1E2D3C4B5A69788796A5B4C3D2E1F0")
+	signer := fakeSigner{cards: map[string]*ecdsa.PrivateKey{
+		newCard.guid: newCard.priv,
+		trusted.guid: trusted.priv,
+	}}
+	card := Card{
+		GUID:         newCard.guid,
+		RecipientID:  testRecipientID,
+		SSHID:        newCard.keyID,
+		SSHLine:      newCard.sshLine + " piggy slot=9A guid=" + newCard.guid + " cn=piv-auth@" + guid8(newCard.guid),
+		AgeRecipient: "age1piggy1qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0",
+		CN:           "piv-auth@" + guid8(newCard.guid),
+	}
+	raw, err := BuildReceipt(context.Background(), signer, card,
+		"linenisgreat.com", trusted.guid, trusted.keyID, 1750000000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sampleReceiptPath, append(raw, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sampleAttesterPath, []byte(trusted.sshLine+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("wrote %s and %s", sampleReceiptPath, sampleAttesterPath)
+}
+
+// TestSampleReceiptVerifies keeps the committed sample honest: it must verify
+// end-to-end against a domain publishing the committed attester key.
+func TestSampleReceiptVerifies(t *testing.T) {
+	raw, err := os.ReadFile(sampleReceiptPath)
+	if err != nil {
+		t.Skipf("no committed sample receipt (%v); regenerate via `just debug-sample-receipt`", err)
+	}
+	attester, err := os.ReadFile(sampleAttesterPath)
+	if err != nil {
+		t.Fatalf("sample receipt present but attester key missing: %v", err)
+	}
+	res, err := inspect.VerifyReceipt(context.Background(),
+		serveTrusted(t, strings.TrimSpace(string(attester))), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Fatalf("committed sample receipt does not verify: %+v", res.Checks)
 	}
 }

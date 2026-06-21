@@ -55,6 +55,13 @@ test: test-go
 test-go:
     nix develop --command go test ./...
 
+# Regenerate the committed sample enrollment receipt fixture
+# (internal/alfa/enroll/testdata/) — a hand-off artifact for the deploy-side
+# verify recipe (site-linenisgreat). Normal `test-go` skips this generator.
+[group("debug")]
+debug-sample-receipt:
+    PAPI_GEN_SAMPLE=1 nix develop --command go test ./internal/alfa/enroll/ -run TestGenerateSampleReceipt -v
+
 # --- codemod ---
 
 codemod-fmt: codemod-fmt-tree
