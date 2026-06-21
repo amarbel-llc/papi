@@ -9,9 +9,9 @@ const realProvisionedList = `{"id":"piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-qft
 {"id":"piggy-recipient-v1@pivy_ecdh_p256_pub-q0p9kkux","guid":"55C3439DDF5E324B1A4DD9F9B75B6106","serial":19000001,"reader":"Yubico YubiKey OTP+FIDO+CCID 01 00","slot":"9D","cn":"piv-key-mgmt@55C3439D"}
 {"id":"piggy-recipient-v1@pivy_ecdh_p256_pub-qdvs3net","guid":"55C3439DDF5E324B1A4DD9F9B75B6106","serial":19000001,"reader":"Yubico YubiKey OTP+FIDO+CCID 01 00","slot":"82","cn":"test"}`
 
-// blankRecord is the assumed piggy#193 record for an uninitialized card (serial
-// as a number, all-zeros guid, explicit state).
-const blankRecord = `{"serial":19000002,"guid":"00000000000000000000000000000000","reader":"Yubico YubiKey OTP+FIDO+CCID 00 00","state":"uninitialized"}`
+// blankRecord is piggy#193's record for an uninitialized card (serial as a
+// number, all-zeros guid, the explicit uninitialized:true marker, no slot record).
+const blankRecord = `{"uninitialized":true,"serial":19000002,"guid":"00000000000000000000000000000000","reader":"Yubico YubiKey OTP+FIDO+CCID 00 00"}`
 
 func TestParseCardListProvisioned(t *testing.T) {
 	cards, err := parseCardList([]byte(realProvisionedList))

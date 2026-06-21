@@ -99,6 +99,32 @@ debug-age guid:
 debug-pivy *ARGS:
     piggy tool {{ARGS}}
 
+# Confirm the installed piggy exposes `sign-bytes` (piggy#190) — papi enroll's
+# slot-9A signer. Fails loudly if your piggy predates it. papi#15 live-test prep.
+[group("debug")]
+debug-piggy-signcheck:
+    piggy sign-bytes --help
+
+# Smoke-test `papi enroll` end-to-end against a real card + a live domain by
+# enrolling a provisioned card INTO ITSELF (degenerate: new==trusted) — exercises
+# the full chain (read-back → slot-9A signing ×2 → receipt → verify against the
+# live site) with NO blank card / piggy#193/#194 needed. Run in YOUR terminal so
+# the PIN prompt reaches you; pass `pin=<PIN>` if it hangs with no prompt. Needs
+# the card present + `piggy sign-bytes`. papi#15 live-test prep.
+[group("debug")]
+debug-enroll-smoke guid domain="linenisgreat.com" pin="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(enroll "{{domain}}" --new-guid "{{guid}}" --trusted-guid "{{guid}}")
+    if [[ -n "{{pin}}" ]]; then args+=(--pin "{{pin}}"); fi
+    nix develop --command go run . "${args[@]}"
+
+# Independently verify an enrollment receipt against a domain (the deploy-gate
+# check `papi enroll` also runs internally). papi#15 live-test prep.
+[group("debug")]
+debug-verify-receipt file domain="linenisgreat.com":
+    nix develop --command go run . verify-receipt "{{file}}" --domain "{{domain}}"
+
 # --- codemod ---
 
 codemod-fmt: codemod-fmt-tree

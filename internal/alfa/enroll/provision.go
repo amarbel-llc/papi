@@ -83,6 +83,9 @@ func parseCardList(ndjson []byte) ([]CardState, error) {
 		case "9D", "9A":
 			cs.Provisioned = true
 		}
+		if rec.Uninitialized { // piggy#193's explicit blank marker
+			cs.Provisioned = false
+		}
 	}
 	out := make([]CardState, 0, len(order))
 	for _, k := range order {
