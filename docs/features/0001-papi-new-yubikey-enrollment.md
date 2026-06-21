@@ -72,15 +72,18 @@ A new cobra subcommand alongside `validate`/`person`/`ssh-keys`/`repos`/`query`,
 driving an interactive [huh](https://github.com/charmbracelet/huh) TUI. It runs
 four steps over the low-level piggy primitives above and emits one artifact:
 
-> **Implementation status (v0).** Shipped, flag-driven: `papi enroll <domain>
-> --new-guid <G> --trusted-guid <G> [--pin …]` runs steps 2–4 (read-back,
-> self-sign, attest) over an **already-provisioned** card and verifies the
-> receipt against `<domain>`. Deferred: **step 1 (generate)** — provisioning a
-> *blank* fresh card (the GUID is assigned by `pivy-tool init`, and two attached
-> cards need sequential single-card phases to disambiguate;
-> [papi#17](https://github.com/amarbel-llc/papi/issues/17)) — and the
-> interactive **huh** TUI. The four-step flow below is the full design; the
-> flag-driven command covers the post-init path.
+> **Implementation status.** Implemented papi-side: steps 2–4 (read-back,
+> self-sign, attest) over an already-provisioned card, AND step 1 — a **huh card
+> picker** (blank cards selectable, the provisioned trusted card shown but
+> unselectable) → confirm → `piggy card init`. `papi enroll <domain>` shows the
+> picker by default; `--new-guid <G>` enrolls an already-provisioned card,
+> `--new-serial <N>` picks the blank one non-interactively, `--trusted-guid` (or
+> the sole provisioned card) is the attester. **Gated on piggy** for the live
+> data: the blank card only appears once `piggy list` lists unprovisioned cards
+> (piggy#193) and is provisioned by piggy#194 (`piggy card init --serial`);
+> papi is wired to both and works the moment they ship
+> ([papi#17](https://github.com/amarbel-llc/papi/issues/17)). Card *selection*
+> is by serial (piggy's enumeration), since `pivy-tool` has no serial selector.
 
 1. **Generate the fresh card** (the *new* YubiKey) — papi shells out to the C
    `pivy-tool` binary (piggy has no fresh-card command; it exposes `pivy-tool`
