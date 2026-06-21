@@ -55,6 +55,7 @@ func main() {
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newQueryCmd())
+	root.AddCommand(newVerifyReceiptCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -397,4 +398,53 @@ func runQuery(out io.Writer, query *gojq.Query, input any, raw bool) error {
 		}
 	}
 	return nil
+}
+
+func newVerifyReceiptCmd() *cobra.Command {
+	var domain string
+	cmd := &cobra.Command{
+		Use:   "verify-receipt <receipt-file>",
+		Short: "Verify a papi-enroll-receipt-v1 against a domain's published keys (FDR-0001)",
+		Long: "Verify a card-enrollment receipt (papi-enroll-receipt-v1) emitted by " +
+			"`papi enroll`: its self_proof binds the new card's slot-9D recipient to its " +
+			"slot-9A key (a §9.3 papi-proof-sig-v1 over the claim), and its attestation is " +
+			"signed by a slot-9A key ALREADY published on --domain's /papi/piggy-ids (a " +
+			"papi-enroll-att-v1 over the receipt's canonical bytes) — an already-trusted " +
+			"card vouching for the new one. Prints one verdict line per check and exits " +
+			"non-zero if any check fails; this is the verifier a deploy gate runs before " +
+			"publishing a new key.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if domain == "" {
+				return fmt.Errorf("--domain is required (the PAPI domain whose published slot-9A keys attest the receipt)")
+			}
+			raw, err := os.ReadFile(args[0])
+			if err != nil {
+				return err
+			}
+			c, err := papi.NewClient(domain)
+			if err != nil {
+				return err
+			}
+			res, err := inspect.VerifyReceipt(cmd.Context(), c, raw)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, ck := range res.Checks {
+				status := "verified"
+				if !ck.OK {
+					status = "FAILED"
+				}
+				fmt.Fprintf(out, "%s: %s — %s\n", ck.Name, status, ck.Detail)
+			}
+			if !res.OK {
+				return fmt.Errorf("receipt verification failed")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&domain, "domain", "",
+		"the PAPI domain whose published slot-9A keys must attest the receipt (required)")
+	return cmd
 }

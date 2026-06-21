@@ -32,8 +32,9 @@ ADR-0004.
 
 `papi` has these subcommands: `validate` checks a domain against the spec;
 `piggy-ids` / `ssh-keys` / `person` / `repos` surface a domain's published
-identity material, keys, and repositories for downstream consumption; and
-`query` runs a jq expression over the document.
+identity material, keys, and repositories for downstream consumption;
+`query` runs a jq expression over the document; and `verify-receipt` checks a
+card-enrollment receipt against a domain's published keys (FDR-0001).
 
 ### `papi validate <domain>`
 
@@ -136,6 +137,24 @@ Lets consumers pluck arbitrary fields (`forges[]`, `organizations[]`, `repos[]`,
 $ papi query linenisgreat.com '.person.handle' -r
 linenisgreat
 $ papi query linenisgreat.com '.forges[].repos[].url' -r
+```
+
+### `papi verify-receipt <receipt-file> --domain <domain>`
+
+Verify a card-enrollment receipt (`papi-enroll-receipt-v1`, [FDR-0001](docs/features/0001-papi-new-yubikey-enrollment.md))
+emitted when a new YubiKey is provisioned. Two checks, both required: the
+`self_proof` binds the new card's slot-9D recipient to its slot-9A key (a §9.3
+`papi-proof-sig-v1` over the claim, verified against the receipt's own slot-9A
+key), and the `attestation` is signed by a slot-9A key **already published** on
+`--domain`'s `/papi/piggy-ids` (a `papi-enroll-att-v1` over the receipt's
+canonical bytes) — an already-trusted card vouching for the new one. Prints one
+verdict line per check and exits non-zero if any fails; this is the verifier a
+deploy gate runs before publishing a new key.
+
+```console
+$ papi verify-receipt enroll-receipt-55C3439D.json --domain linenisgreat.com
+self_proof: verified — new card's slot-9A key signs the 9D↔9A binding claim
+attestation: verified — an already-published slot-9A key attests the receipt
 ```
 
 ## Install

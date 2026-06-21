@@ -44,9 +44,10 @@ const (
 
 // Known purpose identifiers papi consumes (RFC-0002 §6.1).
 const (
-	PurposeDocSig   = "papi-doc-sig-v1"   // PAPI document signature (§10)
-	PurposeProofSig = "papi-proof-sig-v1" // PAPI identity-proof claim signature (§9.3)
-	PurposePIVAuth  = "piggy-piv_auth-v1" // PIV slot-9A authentication key
+	PurposeDocSig    = "papi-doc-sig-v1"    // PAPI document signature (§10)
+	PurposeProofSig  = "papi-proof-sig-v1"  // PAPI identity-proof claim signature (§9.3)
+	PurposeEnrollAtt = "papi-enroll-att-v1" // PAPI enrollment-receipt attestation (FDR-0001)
+	PurposePIVAuth   = "piggy-piv_auth-v1"  // PIV slot-9A authentication key
 )
 
 // ID is a parsed markl-id.
