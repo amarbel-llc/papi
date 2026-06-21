@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,10 +21,16 @@ import (
 // exhaust memory.
 const maxBody = 8 << 20
 
-// Client fetches PAPI resources from a single base URL.
+// Client fetches PAPI resources. BaseURL is the identity base — where
+// /.well-known/papi lives. serving is the API base for /papi/* requests,
+// resolved once from the discovery document's resources[] (RFC §8.1), since the
+// serving host may differ from the identity domain (e.g. example.com →
+// api.example.com). resolveOnce guards that one-time lookup.
 type Client struct {
-	HTTP    *http.Client
-	BaseURL string // scheme://host[:port], no trailing slash
+	HTTP        *http.Client
+	BaseURL     string // identity base: scheme://host[:port], no trailing slash
+	serving     string // API base for /papi/*; resolved from discovery, else == BaseURL
+	resolveOnce sync.Once
 }
 
 // NewClient resolves target (a bare domain or a URL) into a base URL, defaulting
@@ -92,11 +99,19 @@ func (c *Client) Post(ctx context.Context, path string, jsonBody []byte) (*Respo
 }
 
 func (c *Client) do(ctx context.Context, method, path, contentType string, reqBody []byte, session string) (*Response, error) {
+	return c.doAt(ctx, c.servingBase(ctx), method, path, contentType, reqBody, session)
+}
+
+// doAt performs the HTTP request against an explicit base, bypassing discovery
+// resolution. It serves both the resolved serving base (for /papi/* requests) and
+// the identity base (to fetch /.well-known/papi without recursing into
+// servingBase).
+func (c *Client) doAt(ctx context.Context, base, method, path, contentType string, reqBody []byte, session string) (*Response, error) {
 	var rdr io.Reader
 	if reqBody != nil {
 		rdr = bytes.NewReader(reqBody)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, base+path, rdr)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +132,59 @@ func (c *Client) do(ctx context.Context, method, path, contentType string, reqBo
 		return nil, err
 	}
 	return &Response{Path: path, Status: resp.StatusCode, ContentType: resp.Header.Get("Content-Type"), Body: body}, nil
+}
+
+// servingBase returns the API base for /papi/* requests, resolving it once from
+// the discovery document (RFC §8.1): it GETs <identity>/.well-known/papi and
+// derives the base from its resources[] URLs. It falls back to the identity base
+// when discovery is absent, unreachable, or carries no usable resources — so a
+// same-host or pre-discovery server behaves exactly as before, while a split-host
+// server (identity domain ≠ serving host) is followed correctly.
+func (c *Client) servingBase(ctx context.Context) string {
+	c.resolveOnce.Do(func() {
+		c.serving = c.BaseURL
+		resp, err := c.doAt(ctx, c.BaseURL, http.MethodGet, "/.well-known/papi", "", nil, "")
+		if err != nil || resp.Status != http.StatusOK {
+			return
+		}
+		d, err := decodeDiscovery(resp.Body)
+		if err != nil {
+			return
+		}
+		if base := servingBaseFromResources(d.Resources); base != "" {
+			c.serving = base
+		}
+	})
+	return c.serving
+}
+
+// resourceSuffixes are the §4 endpoint paths a discovery resources[] URL ends
+// with, ordered so a longer path is tried before the bare "/papi". They let
+// servingBaseFromResources recover the API base from any resource URL by
+// stripping the known suffix — key-name-agnostic, and tolerant of a path prefix.
+var resourceSuffixes = []string{
+	"/papi/ssh-authorized-keys", "/papi/organizations", "/papi/piggy-ids",
+	"/papi/templates", "/papi/sitemap", "/papi/forges", "/papi/proofs",
+	"/papi/caches", "/papi/repos", "/papi",
+}
+
+// servingBaseFromResources derives the API base (scheme://host[/prefix]) from the
+// discovery resources[] map: it parses each absolute URL and, on the first whose
+// path ends with a known §4 endpoint suffix, strips that suffix. Returns "" when
+// no resource yields a base (the caller keeps the identity base).
+func servingBaseFromResources(resources map[string]string) string {
+	for _, raw := range resources {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			continue
+		}
+		for _, suf := range resourceSuffixes {
+			if strings.HasSuffix(u.Path, suf) {
+				return strings.TrimRight(u.Scheme+"://"+u.Host+strings.TrimSuffix(u.Path, suf), "/")
+			}
+		}
+	}
+	return ""
 }
 
 // Envelope is the {data, meta} response envelope (RFC-0001 §4.2). The reference
@@ -145,15 +213,17 @@ type DiscoveryAuth struct {
 // Discovery fetches and decodes GET /.well-known/papi, accepting both the bare
 // object and the reference impl's {data, meta} envelope.
 func (c *Client) Discovery(ctx context.Context) (*Discovery, int, error) {
-	body, status, err := c.get(ctx, "/.well-known/papi")
+	// Discovery always lives at the identity base, so it bypasses serving
+	// resolution (doAt) — fetching it here is also what servingBase consumes.
+	resp, err := c.doAt(ctx, c.BaseURL, http.MethodGet, "/.well-known/papi", "", nil, "")
 	if err != nil {
-		return nil, status, err
+		return nil, 0, err
 	}
-	if status != http.StatusOK {
-		return nil, status, fmt.Errorf("discovery returned HTTP %d", status)
+	if resp.Status != http.StatusOK {
+		return nil, resp.Status, fmt.Errorf("discovery returned HTTP %d", resp.Status)
 	}
-	d, err := decodeDiscovery(body)
-	return d, status, err
+	d, err := decodeDiscovery(resp.Body)
+	return d, resp.Status, err
 }
 
 func decodeDiscovery(body []byte) (*Discovery, error) {
