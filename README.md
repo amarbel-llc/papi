@@ -148,7 +148,7 @@ provisioned **new** YubiKey, attested by an **already-bootstrapped** trusted
 card, for `<domain>`'s deploy side to publish. It reads the new card's slot-9D
 recipient + slot-9A key back via the papi-agnostic piggy primitives (`piggy
 list`, `age-plugin-piggy`), has the new card self-sign its 9D↔9A binding and the
-trusted card attest the receipt (`pivy-tool sign 9a`), writes the receipt, and
+trusted card attest the receipt (`piggy sign-bytes --slot 9a`), writes the receipt, and
 verifies it against `<domain>`. Both cards must be present (PCSC); card
 *generation* is upstream (`pivy-tool` / piggy), not papi's. Pair it with
 `verify-receipt` on the deploy side.
