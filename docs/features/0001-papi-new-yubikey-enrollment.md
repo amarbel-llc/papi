@@ -72,6 +72,16 @@ A new cobra subcommand alongside `validate`/`person`/`ssh-keys`/`repos`/`query`,
 driving an interactive [huh](https://github.com/charmbracelet/huh) TUI. It runs
 four steps over the low-level piggy primitives above and emits one artifact:
 
+> **Implementation status (v0).** Shipped, flag-driven: `papi enroll <domain>
+> --new-guid <G> --trusted-guid <G> [--pin …]` runs steps 2–4 (read-back,
+> self-sign, attest) over an **already-provisioned** card and verifies the
+> receipt against `<domain>`. Deferred: **step 1 (generate)** — provisioning a
+> *blank* fresh card (the GUID is assigned by `pivy-tool init`, and two attached
+> cards need sequential single-card phases to disambiguate;
+> [papi#17](https://github.com/amarbel-llc/papi/issues/17)) — and the
+> interactive **huh** TUI. The four-step flow below is the full design; the
+> flag-driven command covers the post-init path.
+
 1. **Generate the fresh card** (the *new* YubiKey) — papi shells out to the C
    `pivy-tool` binary (piggy has no fresh-card command; it exposes `pivy-tool`
    as an exec passthrough via `piggy tool <op>`). The scriptable building blocks:
@@ -278,6 +288,10 @@ Non-interactive generation building block (what the TUI runs under the hood):
 ## More Information
 
 - **Issue:** [papi#15](https://github.com/amarbel-llc/papi/issues/15) — the feature request.
+- **Deferred (v0):** [papi#17](https://github.com/amarbel-llc/papi/issues/17) —
+  provisioning a blank fresh card (FDR step 1, generate) in `papi enroll`; the
+  interactive huh TUI is also deferred. The shipped flag-driven command enrolls
+  an already-provisioned card.
 - **Companion feature:** PAPI-hosted self-bootstrap shim (a host with a
   provisioned card fetches a fetch-and-delegate script over PAPI and provisions
   itself against eng). Owned by `eng` (the real logic is `eng/bin/up.sh`); papi
