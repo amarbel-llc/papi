@@ -413,27 +413,42 @@ func enrollGUIDFile(guid string) string {
 }
 
 func newEnrollCmd() *cobra.Command {
-	var newGUID, trustedGUID, pin, out string
+	var newGUID, newSerial, trustedGUID, pin, out string
 	cmd := &cobra.Command{
 		Use:   "enroll <domain>",
-		Short: "Emit a signed enrollment receipt for a new YubiKey (FDR-0001)",
-		Long: "Read a freshly-provisioned NEW card's identity material and emit a signed " +
-			"papi-enroll-receipt-v1 for <domain>'s deploy side to publish. Drives the " +
+		Short: "Provision + enroll a new YubiKey, emitting a signed receipt (FDR-0001)",
+		Long: "Provision a new YubiKey and emit a signed papi-enroll-receipt-v1 for " +
+			"<domain>'s deploy side to publish, attested by an already-bootstrapped trusted " +
+			"card. By default it shows an interactive picker over the attached cards (blank " +
+			"cards are selectable; the provisioned trusted card is shown but not enrollable), " +
+			"runs `piggy card init` on the chosen blank card, then reads it back and enrolls " +
+			"it. Pass --new-guid to enroll an ALREADY-provisioned card (skip the picker + " +
+			"provisioning), or --new-serial to pick the blank card non-interactively. The " +
+			"trusted attester is the sole provisioned card, or --trusted-guid. papi drives the " +
 			"papi-agnostic piggy primitives (piggy list / age-plugin-piggy to read back, " +
-			"pivy-tool sign 9a to sign): the new card (--new-guid) self-signs its slot-9D↔9A " +
-			"binding, and the trusted card (--trusted-guid, an already-bootstrapped card " +
-			"already published on <domain>) attests the receipt. The receipt is written and " +
-			"then verified against <domain>. Card generation is upstream (pivy-tool / piggy); " +
-			"this enrolls an already-provisioned card. Requires both cards present (PCSC) and " +
-			"may prompt for the PIN unless --pin is given.",
+			"piggy sign-bytes to sign): the new card self-signs its 9D↔9A binding and the " +
+			"trusted card attests; the receipt is written then verified against <domain>. All " +
+			"cards must be present (PCSC); provisioning prompts for the PIN on your terminal.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain := args[0]
-			if newGUID == "" || trustedGUID == "" {
-				return fmt.Errorf("--new-guid and --trusted-guid are required")
-			}
 			ctx := cmd.Context()
 			run := enroll.ExecRunner
+
+			// Enumerate cards only when we must provision or auto-resolve a GUID.
+			var cards []enroll.CardState
+			var err error
+			if newGUID == "" || trustedGUID == "" {
+				if cards, err = enroll.ListCards(ctx, run); err != nil {
+					return err
+				}
+			}
+			if newGUID, err = enroll.ResolveNewCard(ctx, enroll.ExecInteractive, run, cards, newGUID, newSerial, domain); err != nil {
+				return err
+			}
+			if trustedGUID, err = enroll.ResolveTrustedGUID(cards, trustedGUID); err != nil {
+				return err
+			}
 
 			newCard, err := enroll.ReadCard(ctx, run, newGUID)
 			if err != nil {
@@ -483,9 +498,10 @@ func newEnrollCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&newGUID, "new-guid", "", "GUID of the NEW provisioned card to enroll (required)")
-	cmd.Flags().StringVar(&trustedGUID, "trusted-guid", "", "GUID of the TRUSTED card (already published on <domain>) that attests the receipt (required)")
-	cmd.Flags().StringVar(&pin, "pin", "", "PIV PIN for slot-9A signing (passed to pivy-tool -P; may be required by the card's PIN policy)")
+	cmd.Flags().StringVar(&newGUID, "new-guid", "", "enroll this ALREADY-provisioned card by GUID (skip the picker + provisioning)")
+	cmd.Flags().StringVar(&newSerial, "new-serial", "", "provision the blank card with this serial (skip the picker)")
+	cmd.Flags().StringVar(&trustedGUID, "trusted-guid", "", "GUID of the TRUSTED attester card (default: the sole provisioned card)")
+	cmd.Flags().StringVar(&pin, "pin", "", "PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
 	cmd.Flags().StringVar(&out, "out", "", "receipt output path (default: enroll-receipt-<new-guid8>.json)")
 	return cmd
 }

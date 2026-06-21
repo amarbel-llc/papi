@@ -123,12 +123,16 @@ func ReadCard(ctx context.Context, run Runner, guid string) (Card, error) {
 }
 
 // piggyListRecord is one `piggy list --format=ndjson` record. piggy emits one per
-// populated slot; only id/guid/slot/cn matter here. Lenient: extra fields ignored.
+// populated slot (and, per piggy#193, one per unprovisioned card). Lenient: extra
+// fields ignored. Serial/Reader/State feed the card-state grouping (provision.go).
 type piggyListRecord struct {
-	ID   string `json:"id"`
-	GUID string `json:"guid"`
-	Slot string `json:"slot"`
-	CN   string `json:"cn"`
+	ID     string     `json:"id"`
+	GUID   string     `json:"guid"`
+	Slot   string     `json:"slot"`
+	CN     string     `json:"cn"`
+	Serial flexString `json:"serial"` // piggy emits this as a number today
+	Reader string     `json:"reader"`
+	State  string     `json:"state"` // piggy#193: "uninitialized" for a blank card
 }
 
 // parsePiggyIdentity pulls the slot-9D recipient id and slot-9A auth id for guid
