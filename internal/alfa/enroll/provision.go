@@ -143,41 +143,38 @@ func displayGUID(c CardState) string {
 }
 
 // SelectNewCard runs an interactive huh picker over the attached cards and returns
-// the chosen blank card's serial. Every card is shown — provisioned cards are
-// labeled as the trusted attester and are unselectable (the select's Validate
-// rejects them) — so the operator sees the full set but can only enroll a blank
-// card. Errors if no unprovisioned card is attached.
+// the chosen blank card's serial. Only UNPROVISIONED cards are selectable options;
+// provisioned cards are shown read-only in the picker's description (they are the
+// trusted attester, not enrollable) — huh has no disabled-option support, so this
+// keeps them genuinely unselectable rather than rejecting them after the fact.
+// Errors if no unprovisioned card is attached. (Re-provisioning a provisioned card
+// — reset then provision — is a deliberate v1 follow-up behind an explicit flag.)
 func SelectNewCard(cards []CardState) (string, error) {
-	var blanks int
-	bySerial := make(map[string]CardState, len(cards))
 	opts := make([]huh.Option[string], 0, len(cards))
+	var provisioned []string
 	for _, c := range cards {
-		bySerial[c.Serial] = c
-		label := fmt.Sprintf("serial=%s   guid=%s", c.Serial, displayGUID(c))
 		if c.Provisioned {
-			label += "   (provisioned — trusted attester)"
-		} else {
-			blanks++
+			provisioned = append(provisioned, fmt.Sprintf("serial=%s guid=%s", c.Serial, displayGUID(c)))
+			continue
 		}
-		opts = append(opts, huh.NewOption(label, c.Serial))
+		opts = append(opts, huh.NewOption(fmt.Sprintf("serial=%s   guid=%s", c.Serial, displayGUID(c)), c.Serial))
 	}
-	if blanks == 0 {
+	if len(opts) == 0 {
 		return "", fmt.Errorf("no unprovisioned card attached to enroll")
+	}
+
+	desc := "Pick a blank card to provision + enroll."
+	if len(provisioned) > 0 {
+		desc += "\nNot selectable (trusted attester): " + strings.Join(provisioned, "; ")
 	}
 
 	var serial string
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewSelect[string]().
-			Title("Select the NEW YubiKey to provision + enroll").
-			Description("Provisioned cards are the trusted attester — not enrollable.").
+			Title("New YubiKey to enroll").
+			Description(desc).
 			Options(opts...).
-			Value(&serial).
-			Validate(func(s string) error {
-				if bySerial[s].Provisioned {
-					return fmt.Errorf("serial %s is already provisioned — it's the trusted attester; pick an unprovisioned card", s)
-				}
-				return nil
-			}),
+			Value(&serial),
 	)).Run()
 	if err != nil {
 		return "", err
