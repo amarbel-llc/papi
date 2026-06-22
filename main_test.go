@@ -341,14 +341,19 @@ func TestSSHCopyIDFallsBackToSFTP(t *testing.T) {
 	if !sftpCalled {
 		t.Error("expected automatic SFTP fallback after the shell path failed")
 	}
-	// The crap stream shows the failed ssh phase, and the operation ends OK with
-	// both keys installed (via the sftp fallback).
+	// A shell-less host that falls back to SFTP is a SUCCESS: the ssh attempt is a
+	// skip (orange), NOT a failed node, so the operation ends OK with both keys
+	// installed.
 	recs := crapRecords(t, out)
-	if oe := crapOpEnd(t, recs); !oe.OK || oe.Done != 2 {
+	oe := crapOpEnd(t, recs)
+	if !oe.OK || oe.Done != 2 {
 		t.Errorf("operation_end = %+v, want OK done=2 (both keys via SFTP)", oe)
 	}
-	if !crapHasFailedNode(recs) {
-		t.Error("expected the failed ssh phase to appear as a non-zero NodeEnd")
+	if oe.Skipped < 1 {
+		t.Errorf("operation_end = %+v, want the ssh attempt counted as a skip", oe)
+	}
+	if crapHasFailedNode(recs) {
+		t.Error("a fallback ssh attempt must be a skip, not a failed NodeEnd")
 	}
 }
 

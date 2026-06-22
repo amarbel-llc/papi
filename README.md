@@ -129,9 +129,11 @@ The install runs a small `sh` script remotely by default. If the destination has
 no usable shell (a forced-command, `sftp`-only, or `nologin`-shell target), papi
 **automatically retries over SFTP** — fetching `authorized_keys`, merging the new
 keys locally, and re-uploading it, with no remote shell. The crap stream shows
-this as a failed `install via ssh` phase followed by a passing `install via
-sftp`. (SSH can't advertise its subsystems, so attempting is the only way to
-discover SFTP works.) Pass `--sftp` to force the SFTP path directly and skip the
+this as a **skipped** `install via ssh` (orange — a shell-less host is an
+expected miss, not an error) followed by a passing `install via sftp`, and the
+operation as a whole succeeds. (SSH can't advertise its subsystems, so attempting
+is the only way to discover SFTP works.) Pass `--sftp` to force the SFTP path
+directly and skip the
 shell attempt. A connection/auth failure is *not* retried over SFTP (it would
 fail identically); a host offering neither a shell nor SFTP (e.g. a strict
 rsync-only target that confines paths away from `~/.ssh`) can't be driven in-band

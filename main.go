@@ -514,18 +514,27 @@ func installKeys(ctx context.Context, op *crap.Operation, dest string, keys []st
 	if useSFTP {
 		return installSFTPPhase(ctx, op, dest, keys, port, identity)
 	}
-	ph := op.Phase("install via ssh")
-	ph.Command("ssh " + dest + " sh")
 	added, present, err = installKeysOverSSH(ctx, dest, keys, port, identity)
-	if err == nil {
+	switch {
+	case err == nil:
+		ph := op.Phase("install via ssh")
+		ph.Command("ssh " + dest + " sh")
 		ph.Done()
 		return added, present, nil
+	case sshLevelError(err):
+		// Connection/auth (exit 255) is a real failure — SFTP would fail
+		// identically — so it's a failed phase (red ✗).
+		ph := op.Phase("install via ssh")
+		ph.Command("ssh " + dest + " sh")
+		ph.Fail(err)
+		return 0, 0, err
+	default:
+		// A shell-less host is an EXPECTED miss, not a failure: the SFTP fallback
+		// is the supported path. Record the ssh attempt as a skip (orange ↷, not a
+		// red ✗ that would tally the operation as failed) and fall back.
+		op.Skip("install via ssh", "no usable shell on "+dest+" — falling back to SFTP")
+		return installSFTPPhase(ctx, op, dest, keys, port, identity)
 	}
-	ph.Fail(err)
-	if sshLevelError(err) {
-		return 0, 0, err // connection/auth — SFTP would fail identically
-	}
-	return installSFTPPhase(ctx, op, dest, keys, port, identity) // shell-less host → fall back
 }
 
 func installSFTPPhase(ctx context.Context, op *crap.Operation, dest string, keys []string, port int, identity string) (int, int, error) {
