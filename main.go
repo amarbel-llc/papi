@@ -62,6 +62,7 @@ func main() {
 	root.AddCommand(newPiggyIDsCmd())
 	root.AddCommand(newSSHKeysCmd())
 	root.AddCommand(newSSHCopyIDCmd())
+	root.AddCommand(newSSHSyncCmd())
 	root.AddCommand(newVerifiedRecipientsCmd())
 	root.AddCommand(newBootstrapCmd())
 	root.AddCommand(newGHCheckCmd())
@@ -431,6 +432,181 @@ func newSSHKeysCmd() *cobra.Command {
 	return cmd
 }
 
+// newSSHSyncCmd builds `papi ssh-sync <domain>`: fetch a domain's published
+// slot-9A keys and (re)write them into a LOCAL dedicated managed file, in full,
+// each run. Unlike ssh-copy-id (which appends to a remote authorized_keys and
+// never prunes), ssh-sync OWNS its target file — it is rewritten to exactly the
+// domain's current key set, so a rotated or revoked card disappears on the next
+// run. It powers the papi-ssh-sync home-manager/NixOS service (which runs it on a
+// timer) but works standalone. One domain per invocation keeps the file→domain
+// mapping (and the service's one-unit-per-instance model) unambiguous.
+func newSSHSyncCmd() *cobra.Command {
+	var authorizedKeysPath, guid string
+	cmd := &cobra.Command{
+		Use:   "ssh-sync <domain>",
+		Short: "Sync a PAPI domain's slot-9A keys into a local managed authorized_keys file",
+		Long: "Fetch ALL of <domain>'s published slot-9A SSH keys (GET /papi/ssh-authorized-keys, " +
+			"via the §8.1 discovery-following client) and (re)write them into a LOCAL managed file " +
+			"IN FULL — unlike `ssh-copy-id`, which appends to a remote authorized_keys and never " +
+			"prunes. The file is rewritten to exactly the domain's current key set on every run, so " +
+			"a rotated or revoked card is removed on the next sync; an unchanged upstream leaves the " +
+			"file byte-identical (reported as `unchanged`). The default target is " +
+			"$XDG_CONFIG_HOME/papi/ssh-sync/<domain>.keys (the host, lowercased, every byte outside " +
+			"[a-z0-9.-] — notably the port colon — mapped to _); override with --authorized-keys. The " +
+			"parent dir is created 0700 and the file 0600, written atomically (temp + rename) so a " +
+			"concurrent sshd read never sees a half-written file. With --guid <HEX>, sync only that " +
+			"one card's key. Point sshd's AuthorizedKeysFile at the managed file to honor the keys " +
+			"(the papi-ssh-sync NixOS module wires this automatically).",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			domain := args[0]
+			path := authorizedKeysPath
+			if path == "" {
+				p, err := defaultSyncPath(domain)
+				if err != nil {
+					return err
+				}
+				path = p
+			}
+			c, err := papi.NewClient(domain)
+			if err != nil {
+				return err
+			}
+			body, _, err := c.SSHAuthorizedKeys(cmd.Context())
+			if err != nil {
+				return err
+			}
+			keys, err := extractAuthorizedKeysAllowEmpty(body, guid)
+			if err != nil {
+				return err
+			}
+			changed, err := writeManagedFile(path, renderManagedFile(keys, buildManagedHeader(domain, guid)))
+			if err != nil {
+				return err
+			}
+			state := "unchanged"
+			if changed {
+				state = "updated"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "synced %d key(s) to %s (%s)\n", len(keys), path, state)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&authorizedKeysPath, "authorized-keys", "",
+		"managed file to (re)write in full (default: $XDG_CONFIG_HOME/papi/ssh-sync/<domain>.keys)")
+	cmd.Flags().StringVar(&guid, "guid", "",
+		"sync only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
+	return cmd
+}
+
+// defaultSyncPath is the managed-file path ssh-sync writes when --authorized-keys
+// is unset: $XDG_CONFIG_HOME/papi/ssh-sync/<host-slug>.keys. It mirrors the
+// home-manager module's default so the CLI and the timer service agree on one
+// file.
+func defaultSyncPath(domain string) (string, error) {
+	slug, err := papiHostSlug(domain)
+	if err != nil {
+		return "", err
+	}
+	cfg, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve config dir: %w", err)
+	}
+	return filepath.Join(cfg, "papi", "ssh-sync", slug+".keys"), nil
+}
+
+// papiHostSlug reduces a domain/URL to a filesystem-safe slug of its host[:port]:
+// the host (scheme/path stripped via papi.NormalizeBaseHost), lowercased, with
+// every byte outside [a-z0-9.-] — notably the port ':' — replaced by '_'. The Nix
+// module's hostSlug MUST produce the identical slug, or the CLI default path and
+// the service default path diverge for the same domain.
+func papiHostSlug(domain string) (string, error) {
+	host, err := papi.NormalizeBaseHost(domain)
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, r := range strings.ToLower(host) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '.', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return b.String(), nil
+}
+
+// buildManagedHeader renders the managed-file comment banner. It is deliberately
+// TIMESTAMP-FREE: ssh-sync compares the rendered bytes against the file on disk to
+// report updated/unchanged, so a varying header would make every run look like a
+// change and defeat the idempotency signal.
+func buildManagedHeader(domain, guid string) string {
+	host, err := papi.NormalizeBaseHost(domain)
+	if err != nil {
+		host = domain // never fatal for a comment; the fetch already validated the domain
+	}
+	filter := "none"
+	if guid != "" {
+		filter = guid
+	}
+	var b strings.Builder
+	b.WriteString("# MANAGED BY papi ssh-sync — DO NOT EDIT.\n")
+	b.WriteString("# Rewritten in full on each run; upstream-removed keys are pruned.\n")
+	fmt.Fprintf(&b, "# source: GET /papi/ssh-authorized-keys from %s\n", host)
+	fmt.Fprintf(&b, "# guid-filter: %s\n", filter)
+	return b.String()
+}
+
+// renderManagedFile renders the full managed authorized_keys file: the header
+// banner, then each validated key line verbatim, one per line, with a trailing
+// newline. The output is the COMPLETE file (a full rewrite), so upstream-removed
+// keys are pruned simply by not appearing; an empty key set yields header-only.
+func renderManagedFile(keys []string, header string) []byte {
+	var b bytes.Buffer
+	b.WriteString(header)
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('\n')
+	}
+	return b.Bytes()
+}
+
+// writeManagedFile writes content to path idempotently and atomically, reporting
+// whether the file changed. If the file already equals content it is a no-op
+// (changed=false). Otherwise the parent dir is created 0700 and content is written
+// to a temp file (0600) then renamed over path, so a concurrent sshd read never
+// observes a partial file.
+func writeManagedFile(path string, content []byte) (changed bool, err error) {
+	if existing, rerr := os.ReadFile(path); rerr == nil && bytes.Equal(existing, content) {
+		return false, nil
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return false, err
+	}
+	tmp, err := os.CreateTemp(dir, ".papi-ssh-sync-*")
+	if err != nil {
+		return false, err
+	}
+	defer os.Remove(tmp.Name()) // no-op once the rename has consumed it; cleans up on any error path
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		return false, err
+	}
+	if err := tmp.Close(); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // extractAuthorizedKeys parses a /papi/ssh-authorized-keys body into installable
 // authorized_keys lines, kept verbatim (annotations and all). It skips blanks and
 // comment lines and — crucially — anything that does not parse as a well-formed
@@ -459,9 +635,28 @@ func extractAuthorizedKeys(body []byte, guid string) ([]string, error) {
 		if guid != "" {
 			return nil, fmt.Errorf("no ssh-authorized-keys line with guid=%s", guid)
 		}
-		return nil, fmt.Errorf("no installable slot-9A keys in /papi/ssh-authorized-keys")
+		return nil, errNoInstallableKeys
 	}
 	return keys, nil
+}
+
+// errNoInstallableKeys is the (no --guid) empty-result sentinel from
+// extractAuthorizedKeys. ssh-copy-id treats it as fatal (nothing to install);
+// ssh-sync treats it as "prune to empty" via extractAuthorizedKeysAllowEmpty.
+var errNoInstallableKeys = errors.New("no installable slot-9A keys in /papi/ssh-authorized-keys")
+
+// extractAuthorizedKeysAllowEmpty is extractAuthorizedKeys for the sync path: a
+// domain that publishes NO keys yields an empty slice and no error, so ssh-sync
+// rewrites its managed file to empty (pruning everything) rather than failing. A
+// --guid that matches nothing is still an error — that's a real misconfiguration,
+// not an empty upstream — because extractAuthorizedKeys returns a distinct,
+// non-sentinel error for it.
+func extractAuthorizedKeysAllowEmpty(body []byte, guid string) ([]string, error) {
+	keys, err := extractAuthorizedKeys(body, guid)
+	if errors.Is(err, errNoInstallableKeys) {
+		return nil, nil
+	}
+	return keys, err
 }
 
 // buildSSHInstallScript renders a POSIX-sh script that installs keys into the

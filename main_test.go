@@ -488,6 +488,188 @@ func TestSSHCopyIDInstallsKeys(t *testing.T) {
 	}
 }
 
+func TestRenderManagedFile(t *testing.T) {
+	hdr := "# header line\n"
+	k1 := authorizedKeyLine(t, "DEADBEEF")
+	k2 := authorizedKeyLine(t, "CAFEF00D")
+	if got, want := string(renderManagedFile([]string{k1, k2}, hdr)), hdr+k1+"\n"+k2+"\n"; got != want {
+		t.Errorf("render mismatch:\ngot:  %q\nwant: %q", got, want)
+	}
+	// empty key set → header only (a domain that publishes nothing prunes to empty)
+	if got := string(renderManagedFile(nil, hdr)); got != hdr {
+		t.Errorf("empty render = %q, want header only %q", got, hdr)
+	}
+}
+
+func TestPapiHostSlug(t *testing.T) {
+	// The bare form and every URL form of the same domain must produce the SAME
+	// slug, or the CLI default path diverges from the module default.
+	cases := map[string]string{
+		"example.com":              "example.com",
+		"https://example.com":      "example.com",
+		"https://example.com/foo":  "example.com",
+		"Example.COM":              "example.com",
+		"https://example.com:8443": "example.com_8443",
+	}
+	for in, want := range cases {
+		got, err := papiHostSlug(in)
+		if err != nil {
+			t.Fatalf("papiHostSlug(%q): %v", in, err)
+		}
+		if got != want {
+			t.Errorf("papiHostSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestWriteManagedFileIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sub", "papi.keys") // sub must be created 0700
+	c1 := []byte("# h\nkeyA\n")
+
+	changed, err := writeManagedFile(path, c1)
+	if err != nil || !changed {
+		t.Fatalf("first write: changed=%v err=%v, want changed=true", changed, err)
+	}
+	if fi, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	} else if fi.Mode().Perm() != 0o600 {
+		t.Errorf("file mode = %v, want 0600", fi.Mode().Perm())
+	}
+	if di, err := os.Stat(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	} else if di.Mode().Perm() != 0o700 {
+		t.Errorf("dir mode = %v, want 0700", di.Mode().Perm())
+	}
+
+	// identical content → no-op
+	if changed, err := writeManagedFile(path, c1); err != nil || changed {
+		t.Errorf("rewrite identical: changed=%v err=%v, want changed=false", changed, err)
+	}
+
+	// changed content → rewrite, old content pruned
+	c2 := []byte("# h\nkeyB\n")
+	if changed, err := writeManagedFile(path, c2); err != nil || !changed {
+		t.Errorf("rewrite changed: changed=%v err=%v, want changed=true", changed, err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != string(c2) || strings.Contains(string(got), "keyA") {
+		t.Errorf("after rewrite = %q, want %q (keyA pruned)", got, c2)
+	}
+
+	// no temp files left behind on any path
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".papi-ssh-sync-") {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+// mutableKeysServer serves *body as /papi/ssh-authorized-keys, letting a test
+// change the published key set between runs to exercise prune-on-rewrite.
+func mutableKeysServer(t *testing.T, body *string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/ssh-authorized-keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, *body)
+	})
+	return httptest.NewServer(mux)
+}
+
+// syncRun executes a fresh ssh-sync command and returns stdout + error.
+func syncRun(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newSSHSyncCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+func TestSSHSyncCmd(t *testing.T) {
+	k1 := authorizedKeyLine(t, "DEADBEEF")
+	k2 := authorizedKeyLine(t, "CAFEF00D")
+	body := k1 + "\n" + k2 + "\n"
+	srv := mutableKeysServer(t, &body)
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "papi.keys")
+
+	// first sync: both keys land under the managed header, reported updated.
+	out, err := syncRun(t, srv.URL, "--authorized-keys", path)
+	if err != nil {
+		t.Fatalf("ssh-sync: %v", err)
+	}
+	if !strings.Contains(out, "synced 2 key(s)") || !strings.Contains(out, "(updated)") {
+		t.Errorf("report = %q, want `synced 2 key(s) … (updated)`", out)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "MANAGED BY papi ssh-sync") {
+		t.Errorf("missing managed header:\n%s", got)
+	}
+	if !strings.Contains(string(got), strings.Fields(k1)[1]) || !strings.Contains(string(got), strings.Fields(k2)[1]) {
+		t.Errorf("file should carry both keys:\n%s", got)
+	}
+
+	// re-sync with unchanged upstream: byte-identical, reported unchanged.
+	if out, err := syncRun(t, srv.URL, "--authorized-keys", path); err != nil || !strings.Contains(out, "(unchanged)") {
+		t.Errorf("re-sync = %q err=%v, want (unchanged)", out, err)
+	}
+
+	// upstream drops k1 (card rotation): the full rewrite prunes it.
+	body = k2 + "\n"
+	out, err = syncRun(t, srv.URL, "--authorized-keys", path)
+	if err != nil {
+		t.Fatalf("ssh-sync after rotation: %v", err)
+	}
+	if !strings.Contains(out, "(updated)") {
+		t.Errorf("rotation should report updated, got %q", out)
+	}
+	got, _ = os.ReadFile(path)
+	if strings.Contains(string(got), strings.Fields(k1)[1]) {
+		t.Errorf("k1 should be pruned after upstream removal:\n%s", got)
+	}
+	if !strings.Contains(string(got), strings.Fields(k2)[1]) {
+		t.Errorf("k2 should remain:\n%s", got)
+	}
+
+	// --guid selects exactly one key.
+	body = k1 + "\n" + k2 + "\n"
+	if _, err := syncRun(t, srv.URL, "--authorized-keys", path, "--guid", "deadbeef"); err != nil {
+		t.Fatalf("ssh-sync --guid: %v", err)
+	}
+	got, _ = os.ReadFile(path)
+	if !strings.Contains(string(got), strings.Fields(k1)[1]) || strings.Contains(string(got), strings.Fields(k2)[1]) {
+		t.Errorf("--guid deadbeef should keep only k1:\n%s", got)
+	}
+}
+
+func TestSSHSyncEmptyUpstream(t *testing.T) {
+	body := "# no keys published yet\n"
+	srv := mutableKeysServer(t, &body)
+	defer srv.Close()
+	path := filepath.Join(t.TempDir(), "papi.keys")
+
+	out, err := syncRun(t, srv.URL, "--authorized-keys", path)
+	if err != nil {
+		t.Fatalf("ssh-sync empty upstream should not error: %v", err)
+	}
+	if !strings.Contains(out, "synced 0 key(s)") {
+		t.Errorf("report = %q, want `synced 0 key(s)`", out)
+	}
+	got, _ := os.ReadFile(path)
+	if !strings.Contains(string(got), "MANAGED BY papi ssh-sync") {
+		t.Errorf("empty sync should still write the managed header:\n%s", got)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(got)), "\n") {
+		if line != "" && !strings.HasPrefix(line, "#") {
+			t.Errorf("empty sync wrote a non-comment line: %q", line)
+		}
+	}
+}
+
 // TestVerifiedRecipientsCmd exercises the command's file-reading, dedup, stderr
 // reporting, and --strict wiring through the verifiedRecipientsFn seam (the real
 // receipt crypto is covered by inspect.TestVerifiedRecipients).

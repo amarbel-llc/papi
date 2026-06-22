@@ -51,7 +51,7 @@
       piggy,
       utils,
     }:
-    utils.lib.eachDefaultSystem (
+    (utils.lib.eachDefaultSystem (
       system:
       let
         # igloo's flake path (not the `import igloo {}` shim): applies the fork
@@ -148,5 +148,16 @@
           ];
         };
       }
-    );
+    ))
+    // {
+      # papi-ssh-sync home-manager + NixOS modules (system-independent, so they
+      # live outside eachDefaultSystem). The hm module is curried with `self` so
+      # its `package` option can default to self.packages.${system}.papi — papi
+      # isn't in nixpkgs, so there's no pkgs.papi fallback. The NixOS module
+      # re-exports the hm module into every home-manager-managed user AND
+      # auto-wires each instance's fragment path into
+      # services.openssh.authorizedKeysFiles. See docs/features/0005.
+      homeManagerModules.papi-ssh-sync = import ./nix/hm/papi-ssh-sync.nix self;
+      nixosModules.papi-ssh-sync = import ./nix/nixos/papi-ssh-sync.nix self;
+    };
 }

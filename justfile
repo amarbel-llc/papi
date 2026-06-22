@@ -57,11 +57,33 @@ build-nix:
 
 # --- test ---
 
-test: test-go
+test: test-go test-nix-hm-module
 
 # Hermetic Go test suite (httptest fixtures; no network, no card).
 test-go:
     nix develop --command go test ./...
+
+# Smoke-test the `services.papi-ssh-sync` home-manager module: evaluate it
+# against synthetic configs (lib.evalModules, no home-manager input) and verify
+# the option schema, both platform code paths, the default fragment-path slug,
+# and the assertions. Mirrors piggy's test-nix-hm-module.
+test-nix-hm-module:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    expr='let
+      flake = builtins.getFlake (toString ./.);
+      pkgs = flake.inputs.igloo.legacyPackages.${builtins.currentSystem};
+      test = import ./nix/hm/eval-test.nix {
+        inherit pkgs;
+        module = flake.homeManagerModules.papi-ssh-sync;
+      };
+    in test'
+    json="$(nix eval --impure --json --expr "$expr")"
+    printf '%s\n' "$json" | jq -r '.summary'
+    if [[ "$(printf '%s\n' "$json" | jq -r '.pass')" != "true" ]]; then
+        printf '%s\n' "$json" | jq -r '.failures[] | "FAIL: \(.name)\n  got: \(.result.got)"'
+        exit 1
+    fi
 
 # Regenerate the committed sample enrollment receipt fixture
 # (internal/alfa/enroll/testdata/) — a hand-off artifact for the deploy-side

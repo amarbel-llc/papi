@@ -47,21 +47,46 @@ func NewClient(target string) (*Client, error) {
 }
 
 func normalizeBase(target string) (string, error) {
+	u, err := parseTarget(target)
+	if err != nil {
+		return "", err
+	}
+	return u.Scheme + "://" + u.Host, nil
+}
+
+// parseTarget normalizes target (a bare domain or a URL) to a *url.URL,
+// defaulting to https when no scheme is given, and erroring on empty input or a
+// missing host. It is the single normalization codepath behind normalizeBase and
+// NormalizeBaseHost.
+func parseTarget(target string) (*url.URL, error) {
 	t := strings.TrimSpace(target)
 	if t == "" {
-		return "", fmt.Errorf("empty domain")
+		return nil, fmt.Errorf("empty domain")
 	}
 	if !strings.Contains(t, "://") {
 		t = "https://" + t
 	}
 	u, err := url.Parse(t)
 	if err != nil {
-		return "", fmt.Errorf("parse %q: %w", target, err)
+		return nil, fmt.Errorf("parse %q: %w", target, err)
 	}
 	if u.Host == "" {
-		return "", fmt.Errorf("no host in %q", target)
+		return nil, fmt.Errorf("no host in %q", target)
 	}
-	return u.Scheme + "://" + u.Host, nil
+	return u, nil
+}
+
+// NormalizeBaseHost returns just the host[:port] of a bare-domain-or-URL target,
+// with scheme, path, and query stripped (https assumed for scheme inference). It
+// is the stable identity papi ssh-sync derives a managed-file name from, so the
+// same domain maps to the same file regardless of how the caller spelled it
+// (example.com, https://example.com, https://example.com/foo all → example.com).
+func NormalizeBaseHost(target string) (string, error) {
+	u, err := parseTarget(target)
+	if err != nil {
+		return "", err
+	}
+	return u.Host, nil
 }
 
 // Response is a raw PAPI HTTP response captured for conformance checks that must

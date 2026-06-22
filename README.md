@@ -33,7 +33,9 @@ ADR-0004.
 `papi` has these subcommands: `validate` checks a domain against the spec;
 `piggy-ids` / `ssh-keys` / `person` / `repos` surface a domain's published
 identity material, keys, and repositories for downstream consumption;
-`ssh-copy-id` installs those keys onto a host; `bootstrap` prints a domain's
+`ssh-copy-id` installs those keys onto a remote host, and `ssh-sync` keeps a
+local managed `authorized_keys` file in sync with a domain on a timer (via a
+home-manager service); `bootstrap` prints a domain's
 cold-host self-bootstrap shim; `query` runs a jq expression
 over the document; `enroll` emits a signed enrollment receipt for a new
 YubiKey; `verify-receipt` checks that receipt against a domain's published
@@ -146,6 +148,51 @@ at all.
 > hosts — the live viewport owns the terminal, so a step that prompts for an SSH
 > passphrase or YubiKey touch isn't supported yet
 > ([crap#31](https://github.com/amarbel-llc/crap/issues/31)).
+
+### `papi ssh-sync <domain>`
+
+Fetch all of `<domain>`'s published slot-9A keys and **(re)write them in full**
+into a LOCAL managed file — the counterpart to `ssh-copy-id` for *this* host.
+Where `ssh-copy-id` appends to a remote `authorized_keys` and never prunes,
+`ssh-sync` owns its target file: it is rewritten to exactly the domain's current
+key set each run, so a rotated or revoked card is removed on the next sync. The
+default target is `$XDG_CONFIG_HOME/papi/ssh-sync/<domain>.keys` (the host,
+lowercased, non-`[a-z0-9.-]` bytes → `_`); override with `--authorized-keys`. The
+write is atomic (`0700` dir / `0600` file), and a deterministic header banner
+marks the file machine-owned, so an unchanged upstream is reported `unchanged`.
+`--guid <HEX>` syncs a single card's key; a domain publishing no keys prunes the
+file to header-only rather than erroring.
+
+```console
+$ papi ssh-sync linenisgreat.com
+synced 2 key(s) to /home/me/.config/papi/ssh-sync/linenisgreat.com.keys (updated)
+```
+
+Run it on a schedule with the **`services.papi-ssh-sync` home-manager module**
+(`homeManagerModules.papi-ssh-sync`): a systemd user timer + oneshot service on
+Linux, a launchd agent on Darwin. It works on NixOS, nix-darwin, and standalone
+home-manager (Ubuntu).
+
+```nix
+services.papi-ssh-sync = {
+  enable = true;
+  domain = "linenisgreat.com";          # or `instances.<name> = { domain = …; }` for several
+};
+```
+
+For incoming logins to honor the synced keys, sshd must read the managed file.
+On **NixOS** the companion `nixosModules.papi-ssh-sync` wires
+`services.openssh.authorizedKeysFiles` automatically. On **nix-darwin** and
+**standalone home-manager** add the line once yourself:
+
+```
+AuthorizedKeysFile .ssh/authorized_keys .config/papi/ssh-sync/linenisgreat.com.keys
+```
+
+(Or point `authorizedKeysPath` at `~/.ssh/authorized_keys2`, which stock sshd
+reads by default — zero config for a single domain.) See
+[FDR-0005](docs/features/0005-papi-ssh-sync.md) for the full design and trust
+model.
 
 ### `papi bootstrap <domain>`
 
@@ -382,7 +429,8 @@ internal/0/markl/      markl-id (blech32) parser (RFC-0002)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, bootstrap, gh-check, gh-auth, person, enroll, verify-receipt, verified-recipients)
+nix/hm, nix/nixos/     the papi-ssh-sync home-manager + NixOS modules (FDR-0005)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, ssh-sync, bootstrap, gh-check, gh-auth, person, enroll, verify-receipt, verified-recipients)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic
