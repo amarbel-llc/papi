@@ -187,6 +187,11 @@ self_proof: verified — new card's slot-9A key signs the 9D↔9A binding claim
 attestation: verified — an already-published slot-9A key attests the receipt
 ```
 
+A host without a Go binary (e.g. a php-wasm site verifying receipts natively) can
+run the same two checks from the network-free WASM module — `just build-wasm`
+builds `cmd/papi-verify-wasm` to a wasip1 artifact that takes the published keys
+as input instead of fetching them ([FDR-0002](docs/features/0002-papi-verify-wasm-module.md)).
+
 ## Install
 
 The CLI is distributed as a Nix flake package — there is no non-Nix install
@@ -236,10 +241,12 @@ Run `just --list` for the full recipe set. Dependency changes go through
 
 ```
 docs/rfcs/             the PAPI wire-format spec (RFC-0001)
-internal/0/papi/       HTTP client + wire-format decoders
+internal/0/papi/       HTTP client + wire-format decoders + enrollment receipt
 internal/0/markl/      markl-id (blech32) parser (RFC-0002)
-internal/alfa/inspect/ the validate command: introspection + conformance checks
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, person)
+internal/alfa/inspect/ the validate command + receipt verification core
+internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
+cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, person, enroll, verify-receipt)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic

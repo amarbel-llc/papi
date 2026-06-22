@@ -261,3 +261,68 @@ func TestVerifyReceiptWrongSchema(t *testing.T) {
 		t.Fatal("a non-papi-enroll-receipt-v1 schema should error")
 	}
 }
+
+// TestVerifyReceiptWithPublishedIDs exercises the network-free entry point the
+// WASM module (cmd/papi-verify-wasm) uses: the trusted slot-9A attester is
+// supplied as a /papi/piggy-ids markl-id string rather than fetched.
+func TestVerifyReceiptWithPublishedIDs(t *testing.T) {
+	newCard, trusted := newMarklSigner(t), newMarklSigner(t)
+	raw := buildReceipt(t, newCard, trusted)
+
+	// The caller may pass its whole piggy-ids list: the 9D recipient id is
+	// skipped, the 9A attester id is matched. No network.
+	res, err := VerifyReceiptWithPublishedIDs(raw, []string{testRecipientID, trusted.keyID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Fatalf("valid receipt rejected by keys-as-input verify: %+v", res.Checks)
+	}
+
+	// Without the attester id supplied, attestation fails but the offline
+	// self_proof still holds — the same split the networked path produces.
+	res, err = VerifyReceiptWithPublishedIDs(raw, []string{testRecipientID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK {
+		t.Fatal("receipt must fail when the attester key is not supplied")
+	}
+	if !res.Checks[0].OK {
+		t.Errorf("self_proof should still pass offline: %+v", res.Checks[0])
+	}
+	if res.Checks[1].OK {
+		t.Errorf("attestation should fail (attester not supplied): %+v", res.Checks[1])
+	}
+}
+
+// TestVerifyReceiptWithKeysTampered confirms the pure verify still binds every
+// signed field: a key supplied directly verifies a clean receipt, and mutating a
+// signed field breaks the canonical-bytes attestation.
+func TestVerifyReceiptWithKeysTampered(t *testing.T) {
+	newCard, trusted := newMarklSigner(t), newMarklSigner(t)
+	raw := buildReceipt(t, newCard, trusted)
+	trustedPub := &trusted.priv.PublicKey
+
+	res, err := VerifyReceiptWithKeys(raw, []*ecdsa.PublicKey{trustedPub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.OK {
+		t.Fatalf("valid receipt rejected by keys-as-input verify: %+v", res.Checks)
+	}
+
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	m["domain"] = json.RawMessage(`"evil.example"`)
+	tampered, _ := json.Marshal(m)
+	res, err = VerifyReceiptWithKeys(tampered, []*ecdsa.PublicKey{trustedPub})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.OK || res.Checks[1].OK {
+		t.Fatalf("tampered receipt must fail attestation: %+v", res.Checks)
+	}
+}

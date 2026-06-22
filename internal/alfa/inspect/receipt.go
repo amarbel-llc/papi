@@ -12,18 +12,31 @@ import (
 )
 
 // ReceiptCheck is one verdict line from VerifyReceipt: a named check, whether it
-// passed, and a human-readable detail.
+// passed, and a human-readable detail. The json tags give the WASM module
+// (cmd/papi-verify-wasm) a stable lowercase wire shape.
 type ReceiptCheck struct {
-	Name   string
-	OK     bool
-	Detail string
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail"`
 }
 
 // ReceiptResult is the verdict over a whole enrollment receipt: every check plus
 // the conjunctive OK (true iff every check passed).
 type ReceiptResult struct {
-	Checks []ReceiptCheck
-	OK     bool
+	Checks []ReceiptCheck `json:"checks"`
+	OK     bool           `json:"ok"`
+}
+
+// newReceiptResult bundles checks into a ReceiptResult with the conjunctive OK
+// (true iff every check passed).
+func newReceiptResult(checks ...ReceiptCheck) ReceiptResult {
+	res := ReceiptResult{Checks: checks, OK: true}
+	for _, ck := range checks {
+		if !ck.OK {
+			res.OK = false
+		}
+	}
+	return res
 }
 
 // VerifyReceipt verifies a papi-enroll-receipt-v1 (FDR-0001) against the live
@@ -39,6 +52,12 @@ type ReceiptResult struct {
 //
 // The self_proof is verifiable offline; the attestation needs the live domain to
 // confirm the attesting key is already trusted. The result is conjunctive.
+//
+// VerifyReceipt is the networked wrapper: it fetches the domain's published
+// slot-9A keys, then delegates the actual crypto to VerifyReceiptWithKeys. Hosts
+// without sockets (the WASM module, a php-wasm site that already holds its own
+// /papi/piggy-ids) call VerifyReceiptWithKeys / VerifyReceiptWithPublishedIDs
+// directly instead.
 func VerifyReceipt(ctx context.Context, c *papi.Client, raw []byte) (ReceiptResult, error) {
 	var r papi.Receipt
 	if err := json.Unmarshal(raw, &r); err != nil {
@@ -48,17 +67,53 @@ func VerifyReceipt(ctx context.Context, c *papi.Client, raw []byte) (ReceiptResu
 		return ReceiptResult{}, fmt.Errorf("receipt schema %q, want %q", r.Schema, papi.ReceiptSchema)
 	}
 
-	res := ReceiptResult{Checks: []ReceiptCheck{
-		verifyReceiptSelfProof(r),
-		verifyReceiptAttestation(ctx, c, r, raw),
-	}}
-	res.OK = true
-	for _, ck := range res.Checks {
-		if !ck.OK {
-			res.OK = false
-		}
+	self := verifyReceiptSelfProof(r)
+	doc, _, _, err := c.Document(ctx)
+	if err != nil {
+		return newReceiptResult(self, ReceiptCheck{"attestation", false, "GET /papi failed: " + err.Error()}), nil
 	}
-	return res, nil
+	att := verifyReceiptAttestationWithKeys(r, raw, publishedSigningKeys(ctx, c, doc))
+	return newReceiptResult(self, att), nil
+}
+
+// VerifyReceiptWithKeys is the network-free core of VerifyReceipt: it checks both
+// the offline self_proof and the attestation against an explicitly-supplied set
+// of trusted slot-9A keys (the domain's already-published signing keys). It does
+// no I/O, so it compiles and runs under WASI/wasip1 (cmd/papi-verify-wasm).
+func VerifyReceiptWithKeys(raw []byte, published []*ecdsa.PublicKey) (ReceiptResult, error) {
+	var r papi.Receipt
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return ReceiptResult{}, fmt.Errorf("receipt is not valid JSON: %w", err)
+	}
+	if r.Schema != papi.ReceiptSchema {
+		return ReceiptResult{}, fmt.Errorf("receipt schema %q, want %q", r.Schema, papi.ReceiptSchema)
+	}
+	return newReceiptResult(
+		verifyReceiptSelfProof(r),
+		verifyReceiptAttestationWithKeys(r, raw, published),
+	), nil
+}
+
+// VerifyReceiptWithPublishedIDs is VerifyReceiptWithKeys taking the trusted
+// slot-9A keys as the markl-id strings a domain publishes at /papi/piggy-ids
+// (e.g. "piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…"). Each id is parsed to a
+// P-256 point; ids that are not slot-9A signing keys (e.g. the slot-9D
+// piggy-recipient-v1 entries in the same list) are skipped, so the caller can
+// pass its whole piggy-ids set verbatim.
+func VerifyReceiptWithPublishedIDs(raw []byte, publishedIDs []string) (ReceiptResult, error) {
+	published := make([]*ecdsa.PublicKey, 0, len(publishedIDs))
+	for _, id := range publishedIDs {
+		keyID, err := markl.Parse(id)
+		if err != nil || keyID.Purpose != markl.PurposePIVAuth || keyID.Format != markl.FormatSSHEcdsaNistp256Pub {
+			continue
+		}
+		pub, err := p256FromCompressed(keyID.Payload)
+		if err != nil {
+			continue
+		}
+		published = append(published, pub)
+	}
+	return VerifyReceiptWithKeys(raw, published)
 }
 
 // verifyReceiptSelfProof checks the new card's slot-9D ↔ slot-9A binding: the
@@ -88,11 +143,13 @@ func verifyReceiptSelfProof(r papi.Receipt) ReceiptCheck {
 	return ReceiptCheck{name, true, "new card's slot-9A key signs the 9D↔9A binding claim"}
 }
 
-// verifyReceiptAttestation checks that an already-trusted card authorized the new
-// key: attestation.key (a slot-9A markl-id) MUST already be published on the live
-// domain, and attestation.sig (a papi-enroll-att-v1 markl-id) MUST verify over the
-// receipt's canonical bytes against that key.
-func verifyReceiptAttestation(ctx context.Context, c *papi.Client, r papi.Receipt, raw []byte) ReceiptCheck {
+// verifyReceiptAttestationWithKeys checks that an already-trusted card authorized
+// the new key: attestation.key (a slot-9A markl-id) MUST be present in `published`
+// (the domain's already-trusted slot-9A keys), and attestation.sig (a
+// papi-enroll-att-v1 markl-id) MUST verify over the receipt's canonical bytes
+// against that key. It takes `published` as input rather than fetching it, so it
+// is pure (the WASM/php-wasm path supplies the keys from the site's own papi.json).
+func verifyReceiptAttestationWithKeys(r papi.Receipt, raw []byte, published []*ecdsa.PublicKey) ReceiptCheck {
 	const name = "attestation"
 	keyID, err := markl.Parse(r.Attestation.Key)
 	if err != nil || keyID.Purpose != markl.PurposePIVAuth || keyID.Format != markl.FormatSSHEcdsaNistp256Pub {
@@ -107,11 +164,7 @@ func verifyReceiptAttestation(ctx context.Context, c *papi.Client, r papi.Receip
 		return ReceiptCheck{name, false, "attestation.sig is not a papi-enroll-att-v1@ecdsa_p256_sig markl-id"}
 	}
 
-	doc, _, _, err := c.Document(ctx)
-	if err != nil {
-		return ReceiptCheck{name, false, "GET /papi failed: " + err.Error()}
-	}
-	if !pubKeyPublished(trusted, publishedSigningKeys(ctx, c, doc)) {
+	if !pubKeyPublished(trusted, published) {
 		return ReceiptCheck{name, false,
 			"attestation.key is not published on the domain (/papi/piggy-ids or ssh_authorized_keys) — no trusted attester"}
 	}

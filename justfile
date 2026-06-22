@@ -30,7 +30,7 @@ lint-worktree:
 
 # --- build ---
 
-build: build-gomod2nix build-go build-nix
+build: build-gomod2nix build-go build-wasm build-nix
 
 # Regenerate gomod2nix.toml from go.mod/go.sum. A no-op when current; run after
 # changing deps. (conformist-justfile(7): a build-* leaf lives in the build
@@ -42,6 +42,14 @@ build-gomod2nix:
 # nix build injects the real values (eng-versioning(7)).
 build-go:
     nix develop --command go build -o build/papi .
+
+# Cross-build the network-free receipt-verify core to a wasip1 WASM module
+# (cmd/papi-verify-wasm, FDR-0002) for php-wasm native verification. In `build` so
+# the merge pre-hook enforces that the verify core stays free of the enroll TUI
+# subtree (huh→termenv→terminfo→os/user) that blocks a wasip1 compile.
+build-wasm:
+    nix develop --command env GOOS=wasip1 GOARCH=wasm go build -o build/papi-verify.wasm ./cmd/papi-verify-wasm
+    @ls -lh build/papi-verify.wasm
 
 # Full nix build of the papi CLI (injects the real version/commit).
 build-nix:
@@ -143,6 +151,14 @@ debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
     args=(enroll "{{domain}}" --new-guid "{{new_guid}}" --trusted-guid "{{trusted_guid}}")
     if [[ -n "{{pin}}" ]]; then args+=(--pin "{{pin}}"); fi
     nix develop --command go run . "${args[@]}"
+
+# Explore: which packages in a build subtree import a given (often stdlib)
+# package — e.g. `just debug-imports-of os/user .` locates the transitive wasip1
+# build blocker, and `... ./internal/alfa/inspect` checks if the verify core is
+# clean of it. WASM-isolation exploration.
+[group("debug")]
+debug-imports-of target pkg=".":
+    nix develop --command bash -c 'go list -deps -json {{pkg}} | jq -r --arg p "{{target}}" "select(.Imports != null and (.Imports | index(\$p))) | .ImportPath"'
 
 # Show PIV PIN/PUK retry counts per attached card (read-only via ykman) — diagnose
 # a blocked PIN after a live test. papi#15 live-test debug.
