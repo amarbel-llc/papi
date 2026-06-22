@@ -1,9 +1,10 @@
 ---
-status: proposed
+status: experimental
 date: 2026-06-22
 promotion-criteria: >
-  proposed → experimental: linenisgreat serves eng/bin/provision.sh at GET
-  /papi/bootstrap and `papi bootstrap linenisgreat.com` prints it verbatim.
+  proposed → experimental: MET 2026-06-22 — linenisgreat request-time-proxies
+  eng@master:bin/provision.sh at GET /papi/bootstrap and `papi bootstrap
+  linenisgreat.com` prints it verbatim.
   experimental → testing: a real cold host runs `curl -fsSL
   https://linenisgreat.com/papi/bootstrap | sh` and provisions against eng end to
   end. testing → accepted: a second cold host bootstraps with no manual steps.
