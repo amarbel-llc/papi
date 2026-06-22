@@ -941,7 +941,7 @@ func enrollGUIDFile(guid string) string {
 }
 
 func newEnrollCmd() *cobra.Command {
-	var newGUID, newSerial, trustedGUID, pin, out string
+	var newGUID, newSerial, trustedGUID, pin, out, cnPrefix string
 	var allowReprovision bool
 	cmd := &cobra.Command{
 		Use:   "enroll <domain>",
@@ -955,7 +955,8 @@ func newEnrollCmd() *cobra.Command {
 			"provisioning), or --new-serial to pick the blank card non-interactively. With " +
 			"--allow-reprovision the picker also offers provisioned cards: choosing one RESETS " +
 			"it (destroys its keys) and re-provisions from scratch, behind a loud extra confirm. " +
-			"The " +
+			"--cn-prefix names the new card's slot certs (else piggy derives piv-auth@<guid8>); " +
+			"interactive runs prompt for it. The " +
 			"trusted attester is the sole provisioned card, or --trusted-guid. papi drives the " +
 			"papi-agnostic piggy primitives (piggy list / age-plugin-piggy to read back, " +
 			"piggy sign-bytes to sign): the new card self-signs its 9D↔9A binding and the " +
@@ -975,7 +976,7 @@ func newEnrollCmd() *cobra.Command {
 					return err
 				}
 			}
-			if newGUID, err = enroll.ResolveNewCard(ctx, enroll.ExecInteractive, run, cards, newGUID, newSerial, domain, allowReprovision); err != nil {
+			if newGUID, err = enroll.ResolveNewCard(ctx, enroll.ExecInteractive, run, cards, newGUID, newSerial, domain, allowReprovision, cnPrefix); err != nil {
 				return err
 			}
 			if trustedGUID, err = enroll.ResolveTrustedGUID(cards, trustedGUID); err != nil {
@@ -1044,6 +1045,7 @@ func newEnrollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&newGUID, "new-guid", "", "enroll this ALREADY-provisioned card by GUID (skip the picker + provisioning)")
 	cmd.Flags().StringVar(&newSerial, "new-serial", "", "provision the blank card with this serial (skip the picker)")
 	cmd.Flags().BoolVar(&allowReprovision, "allow-reprovision", false, "permit selecting an ALREADY-provisioned card and resetting it (destroys its keys) before re-provisioning — a loud extra confirm")
+	cmd.Flags().StringVar(&cnPrefix, "cn-prefix", "", "name for the new card's slot certs (cn=…, surfaces in piggy list / ssh-authorized-keys); default: piggy's piv-auth@<guid8>. Interactive runs prompt for it")
 	cmd.Flags().StringVar(&trustedGUID, "trusted-guid", "", "GUID of the TRUSTED attester card (default: the sole provisioned card)")
 	cmd.Flags().StringVar(&pin, "pin", "", "PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
 	cmd.Flags().StringVar(&out, "out", "", "receipt output path (default: enroll-receipt-<new-guid8>.json)")

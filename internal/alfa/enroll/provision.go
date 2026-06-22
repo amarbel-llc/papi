@@ -230,6 +230,24 @@ func ConfirmReprovision(serial, guid, domain string) (bool, error) {
 	return ok, nil
 }
 
+// PromptCN asks the operator for the card's CN (name) before provisioning. A
+// blank answer means "let piggy derive its default" (piv-auth@<guid8>), so the
+// behavior is unchanged unless the operator types a name.
+func PromptCN() (string, error) {
+	var cn string
+	err := huh.NewForm(huh.NewGroup(
+		huh.NewInput().
+			Title("Card name (CN)").
+			Description("Names the card's slot certs; surfaces in piggy list and ssh-authorized-keys (cn=…). Blank = the default piv-auth@<guid8>.").
+			Placeholder("e.g. laptop-alice").
+			Value(&cn),
+	)).Run()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(cn), nil
+}
+
 // InteractiveRunner runs a command with the process's own stdio attached, so a
 // child's PIN/admin-key prompt reaches the operator's terminal. The provisioning
 // step uses it (rather than the capturing Runner) precisely so `piggy card init`
@@ -247,18 +265,24 @@ func ExecInteractive(ctx context.Context, name string, args ...string) error {
 }
 
 // Provision provisions the blank card with the given serial via `piggy card init
-// --serial <serial>` (piggy#194), run interactively so the operator enters the
-// PIN/admin-key, then reads the freshly-assigned GUID back via `piggy list`. It
-// DEPENDS ON piggy#194's interface and piggy#193's blank-card listing; the exact
-// init flags and the post-init read-back are finalized when those ship.
-func Provision(ctx context.Context, irun InteractiveRunner, list Runner, serial string) (string, error) {
+// --serial <serial> [--cn-prefix <cnPrefix>]` (piggy#194), run interactively so
+// the operator enters the PIN/admin-key, then reads the freshly-assigned GUID back
+// via `piggy list`. An empty cnPrefix lets piggy derive its default CN
+// (piv-auth@<guid8> / piv-key-mgmt@<guid8>). It DEPENDS ON piggy#194's interface
+// and piggy#193's blank-card listing; the exact flags and read-back are finalized
+// when those ship.
+func Provision(ctx context.Context, irun InteractiveRunner, list Runner, serial, cnPrefix string) (string, error) {
 	if irun == nil {
 		irun = ExecInteractive
 	}
 	if list == nil {
 		list = ExecRunner
 	}
-	if err := irun(ctx, "piggy", "card", "init", "--serial", serial); err != nil {
+	args := []string{"card", "init", "--serial", serial}
+	if cnPrefix != "" {
+		args = append(args, "--cn-prefix", cnPrefix)
+	}
+	if err := irun(ctx, "piggy", args...); err != nil {
 		return "", fmt.Errorf("piggy card init --serial %s: %w", serial, err)
 	}
 	out, err := list(ctx, nil, "piggy", "list", "--format=ndjson")
@@ -295,12 +319,13 @@ func Reset(ctx context.Context, irun InteractiveRunner, serial string) error {
 // ReprovisionCard resets an already-provisioned card and then provisions it afresh
 // (reset → init + generate 9d/9a), returning the freshly-assigned GUID. It is the
 // --allow-reprovision path: the reset MUST precede provisioning so the new keys
-// land on a clean applet.
-func ReprovisionCard(ctx context.Context, irun InteractiveRunner, list Runner, serial string) (string, error) {
+// land on a clean applet. cnPrefix names the new slot certs (empty = piggy's
+// default).
+func ReprovisionCard(ctx context.Context, irun InteractiveRunner, list Runner, serial, cnPrefix string) (string, error) {
 	if err := Reset(ctx, irun, serial); err != nil {
 		return "", err
 	}
-	return Provision(ctx, irun, list, serial)
+	return Provision(ctx, irun, list, serial, cnPrefix)
 }
 
 // ListCards runs `piggy list --format=ndjson` and groups it into CardStates.
@@ -320,13 +345,16 @@ func ListCards(ctx context.Context, run Runner) ([]CardState, error) {
 // by newSerial (or, when empty, the huh selector), confirms the destructive step,
 // and returns the freshly-assigned GUID. A blank card is provisioned (init);
 // under allowReprovision a chosen provisioned card is reset THEN provisioned (a
-// louder confirm). cards is the current `piggy list` so it can be reused.
-func ResolveNewCard(ctx context.Context, irun InteractiveRunner, run Runner, cards []CardState, newGUID, newSerial, domain string, allowReprovision bool) (string, error) {
+// louder confirm). cnPrefix names the new slot certs; in the interactive flow it
+// is prompted when empty (blank = piggy's default). cards is the current `piggy
+// list` so it can be reused.
+func ResolveNewCard(ctx context.Context, irun InteractiveRunner, run Runner, cards []CardState, newGUID, newSerial, domain string, allowReprovision bool, cnPrefix string) (string, error) {
 	if newGUID != "" {
 		return newGUID, nil
 	}
 	serial := newSerial
-	if serial == "" {
+	interactive := serial == ""
+	if interactive {
 		var err error
 		if serial, err = SelectNewCard(cards, allowReprovision); err != nil {
 			return "", err
@@ -335,6 +363,12 @@ func ResolveNewCard(ctx context.Context, irun InteractiveRunner, run Runner, car
 	card, err := findCardToEnroll(cards, serial, allowReprovision)
 	if err != nil {
 		return "", err
+	}
+	// In the interactive flow, prompt for the CN (unless --cn-prefix already set it).
+	if interactive && cnPrefix == "" {
+		if cnPrefix, err = PromptCN(); err != nil {
+			return "", err
+		}
 	}
 	if card.Provisioned {
 		// --allow-reprovision: a loud confirm, then reset + provision.
@@ -345,7 +379,7 @@ func ResolveNewCard(ctx context.Context, irun InteractiveRunner, run Runner, car
 		if !ok {
 			return "", fmt.Errorf("reprovisioning cancelled")
 		}
-		return ReprovisionCard(ctx, irun, run, card.Serial)
+		return ReprovisionCard(ctx, irun, run, card.Serial, cnPrefix)
 	}
 	ok, err := ConfirmProvision(card.Serial, domain)
 	if err != nil {
@@ -354,7 +388,7 @@ func ResolveNewCard(ctx context.Context, irun InteractiveRunner, run Runner, car
 	if !ok {
 		return "", fmt.Errorf("provisioning cancelled")
 	}
-	return Provision(ctx, irun, run, card.Serial)
+	return Provision(ctx, irun, run, card.Serial, cnPrefix)
 }
 
 // ResolveTrustedGUID determines the trusted attester's GUID: trustedGUID as-is,

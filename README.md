@@ -211,6 +211,9 @@ provisioning prompts for the PIN on your terminal.
   choosing one **resets** it (destroys its keys) and re-provisions from scratch,
   behind a loud extra confirm. Off by default — re-provisioning is destructive
   and never the silent default.
+- `--cn-prefix <name>` — name the new card's slot certs (`cn=…`, surfaces in
+  `piggy list` and `/papi/ssh-authorized-keys`), e.g. `laptop-alice`. Default:
+  piggy's `piv-auth@<guid8>`. Interactive runs prompt for it.
 - `--trusted-guid <G>` — the attester (default: the sole provisioned card).
 
 Pair it with `verify-receipt` on the deploy side.

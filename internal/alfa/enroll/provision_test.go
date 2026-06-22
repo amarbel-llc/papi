@@ -2,6 +2,7 @@ package enroll
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -94,7 +95,7 @@ func TestReprovisionCard(t *testing.T) {
 	list := func(_ context.Context, _ []byte, _ string, _ ...string) ([]byte, error) {
 		return []byte(`{"serial":"19000002","guid":"ABCD1234ABCD1234","slot":"9D","cn":"piv-key-mgmt"}`), nil
 	}
-	guid, err := ReprovisionCard(context.Background(), irun, list, "19000002")
+	guid, err := ReprovisionCard(context.Background(), irun, list, "19000002", "laptop-alice")
 	if err != nil {
 		t.Fatalf("ReprovisionCard: %v", err)
 	}
@@ -104,6 +105,10 @@ func TestReprovisionCard(t *testing.T) {
 	// reset MUST run before init — new keys land on a freshly-reset applet.
 	if len(calls) != 2 || calls[0][2] != "reset" || calls[1][2] != "init" {
 		t.Fatalf("calls = %v, want [piggy card reset …] then [piggy card init …]", calls)
+	}
+	// the CN prefix is threaded to init.
+	if init := strings.Join(calls[1], " "); !strings.Contains(init, "--cn-prefix laptop-alice") {
+		t.Errorf("init call should thread --cn-prefix laptop-alice, got %q", init)
 	}
 }
 

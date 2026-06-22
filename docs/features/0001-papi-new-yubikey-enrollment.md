@@ -82,7 +82,9 @@ four steps over the low-level piggy primitives above and emits one artifact:
 > ([papi#18](https://github.com/amarbel-llc/papi/issues/18)) makes provisioned
 > cards selectable too — choosing one resets it (destroys its keys) and
 > re-provisions, behind a loud extra confirm (the explicit, opt-in escape hatch).
-> **Gated on piggy** for the live
+> `--cn-prefix <name>` ([papi#19](https://github.com/amarbel-llc/papi/issues/19))
+> names the new card's slot certs (else piggy derives `piv-auth@<guid8>`);
+> interactive runs prompt for it. **Gated on piggy** for the live
 > data: the blank card only appears once `piggy list` lists unprovisioned cards
 > (piggy#193) and is provisioned by piggy#194 (`piggy card init --serial`);
 > papi is wired to both and works the moment they ship
