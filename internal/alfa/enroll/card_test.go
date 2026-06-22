@@ -175,6 +175,8 @@ func TestRegisterGitHubKey(t *testing.T) {
 }
 
 func TestListGitHubKeys(t *testing.T) {
+	// auth lists cleanly; signing fails (a missing scope) — its error is captured
+	// per-kind, not raised, so the caller can degrade.
 	run := func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
 		if name != "gh" || len(args) < 2 || args[0] != "api" {
 			t.Fatalf("unexpected exec: %s %v", name, args)
@@ -183,21 +185,19 @@ func TestListGitHubKeys(t *testing.T) {
 		case "user/keys":
 			return []byte(`[{"key":"ssh-ed25519 AAAAauth1","title":"laptop"}]`), nil
 		case "user/ssh_signing_keys":
-			return []byte(`[{"key":"ssh-ed25519 AAAAsign1","title":"laptop-sign"}]`), nil
+			return nil, fmt.Errorf("gh: Not Found (HTTP 404) — needs admin:ssh_signing_key")
 		}
 		return nil, fmt.Errorf("unexpected gh api path %q", args[1])
 	}
-	keys, err := ListGitHubKeys(context.Background(), run)
-	if err != nil {
-		t.Fatalf("ListGitHubKeys: %v", err)
+	sets := ListGitHubKeys(context.Background(), run)
+	if len(sets) != 2 {
+		t.Fatalf("want 2 sets (auth + signing), got %d: %+v", len(sets), sets)
 	}
-	if len(keys) != 2 {
-		t.Fatalf("want 2 keys (1 auth + 1 signing), got %d: %+v", len(keys), keys)
+	if sets[0].Kind != "authentication" || sets[0].Err != nil ||
+		len(sets[0].Keys) != 1 || sets[0].Keys[0].Key != "ssh-ed25519 AAAAauth1" || sets[0].Keys[0].Title != "laptop" {
+		t.Errorf("auth set = %+v", sets[0])
 	}
-	if keys[0].Kind != "authentication" || keys[0].Key != "ssh-ed25519 AAAAauth1" || keys[0].Title != "laptop" {
-		t.Errorf("auth key = %+v", keys[0])
-	}
-	if keys[1].Kind != "signing" || keys[1].Title != "laptop-sign" {
-		t.Errorf("signing key = %+v", keys[1])
+	if sets[1].Kind != "signing" || sets[1].Err == nil || len(sets[1].Keys) != 0 {
+		t.Errorf("signing set should carry its error and no keys: %+v", sets[1])
 	}
 }

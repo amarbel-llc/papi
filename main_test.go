@@ -90,6 +90,16 @@ func crapHasFailedTest(recs []ndjsoncrap.Record) bool {
 	return false
 }
 
+// crapHasSkippedTest reports whether the stream carries a skipped test point.
+func crapHasSkippedTest(recs []ndjsoncrap.Record) bool {
+	for _, rec := range recs {
+		if tt, ok := rec.(ndjsoncrap.Test); ok && tt.Directive != nil && tt.Directive.Kind == "skip" {
+			return true
+		}
+	}
+	return false
+}
+
 func TestVerifyReceiptCmdCrap(t *testing.T) {
 	// A wrong-schema receipt fails before any network fetch, so a stub server is
 	// enough to build the client; the crap stream carries a failed test point and
@@ -570,11 +580,14 @@ func TestGHCheckCmd(t *testing.T) {
 	defer srv.Close()
 
 	orig := ghKeysFn
-	ghKeysFn = func(context.Context, enroll.Runner) ([]enroll.GitHubKey, error) {
-		return []enroll.GitHubKey{
-			{Title: "card", Kind: "authentication", Key: k1},  // published → OK
-			{Title: "stale", Kind: "authentication", Key: k2}, // orphan → NotOk
-		}, nil
+	ghKeysFn = func(context.Context, enroll.Runner) []enroll.GitHubKeySet {
+		return []enroll.GitHubKeySet{
+			{Kind: "authentication", Keys: []enroll.GitHubKey{
+				{Title: "card", Kind: "authentication", Key: k1},  // published → OK
+				{Title: "stale", Kind: "authentication", Key: k2}, // orphan → NotOk
+			}},
+			{Kind: "signing"}, // listed cleanly, empty
+		}
 	}
 	defer func() { ghKeysFn = orig }()
 
@@ -588,6 +601,45 @@ func TestGHCheckCmd(t *testing.T) {
 	}
 	if !crapHasFailedTest(crapRecords(t, out.String())) {
 		t.Errorf("expected a failed test point (the orphan) in the crap stream:\n%s", out.String())
+	}
+}
+
+func TestGHCheckCmdMissingScope(t *testing.T) {
+	k1 := genSSHKey(t) // on the domain and on GitHub (auth)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/ssh-authorized-keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, k1+" piggy slot=9A guid=AAAA\n")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	orig := ghKeysFn
+	// The signing kind can't be listed (missing scope) — captured as a per-kind
+	// error, which must SKIP rather than fail the whole check.
+	ghKeysFn = func(context.Context, enroll.Runner) []enroll.GitHubKeySet {
+		return []enroll.GitHubKeySet{
+			{Kind: "authentication", Keys: []enroll.GitHubKey{{Title: "card", Kind: "authentication", Key: k1}}},
+			{Kind: "signing", Err: errors.New("gh api user/ssh_signing_keys: needs admin:ssh_signing_key")},
+		}
+	}
+	defer func() { ghKeysFn = orig }()
+
+	cmd := newGHCheckCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{srv.URL})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("a missing scope should skip, not fail the command: %v", err)
+	}
+	recs := crapRecords(t, out.String())
+	if crapHasFailedTest(recs) {
+		t.Errorf("missing scope must not produce a failed test:\n%s", out.String())
+	}
+	if !crapHasSkippedTest(recs) {
+		t.Errorf("missing scope should produce a skipped test:\n%s", out.String())
 	}
 }
 

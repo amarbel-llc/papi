@@ -253,33 +253,53 @@ type GitHubKey struct {
 	Key   string
 }
 
-// ListGitHubKeys returns the authenticated GitHub account's SSH keys — both
-// authentication keys (GET /user/keys) and signing keys (GET /user/ssh_signing_keys)
-// — via `gh api`. It is the read counterpart of RegisterGitHubKey, for
-// reconciling GitHub against a domain's published slot-9A keys.
-func ListGitHubKeys(ctx context.Context, run Runner) ([]GitHubKey, error) {
+// GitHubKeySet is the result of listing one kind of GitHub SSH key: the keys, or
+// the error that prevented listing them. The two GitHub key kinds sit behind
+// SEPARATE OAuth scopes (authentication keys need admin:public_key, signing keys
+// need admin:ssh_signing_key — or the read: variants), so a per-kind error
+// (typically a missing scope) is captured here rather than failing the whole
+// call, letting a caller degrade: check the kinds it can and skip the rest.
+type GitHubKeySet struct {
+	Kind string // "authentication" or "signing"
+	Keys []GitHubKey
+	Err  error // non-nil if this kind couldn't be listed (e.g. a missing scope)
+}
+
+// ListGitHubKeys returns one GitHubKeySet per kind (authentication via
+// GET /user/keys, signing via GET /user/ssh_signing_keys) from `gh api`. It is the
+// read counterpart of RegisterGitHubKey, for reconciling GitHub against a domain's
+// published slot-9A keys. It never returns a top-level error — a failed kind is
+// reported in its set's Err.
+func ListGitHubKeys(ctx context.Context, run Runner) []GitHubKeySet {
 	if run == nil {
 		run = ExecRunner
 	}
-	var out []GitHubKey
-	for _, ep := range []struct{ path, kind string }{
+	defs := []struct{ path, kind string }{
 		{"user/keys", "authentication"},
 		{"user/ssh_signing_keys", "signing"},
-	} {
+	}
+	out := make([]GitHubKeySet, 0, len(defs))
+	for _, ep := range defs {
+		set := GitHubKeySet{Kind: ep.kind}
 		raw, err := run(ctx, nil, "gh", "api", ep.path)
 		if err != nil {
-			return nil, fmt.Errorf("gh api %s: %w", ep.path, err)
+			set.Err = fmt.Errorf("gh api %s: %w", ep.path, err)
+			out = append(out, set)
+			continue
 		}
 		var keys []struct {
 			Key   string `json:"key"`
 			Title string `json:"title"`
 		}
 		if err := json.Unmarshal(raw, &keys); err != nil {
-			return nil, fmt.Errorf("parse gh api %s: %w", ep.path, err)
+			set.Err = fmt.Errorf("parse gh api %s: %w", ep.path, err)
+			out = append(out, set)
+			continue
 		}
 		for _, k := range keys {
-			out = append(out, GitHubKey{Title: k.Title, Kind: ep.kind, Key: k.Key})
+			set.Keys = append(set.Keys, GitHubKey{Title: k.Title, Kind: ep.kind, Key: k.Key})
 		}
+		out = append(out, set)
 	}
-	return out, nil
+	return out
 }

@@ -238,7 +238,11 @@ func newGHCheckCmd() *cobra.Command {
 			"GitHub but the domain doesn't recognize it: a revoked or rogue card) and each " +
 			"domain-published key NOT on GitHub (a gap — an enrolled card that can't yet use " +
 			"GitHub). Presented via the crap-TUI; exits non-zero if anything is out of sync. " +
-			"Needs gh authenticated.",
+			"Needs gh authenticated with the admin:public_key (auth keys) and " +
+			"admin:ssh_signing_key (signing keys) scopes — or the read: variants. A missing " +
+			"scope SKIPS that key kind (surfacing gh's `gh auth refresh -s …` hint) rather than " +
+			"failing the whole check; grant both with `gh auth refresh -h github.com -s " +
+			"admin:public_key -s admin:ssh_signing_key`.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -257,54 +261,73 @@ func newGHCheckCmd() *cobra.Command {
 					domainSet[d.material] = true
 				}
 
-				ghKeys, err := ghKeysFn(ctx, enroll.ExecRunner)
-				if err != nil {
-					return err
-				}
-				ghSet := map[string]bool{}
-
 				type check struct {
-					desc string
-					ok   bool
-					diag map[string]any
+					desc   string
+					ok     bool
+					skip   bool
+					reason string         // for a skip (e.g. a missing-scope hint)
+					diag   map[string]any // for a NotOk
 				}
 				var checks []check
-				for _, k := range ghKeys {
-					mat, merr := sshLineMaterial(k.Key)
-					if merr != nil {
+
+				// GitHub side — each LISTED key must be published on the domain
+				// (orphan check). A kind we couldn't list (a missing OAuth scope) is
+				// a skip carrying gh's "run gh auth refresh -s …" hint, not a failure
+				// that takes the whole check down.
+				ghSet := map[string]bool{}
+				complete := true
+				for _, set := range ghKeysFn(ctx, enroll.ExecRunner) {
+					if set.Err != nil {
+						complete = false
+						checks = append(checks, check{desc: fmt.Sprintf("GitHub %s keys listed", set.Kind), skip: true, reason: set.Err.Error()})
 						continue
 					}
-					ghSet[mat] = true
-					published := domainSet[mat]
-					desc := fmt.Sprintf("GitHub %s key %q is published on %s", k.Kind, k.Title, args[0])
-					var diag map[string]any
-					if !published {
-						diag = map[string]any{"reason": "orphan — on GitHub but not published on the domain"}
+					for _, k := range set.Keys {
+						mat, merr := sshLineMaterial(k.Key)
+						if merr != nil {
+							continue
+						}
+						ghSet[mat] = true
+						published := domainSet[mat]
+						chk := check{desc: fmt.Sprintf("GitHub %s key %q is published on %s", k.Kind, k.Title, args[0]), ok: published}
+						if !published {
+							chk.diag = map[string]any{"reason": "orphan — on GitHub but not published on the domain"}
+						}
+						checks = append(checks, chk)
 					}
-					checks = append(checks, check{desc, published, diag})
 				}
+
+				// Domain side — each published key should be on GitHub (gap check).
+				// Only conclusive when the GitHub list is COMPLETE: if a kind was
+				// skipped, a "gap" might just live in the unlisted kind, so soften it
+				// to a skip rather than a false NotOk.
 				for _, d := range domain {
-					onGitHub := ghSet[d.material]
 					desc := fmt.Sprintf("domain key %s is registered on GitHub", d.label)
-					var diag map[string]any
-					if !onGitHub {
-						diag = map[string]any{"reason": "gap — published on the domain but not on GitHub"}
+					switch {
+					case ghSet[d.material]:
+						checks = append(checks, check{desc: desc, ok: true})
+					case complete:
+						checks = append(checks, check{desc: desc, diag: map[string]any{"reason": "gap — published on the domain but not on GitHub"}})
+					default:
+						checks = append(checks, check{desc: desc, skip: true, reason: "GitHub key list incomplete (a scope is missing) — can't confirm"})
 					}
-					checks = append(checks, check{desc, onGitHub, diag})
 				}
 
 				ts := rep.TestStream(len(checks))
-				allOK := true
+				outOfSync := false
 				for _, ck := range checks {
-					if ck.ok {
+					switch {
+					case ck.skip:
+						ts.Skip(ck.desc, ck.reason)
+					case ck.ok:
 						ts.Ok(ck.desc)
-					} else {
+					default:
 						ts.NotOk(ck.desc, ck.diag)
-						allOK = false
+						outOfSync = true
 					}
 				}
 				ts.Finish()
-				if !allOK {
+				if outOfSync {
 					return errors.New("GitHub SSH keys and the domain's published keys are out of sync")
 				}
 				return nil

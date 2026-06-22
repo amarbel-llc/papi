@@ -299,13 +299,20 @@ authentication and signing, via `gh api` — against `<domain>`'s published slot
 keys, matching by key material. It flags **orphans** (a key on GitHub the domain
 doesn't publish — a revoked/rogue card that can still reach GitHub) and **gaps**
 (a domain-published card not yet on GitHub). Presented via the crap-TUI; exits
-non-zero if anything is out of sync (needs `gh` authenticated):
+non-zero if anything is out of sync.
+
+GitHub gates the two key kinds behind separate scopes — auth keys need
+`admin:public_key`, signing keys need `admin:ssh_signing_key` (or the `read:`
+variants). A missing scope **skips** that kind (surfacing gh's
+`gh auth refresh -s …` hint) rather than failing the whole check; grant both at
+once with `gh auth refresh -h github.com -s admin:public_key -s admin:ssh_signing_key`.
 
 ```console
 $ papi gh-check linenisgreat.com
 ✓ GitHub authentication key "piv-auth@2835305c" is published on linenisgreat.com
 ✗ GitHub authentication key "old-laptop" is published on linenisgreat.com
     reason: orphan — on GitHub but not published on the domain
+↷ GitHub signing keys listed # SKIP gh api …: needs admin:ssh_signing_key
 ```
 
 ## Install
