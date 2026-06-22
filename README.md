@@ -295,24 +295,25 @@ piggy-recipient-v1@pivy_ecdh_p256_pub-qfjr3sgs…
 
 ### `papi gh-check <domain>`
 
-Cross-check the SSH keys on your authenticated GitHub account — both
-authentication and signing, via `gh api` — against `<domain>`'s published slot-9A
-keys, matching by key material. It flags **orphans** (a key on GitHub the domain
-doesn't publish — a revoked/rogue card that can still reach GitHub) and **gaps**
-(a domain-published card not yet on GitHub). Presented via the crap-TUI; exits
-non-zero if anything is out of sync.
+Cross-check `<domain>`'s published slot-9A keys — **the domain is the source of
+truth** — against the SSH keys on your authenticated GitHub account (both
+authentication and signing, via `gh api`), matching by key material. Every
+domain-published key must be registered on GitHub; a published card **missing**
+from GitHub is a failure (a **gap**). Extra keys on GitHub (not from the domain)
+are fine and never fail — `--show-orphans` lists them as informational notes.
+Presented via the crap-TUI; exits non-zero only on a gap.
 
 GitHub gates the two key kinds behind separate scopes — auth keys need
 `admin:public_key`, signing keys need `admin:ssh_signing_key` (or the `read:`
 variants). A missing scope **skips** that kind (surfacing gh's
-`gh auth refresh -s …` hint) rather than failing the whole check; grant both at
-once with `gh auth refresh -h github.com -s admin:public_key -s admin:ssh_signing_key`.
+`gh auth refresh -s …` hint) rather than failing the whole check; grant both with
+`papi gh-auth`.
 
 ```console
 $ papi gh-check linenisgreat.com
-✓ GitHub authentication key "piv-auth@2835305c" is published on linenisgreat.com
-✗ GitHub authentication key "old-laptop" is published on linenisgreat.com
-    reason: orphan — on GitHub but not published on the domain
+✓ domain key guid=55C3439D… is registered on GitHub
+✗ domain key guid=2835305C… is registered on GitHub
+    reason: gap — published on the domain but NOT on GitHub
 ↷ GitHub signing keys listed # SKIP gh api …: needs admin:ssh_signing_key
 ```
 

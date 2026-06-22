@@ -567,40 +567,100 @@ func TestBootstrapCmd(t *testing.T) {
 	}
 }
 
-func TestGHCheckCmd(t *testing.T) {
-	k1 := genSSHKey(t) // published on the domain AND on GitHub
-	k2 := genSSHKey(t) // on GitHub only — an orphan
-
+// ghDomainServer serves the given key lines (each a "type base64") as a domain's
+// /papi/ssh-authorized-keys, annotated with distinct slot-9A guids.
+func ghDomainServer(t *testing.T, keys ...string) *httptest.Server {
+	t.Helper()
+	var b strings.Builder
+	for i, k := range keys {
+		fmt.Fprintf(&b, "%s piggy slot=9A guid=%08X\n", k, 0xA0000000+i)
+	}
+	body := b.String()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/papi/ssh-authorized-keys", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		io.WriteString(w, k1+" piggy slot=9A guid=AAAA\n")
+		io.WriteString(w, body)
 	})
-	srv := httptest.NewServer(mux)
+	return httptest.NewServer(mux)
+}
+
+func runGHCheck(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newGHCheckCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+// TestGHCheckGap: a domain-published key MISSING from GitHub is the failure (the
+// domain is the source of truth).
+func TestGHCheckGap(t *testing.T) {
+	k1 := genSSHKey(t) // on the domain AND GitHub
+	k3 := genSSHKey(t) // on the domain, NOT GitHub → gap
+	srv := ghDomainServer(t, k1, k3)
+	defer srv.Close()
+
+	orig := ghKeysFn
+	ghKeysFn = func(context.Context, enroll.Runner) []enroll.GitHubKeySet {
+		return []enroll.GitHubKeySet{
+			{Kind: "authentication", Keys: []enroll.GitHubKey{{Title: "card", Kind: "authentication", Key: k1}}},
+			{Kind: "signing"},
+		}
+	}
+	defer func() { ghKeysFn = orig }()
+
+	out, err := runGHCheck(t, srv.URL)
+	if err == nil {
+		t.Fatal("a domain key missing from GitHub (gap) should make gh-check exit non-zero")
+	}
+	if !crapHasFailedTest(crapRecords(t, out)) {
+		t.Errorf("expected the gap as a failed test:\n%s", out)
+	}
+}
+
+// TestGHCheckExtraKeys: an extra key on GitHub (not from the domain) is fine —
+// never a failure, hidden by default, listed as a skip with --show-orphans.
+func TestGHCheckExtraKeys(t *testing.T) {
+	k1 := genSSHKey(t) // on the domain AND GitHub
+	k2 := genSSHKey(t) // extra on GitHub only
+	srv := ghDomainServer(t, k1)
 	defer srv.Close()
 
 	orig := ghKeysFn
 	ghKeysFn = func(context.Context, enroll.Runner) []enroll.GitHubKeySet {
 		return []enroll.GitHubKeySet{
 			{Kind: "authentication", Keys: []enroll.GitHubKey{
-				{Title: "card", Kind: "authentication", Key: k1},  // published → OK
-				{Title: "stale", Kind: "authentication", Key: k2}, // orphan → NotOk
+				{Title: "card", Kind: "authentication", Key: k1},
+				{Title: "extra", Kind: "authentication", Key: k2},
 			}},
-			{Kind: "signing"}, // listed cleanly, empty
+			{Kind: "signing"},
 		}
 	}
 	defer func() { ghKeysFn = orig }()
 
-	cmd := newGHCheckCmd()
-	cmd.SilenceUsage, cmd.SilenceErrors = true, true
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{srv.URL})
-	if err := cmd.ExecuteContext(context.Background()); err == nil {
-		t.Fatal("an orphan GitHub key should make gh-check exit non-zero")
+	// default: extra keys don't fail and aren't shown
+	out, err := runGHCheck(t, srv.URL)
+	if err != nil {
+		t.Fatalf("an extra GitHub key must not fail gh-check: %v", err)
 	}
-	if !crapHasFailedTest(crapRecords(t, out.String())) {
-		t.Errorf("expected a failed test point (the orphan) in the crap stream:\n%s", out.String())
+	recs := crapRecords(t, out)
+	if crapHasFailedTest(recs) {
+		t.Errorf("an extra GitHub key must not be a failure:\n%s", out)
+	}
+	if crapHasSkippedTest(recs) {
+		t.Errorf("extra keys must be hidden without --show-orphans:\n%s", out)
+	}
+
+	// --show-orphans: the extra key is listed as an informational skip, still exit 0
+	out, err = runGHCheck(t, srv.URL, "--show-orphans")
+	if err != nil {
+		t.Fatalf("--show-orphans must not fail on extras: %v", err)
+	}
+	if !crapHasSkippedTest(crapRecords(t, out)) {
+		t.Errorf("--show-orphans should list the extra key as a skip:\n%s", out)
 	}
 }
 

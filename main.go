@@ -229,20 +229,21 @@ func domainKeyMaterials(body []byte) []domainKey {
 var ghKeysFn = enroll.ListGitHubKeys
 
 func newGHCheckCmd() *cobra.Command {
+	var showOrphans bool
 	cmd := &cobra.Command{
 		Use:   "gh-check <domain>",
 		Short: "Reconcile your GitHub SSH keys against a domain's published slot-9A keys",
-		Long: "Cross-check the SSH keys on your authenticated GitHub account (both " +
-			"authentication and signing, via `gh api`) against <domain>'s published slot-9A " +
-			"keys (GET /papi/ssh-authorized-keys), matching by key material. Reports each " +
-			"GitHub key NOT published on the domain (an orphan — it still authenticates to " +
-			"GitHub but the domain doesn't recognize it: a revoked or rogue card) and each " +
-			"domain-published key NOT on GitHub (a gap — an enrolled card that can't yet use " +
-			"GitHub). Presented via the crap-TUI; exits non-zero if anything is out of sync. " +
-			"Needs gh authenticated with the admin:public_key (auth keys) and " +
-			"admin:ssh_signing_key (signing keys) scopes — or the read: variants. A missing " +
-			"scope SKIPS that key kind (surfacing gh's `gh auth refresh -s …` hint) rather than " +
-			"failing the whole check; grant both at once with `papi gh-auth`.",
+		Long: "Cross-check <domain>'s published slot-9A keys — the source of truth — against " +
+			"the SSH keys on your authenticated GitHub account (both authentication and " +
+			"signing, via `gh api`), matching by key material. The check: every " +
+			"domain-published key MUST be registered on GitHub, so a published key MISSING " +
+			"from GitHub is a failure (a gap — an enrolled card that can't use GitHub). Extra " +
+			"keys on GitHub (not from the domain) are fine and never fail; --show-orphans " +
+			"lists them as informational notes. Presented via the crap-TUI; exits non-zero " +
+			"only on a gap. Needs gh authenticated with the admin:public_key (auth keys) and " +
+			"admin:ssh_signing_key (signing keys) scopes — or the read: variants; a missing " +
+			"scope SKIPS that key kind (surfacing gh's `gh auth refresh -s …` hint) rather " +
+			"than failing. Grant both at once with `papi gh-auth`.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -265,16 +266,17 @@ func newGHCheckCmd() *cobra.Command {
 					desc   string
 					ok     bool
 					skip   bool
-					reason string         // for a skip (e.g. a missing-scope hint)
+					reason string         // for a skip
 					diag   map[string]any // for a NotOk
 				}
 				var checks []check
 
-				// GitHub side — each LISTED key must be published on the domain
-				// (orphan check). A kind we couldn't list (a missing OAuth scope) is
-				// a skip carrying gh's "run gh auth refresh -s …" hint, not a failure
-				// that takes the whole check down.
+				// Read GitHub's keys: which materials are present, the extras (not
+				// from this domain — they're fine), and any kind we couldn't list (a
+				// missing OAuth scope → a skip carrying gh's refresh hint).
+				type extraKey struct{ kind, title string }
 				ghSet := map[string]bool{}
+				var extras []extraKey
 				complete := true
 				for _, set := range ghKeysFn(ctx, enroll.ExecRunner) {
 					if set.Err != nil {
@@ -288,33 +290,44 @@ func newGHCheckCmd() *cobra.Command {
 							continue
 						}
 						ghSet[mat] = true
-						published := domainSet[mat]
-						chk := check{desc: fmt.Sprintf("GitHub %s key %q is published on %s", k.Kind, k.Title, args[0]), ok: published}
-						if !published {
-							chk.diag = map[string]any{"reason": "orphan — on GitHub but not published on the domain"}
+						if !domainSet[mat] {
+							extras = append(extras, extraKey{k.Kind, k.Title})
 						}
-						checks = append(checks, chk)
 					}
 				}
 
-				// Domain side — each published key should be on GitHub (gap check).
+				// The DOMAIN is the source of truth: every published key MUST be on
+				// GitHub. A published key missing from GitHub is the failure (a gap).
 				// Only conclusive when the GitHub list is COMPLETE: if a kind was
-				// skipped, a "gap" might just live in the unlisted kind, so soften it
-				// to a skip rather than a false NotOk.
+				// skipped, a "gap" might just live in the unlisted kind, so soften it.
+				gaps := false
 				for _, d := range domain {
 					desc := fmt.Sprintf("domain key %s is registered on GitHub", d.label)
 					switch {
 					case ghSet[d.material]:
 						checks = append(checks, check{desc: desc, ok: true})
-					case complete:
-						checks = append(checks, check{desc: desc, diag: map[string]any{"reason": "gap — published on the domain but not on GitHub"}})
-					default:
+					case !complete:
 						checks = append(checks, check{desc: desc, skip: true, reason: "GitHub key list incomplete (a scope is missing) — can't confirm"})
+					default:
+						checks = append(checks, check{desc: desc, diag: map[string]any{"reason": "gap — published on the domain but NOT on GitHub"}})
+						gaps = true
+					}
+				}
+
+				// Extra keys on GitHub (not from this domain) are fine — the domain
+				// is the source of truth — so they're never failures. Off by default;
+				// --show-orphans lists them as informational skips.
+				if showOrphans {
+					for _, e := range extras {
+						checks = append(checks, check{
+							desc:   fmt.Sprintf("GitHub %s key %q is not from %s", e.kind, e.title, args[0]),
+							skip:   true,
+							reason: "extra key on GitHub — fine; the domain is the source of truth",
+						})
 					}
 				}
 
 				ts := rep.TestStream(len(checks))
-				outOfSync := false
 				for _, ck := range checks {
 					switch {
 					case ck.skip:
@@ -323,18 +336,18 @@ func newGHCheckCmd() *cobra.Command {
 						ts.Ok(ck.desc)
 					default:
 						ts.NotOk(ck.desc, ck.diag)
-						outOfSync = true
 					}
 				}
 				ts.Finish()
-				if outOfSync {
-					return errors.New("GitHub SSH keys and the domain's published keys are out of sync")
+				if gaps {
+					return errors.New("a domain-published key is not registered on GitHub")
 				}
 				return nil
 			}
 			return presentCrapOp(cmd.OutOrStdout(), crap.ReporterOptions{Source: "papi"}, "papi gh-check "+args[0], produce)
 		},
 	}
+	cmd.Flags().BoolVar(&showOrphans, "show-orphans", false, "also list keys on GitHub that aren't published on the domain (extra keys — informational, never a failure)")
 	return cmd
 }
 
