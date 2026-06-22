@@ -97,6 +97,16 @@ one cross-cutting interaction constraint (D).
    clean) or a `card.init {serial, force:true}` that resets first. papi only
    needs *some* headless reset+reinit; the shape is piggy's call.
 
+   **Resolved (2026-06-22, piggy#204).** Scoped to **case A only**: piggy ships
+   `card init --allow-reprovision` (CLI + a manage `allow_reprovision` param) that
+   re-initialises a CHUID-stamped card still at **factory-default creds** — with
+   **no factory reset**. It fails fast at admin-auth on a card whose creds are
+   already rotated (the state of any card papi has already enrolled). Re-rolling
+   an already-enrolled card therefore routes through **revocation** (papi#26:
+   revoke `superseded` → enroll a fresh card), *not* in-place reprovision. So the
+   "reset-then-init" framing above is superseded — papi needs only the
+   factory-cred re-init, never a destructive applet reset.
+
 4. **Programmatic interaction answers (Gap D / cross-cutting).** papi runs both
    interactively (human PIN + YubiKey touch) and **non-interactively** (CI smoke
    tests, scripted enroll — today's `-P <pin>`). Under the manage API papi's
@@ -133,15 +143,26 @@ direction means papi resolves recipients from its own published domain documents
 (`/papi/piggy-ids`, with a local cache for offline), and composes password-store
 semantics in a forthcoming `papi pass` CLI group. Those live entirely papi-side.
 piggy's role is reduced to card-present signing and enumeration — `card.list`,
-`sign_bytes`, `card.init`, and a reset path — which is the whole of papi's
-dependency on the manage API.
+`sign_bytes`, `card.init`, and the `card.init --allow-reprovision` re-init flag
+(factory-cred cards only, no destructive reset — see §3) — which is the whole of
+papi's dependency on the manage API.
 
 ## 6. Next steps
 
-- Relay asks 1–4 to piggy#203 / [RFC 0007][piggy-rfc-0007] so the `card.list`
-  record shape and reset path are settled before piggy#201's schema hardens.
+**Status (2026-06-22): asks 1–4 relayed to piggy#203 and resolved.** Ask 1 —
+`card.list` already passes the per-slot markl-id ndjson record through verbatim,
+so no `--format=ssh` projection is added; piggy pins the §5.1 record schema. Ask 2
+— age recipient derives papi-side from the slot-9D markl id (no piggy change). Ask
+3 — reprovision is case A re-init via `card init --allow-reprovision` (piggy#204);
+no reset; re-rolls route through revocation (papi#26); see §3. Ask 4 — scripted
+`secret.request` is exercised in piggy's `piggy_manage_fibby.bats` conformance lane.
+
+Remaining papi-side work:
+
 - papi-side spike: verify the `age1piggy` derivation from a slot-9D markl id
   against a real card (resolves Gap B's open question).
+- When piggy#204 merges: repoint `enroll.Reset()` at `card init --allow-reprovision`
+  and live-test the factory-cred reprovision path (tracked in the task list / papi#25).
 - Sequenced after the schema firms up (do not build ahead of it): a piggy-mgmt
   Go client in papi (`internal/…`) behind the existing `enroll.Runner` seam, then
   the `papi pass` group — both tracked under [papi#22][papi-22].
