@@ -35,8 +35,9 @@ ADR-0004.
 identity material, keys, and repositories for downstream consumption;
 `ssh-copy-id` installs those keys onto a host; `query` runs a jq expression
 over the document; `enroll` emits a signed enrollment receipt for a new
-YubiKey; and `verify-receipt` checks that receipt against a domain's published
-keys (FDR-0001).
+YubiKey; `verify-receipt` checks that receipt against a domain's published
+keys (FDR-0001); and `verified-recipients` distils a batch of receipts into the
+verified slot-9D encryption-recipient set (FDR-0002).
 
 ### `papi validate <domain>`
 
@@ -210,6 +211,24 @@ run the same two checks from the network-free WASM module — `just build-wasm`
 builds `cmd/papi-verify-wasm` to a wasip1 artifact that takes the published keys
 as input instead of fetching them ([FDR-0002](docs/features/0002-papi-verify-wasm-module.md)).
 
+### `papi verified-recipients <receipt-file>... --domain <domain>`
+
+Verify a batch of enrollment receipts against `--domain` and print the slot-9D
+recipient id (`recipient.id`) of every one that passes — the verified
+encryption-recipient set, in the `piggy-ids --recipients-only` form. It is the
+trust gate of the [FDR-0002](docs/features/0002-papi-verify-wasm-module.md)
+composition: a card's recipient is emitted only when a trusted card has attested
+its enrollment, so the set can drive a PIV-gated encrypt (linenisgreat's
+`.pivy-ids`) instead of a hand-curated list. Failing receipts are reported on
+stderr and excluded; `--strict` makes any failure exit non-zero with no output:
+
+```console
+$ papi verified-recipients --domain linenisgreat.com enroll-receipt-*.json
+piggy-recipient-v1@pivy_ecdh_p256_pub-q0p9kkux…
+piggy-recipient-v1@pivy_ecdh_p256_pub-qfjr3sgs…
+# enroll-receipt-bogus.json: excluded — attestation: …not published…   (stderr)
+```
+
 ## Install
 
 The CLI is distributed as a Nix flake package — there is no non-Nix install
@@ -264,7 +283,7 @@ internal/0/markl/      markl-id (blech32) parser (RFC-0002)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, person, enroll, verify-receipt)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, person, enroll, verify-receipt, verified-recipients)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic

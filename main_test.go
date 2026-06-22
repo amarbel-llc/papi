@@ -10,9 +10,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/amarbel-llc/papi/internal/0/papi"
+	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -193,6 +197,63 @@ func TestSSHCopyIDInstallsKeys(t *testing.T) {
 	}
 	if !strings.Contains(gotScript, "PAPI_KEYS_EOF") || !strings.Contains(gotScript, "guid=DEADBEEF") {
 		t.Errorf("install script not piped to ssh:\n%s", gotScript)
+	}
+}
+
+// TestVerifiedRecipientsCmd exercises the command's file-reading, dedup, stderr
+// reporting, and --strict wiring through the verifiedRecipientsFn seam (the real
+// receipt crypto is covered by inspect.TestVerifiedRecipients).
+func TestVerifiedRecipientsCmd(t *testing.T) {
+	dir := t.TempDir()
+	paths := make([]string, 3)
+	for i := range paths {
+		p := filepath.Join(dir, fmt.Sprintf("r%d.json", i))
+		if err := os.WriteFile(p, []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		paths[i] = p
+	}
+
+	orig := verifiedRecipientsFn
+	// r0 + r1 verify to the SAME recipient (dedup); r2 fails.
+	verifiedRecipientsFn = func(_ context.Context, _ *papi.Client, receipts [][]byte) []inspect.RecipientResult {
+		return []inspect.RecipientResult{
+			{RecipientID: "piggy-recipient-v1@dup", Verified: true},
+			{RecipientID: "piggy-recipient-v1@dup", Verified: true},
+			{Reason: "attestation: not published"},
+		}
+	}
+	defer func() { verifiedRecipientsFn = orig }()
+
+	run := func(extra ...string) (string, string, error) {
+		cmd := newVerifiedRecipientsCmd()
+		cmd.SilenceUsage = true // root sets this in production; the test runs the child standalone
+		cmd.SilenceErrors = true
+		var out, errOut bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetErr(&errOut)
+		cmd.SetArgs(append([]string{"--domain", "example.com"}, append(append([]string{}, paths...), extra...)...))
+		err := cmd.ExecuteContext(context.Background())
+		return out.String(), errOut.String(), err
+	}
+
+	out, errOut, err := run()
+	if err != nil {
+		t.Fatalf("verified-recipients: %v", err)
+	}
+	if strings.TrimSpace(out) != "piggy-recipient-v1@dup" {
+		t.Errorf("stdout should be the deduped recipient once, got %q", out)
+	}
+	if !strings.Contains(errOut, "excluded — attestation: not published") {
+		t.Errorf("stderr should report the excluded receipt, got %q", errOut)
+	}
+
+	out, _, err = run("--strict")
+	if err == nil {
+		t.Error("--strict should error when a receipt fails")
+	}
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("--strict should emit nothing, got %q", out)
 	}
 }
 

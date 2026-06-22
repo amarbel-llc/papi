@@ -296,6 +296,29 @@ func TestVerifyReceiptWithPublishedIDs(t *testing.T) {
 	}
 }
 
+// TestVerifiedRecipients confirms the batch trust gate: a verified receipt yields
+// its slot-9D recipient.id, an unattested one is excluded with a reason, and order
+// is preserved.
+func TestVerifiedRecipients(t *testing.T) {
+	newCard, trusted := newMarklSigner(t), newMarklSigner(t)
+	good := buildReceipt(t, newCard, trusted)
+	// A second receipt whose attester is NOT the published trusted key → excluded.
+	stranger := newMarklSigner(t)
+	bad := buildReceipt(t, newMarklSigner(t), stranger)
+	c := receiptClient(t, []string{trusted.sshLine}, nil)
+
+	got := VerifiedRecipients(context.Background(), c, [][]byte{good, bad})
+	if len(got) != 2 {
+		t.Fatalf("want 2 results, got %d", len(got))
+	}
+	if !got[0].Verified || got[0].RecipientID != testRecipientID {
+		t.Errorf("result[0] should verify with recipient.id=%s, got %+v", testRecipientID, got[0])
+	}
+	if got[1].Verified || got[1].Reason == "" {
+		t.Errorf("result[1] (unpublished attester) should be excluded with a reason, got %+v", got[1])
+	}
+}
+
 // TestVerifyReceiptWithKeysTampered confirms the pure verify still binds every
 // signed field: a key supplied directly verifies a clean receipt, and mutating a
 // signed field breaks the canonical-bytes attestation.

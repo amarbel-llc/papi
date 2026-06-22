@@ -145,8 +145,15 @@ replaces the hand-curated recipient list with papi's verified trust set as the
 single source of truth, and it validates the `wasip1` target: verification is a
 deploy-time/server-side concern, so no browser (`GOOS=js`) build is needed for
 the composition. The split also respects the layering — piggy owns the decrypt
-crypto, papi owns enrollment-trust, linenisgreat consumes both. The recipient-set
-slice is tracked as a follow-up (gated, like ADR-0006, on the piggy hardware FDR).
+crypto, papi owns enrollment-trust, linenisgreat consumes both.
+
+The papi side of the gate ships as `papi verified-recipients --domain <D>
+<receipt>…` (and `inspect.VerifiedRecipients`): it verifies a batch of receipts
+and emits the slot-9D recipients of the passing ones — exactly the verified
+`.pivy-ids` set the diagram calls for. The remaining half — linenisgreat
+consuming that set in its `.ebox` encrypt recipe, and the in-browser decrypt — is
+[linenisgreat#38](https://github.com/friedenberg/linenisgreat/issues/38),
+gated like ADR-0006 on the piggy hardware FDR.
 
 ## More Information
 

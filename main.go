@@ -59,6 +59,7 @@ func main() {
 	root.AddCommand(newPiggyIDsCmd())
 	root.AddCommand(newSSHKeysCmd())
 	root.AddCommand(newSSHCopyIDCmd())
+	root.AddCommand(newVerifiedRecipientsCmd())
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newQueryCmd())
@@ -351,6 +352,77 @@ func newSSHCopyIDCmd() *cobra.Command {
 	cmd.Flags().StringVar(&guid, "guid", "", "install only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
 	cmd.Flags().IntVar(&port, "port", 0, "ssh port (default: ssh's own default)")
 	cmd.Flags().StringVar(&identity, "identity", "", "ssh identity file (passed as ssh -i)")
+	_ = cmd.MarkFlagRequired("domain")
+	return cmd
+}
+
+// verifiedRecipientsFn is the receipt-batch trust gate (FDR-0002), behind a seam
+// so the command's file-reading / dedup / --strict wiring is testable without
+// real receipt crypto.
+var verifiedRecipientsFn = inspect.VerifiedRecipients
+
+func newVerifiedRecipientsCmd() *cobra.Command {
+	var domain string
+	var strict bool
+	cmd := &cobra.Command{
+		Use:   "verified-recipients <receipt-file>...",
+		Short: "Emit the slot-9D recipients of enrollment receipts that verify against a domain",
+		Long: "Verify each papi-enroll-receipt-v1 against --domain (the same self_proof + " +
+			"attestation checks as verify-receipt) and print the slot-9D recipient id " +
+			"(recipient.id) of every receipt that passes, one per line — the verified " +
+			"encryption-recipient set, in the piggy-ids --recipients-only / .pivy-ids form. " +
+			"This is the trust gate of the FDR-0002 composition: a card's recipient is " +
+			"emitted only when a trusted card has attested its enrollment, so the set can " +
+			"drive a PIV-gated encrypt. Failing receipts are reported on stderr and excluded; " +
+			"with --strict, ANY failure makes the command emit nothing and exit non-zero.",
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(domain)
+			if err != nil {
+				return err
+			}
+			receipts := make([][]byte, 0, len(args))
+			for _, path := range args {
+				raw, err := os.ReadFile(path)
+				if err != nil {
+					return fmt.Errorf("read %s: %w", path, err)
+				}
+				receipts = append(receipts, raw)
+			}
+			results := verifiedRecipientsFn(cmd.Context(), c, receipts)
+
+			errOut := cmd.ErrOrStderr()
+			seen := map[string]bool{}
+			var recipients []string
+			var failures int
+			for i, r := range results {
+				if !r.Verified {
+					fmt.Fprintf(errOut, "%s: excluded — %s\n", args[i], r.Reason)
+					failures++
+					continue
+				}
+				if !seen[r.RecipientID] {
+					seen[r.RecipientID] = true
+					recipients = append(recipients, r.RecipientID)
+				}
+			}
+			if strict && failures > 0 {
+				return fmt.Errorf("%d receipt(s) failed verification (--strict)", failures)
+			}
+			if len(recipients) == 0 {
+				return fmt.Errorf("no receipts verified — empty recipient set")
+			}
+			out := cmd.OutOrStdout()
+			for _, id := range recipients {
+				if _, err := fmt.Fprintln(out, id); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&domain, "domain", "", "PAPI domain to verify the receipts against (required)")
+	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero and emit nothing if ANY receipt fails verification")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }

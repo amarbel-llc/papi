@@ -116,6 +116,63 @@ func VerifyReceiptWithPublishedIDs(raw []byte, publishedIDs []string) (ReceiptRe
 	return VerifyReceiptWithKeys(raw, published)
 }
 
+// RecipientResult is one receipt's outcome in VerifiedRecipients: a verified
+// receipt carries its slot-9D recipient id (recipient.id, the encryption recipient
+// a PIV-gated encrypt may trust); a failing one carries the exclusion reason.
+type RecipientResult struct {
+	RecipientID string // recipient.id — set iff Verified
+	Verified    bool
+	Reason      string // why excluded — set iff !Verified
+}
+
+// VerifiedRecipients verifies each receipt against domain c (the same self_proof +
+// attestation checks as VerifyReceipt) and returns, in input order, the per-receipt
+// outcome. It is the trust gate of the FDR-0002 composition: a card's slot-9D
+// encryption recipient is yielded only when a trusted card has attested its
+// enrollment — the verified set a downstream encryptor (linenisgreat's .pivy-ids)
+// may be built from. It never errors as a batch; a bad receipt is one excluded
+// RecipientResult, so one failure does not drop the rest.
+func VerifiedRecipients(ctx context.Context, c *papi.Client, receipts [][]byte) []RecipientResult {
+	out := make([]RecipientResult, 0, len(receipts))
+	for _, raw := range receipts {
+		res, err := VerifyReceipt(ctx, c, raw)
+		switch {
+		case err != nil:
+			out = append(out, RecipientResult{Reason: err.Error()})
+			continue
+		case !res.OK:
+			out = append(out, RecipientResult{Reason: receiptFailureReason(res)})
+			continue
+		}
+		var r papi.Receipt
+		if err := json.Unmarshal(raw, &r); err != nil {
+			out = append(out, RecipientResult{Reason: err.Error()})
+			continue
+		}
+		if r.Recipient.ID == "" {
+			out = append(out, RecipientResult{Reason: "verified but carries no recipient.id"})
+			continue
+		}
+		out = append(out, RecipientResult{RecipientID: r.Recipient.ID, Verified: true})
+	}
+	return out
+}
+
+// receiptFailureReason summarizes the failing checks of a non-OK ReceiptResult into
+// one line ("name: detail; …") for the exclusion reason.
+func receiptFailureReason(res ReceiptResult) string {
+	var failed []string
+	for _, ck := range res.Checks {
+		if !ck.OK {
+			failed = append(failed, ck.Name+": "+ck.Detail)
+		}
+	}
+	if len(failed) == 0 {
+		return "verification failed"
+	}
+	return strings.Join(failed, "; ")
+}
+
 // verifyReceiptSelfProof checks the new card's slot-9D ↔ slot-9A binding: the
 // claim MUST name both slot ids, and self_proof.sig (a papi-proof-sig-v1 markl-id)
 // MUST verify over the claim bytes against the new card's slot-9A key (ssh.id).
