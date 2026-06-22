@@ -47,17 +47,18 @@ inspect-before-you-run affordance (review the body, then pipe it to `sh`
 yourself). Mirrors `papi piggy-ids` / `papi ssh-keys`. `papi.Client.Bootstrap` is
 the library method.
 
-### The shim (eng-owned, fetch-and-delegate)
+### The shim (eng-owned, self-contained `provision.sh`)
 
-Not a reimplementation of eng's provisioner — a thin shim:
+The served body is eng's self-contained `bin/provision.sh` (`bin/up.sh` is a thin
+alias that execs it). It:
 
-1. `git clone` eng over **HTTPS** from a hardcoded public URL (`ENG_GIT_URL`
+1. `git clone`s eng over **HTTPS** from a hardcoded public URL (`ENG_GIT_URL`
    override for tests). HTTPS, not SSH / `/papi/repos`+`jq`: on a cold host the
    pivy / ssh-agent-mux stack and `jq` do not exist yet (home-manager installs
-   them inside `up.sh`), and `amarbel-llc/eng` is public.
-2. `exec bin/up.sh` — eng's existing provisioner (nix → tools → identity bootstrap
-   from PAPI keyed on card GUID → rcm → home-manager). The `/papi/repos`+`jq`+SSH
-   sibling-repo cascade runs **inside** `up.sh`, after the agent and `jq` exist.
+   them inside `provision.sh`), and `amarbel-llc/eng` is public.
+2. stages the host (nix → tools → identity bootstrap from PAPI keyed on card GUID
+   → rcm → home-manager). The `/papi/repos`+`jq`+SSH sibling-repo cascade runs
+   **inside** `provision.sh`, after the agent and `jq` exist.
 
 ## Examples
 
@@ -83,10 +84,10 @@ Not a reimplementation of eng's provisioner — a thin shim:
 
 ## Limitations
 
-- **papi only hosts.** The shim's logic, the HTTPS→SSH origin rewrite once the
-  agent is up, and the cold-host hardening live in eng (`up.sh`'s tail), not papi.
-  The shim can't do the rewrite itself — it `exec`s `up.sh` and never regains
-  control.
+- **papi only hosts.** All of the shim's logic — the HTTPS clone, the staging, the
+  HTTPS→SSH origin rewrite once the agent is up, and the cold-host hardening — lives
+  in eng's `provision.sh`, not papi. papi serves the bytes verbatim and has no say
+  in what they do.
 - **No fetch-time verification.** A host runs whatever the domain serves; the
   defense is the verbatim-from-eng hosting plus a public, reviewed clone target,
   not a signature on the shim. A future signed/pinned shim is an open decision.
@@ -97,7 +98,7 @@ Not a reimplementation of eng's provisioner — a thin shim:
 |---|---|
 | `GET /papi/bootstrap` endpoint + RFC-0001 §4.2 + `papi bootstrap` | **papi** (this FDR) |
 | Serving the shim body at the domain | **linenisgreat** (glad-acacia) |
-| The shim content (`bin/provision.sh`) + `up.sh` cold-host hardening | **eng** (live-acacia, eng#201) |
+| The shim content + cold-host hardening (`bin/provision.sh`) | **eng** (live-acacia, eng#201) |
 
 ## More Information
 
@@ -107,4 +108,4 @@ Not a reimplementation of eng's provisioner — a thin shim:
   provisioned card this consumes.
 - RFC-0001 §4.2 (the endpoint), §5 (auth handshake), §12 (identity-bootstrap
   consumption).
-- eng: `bin/provision.sh`, `bin/up.sh`, `bin/clone-papi-repos.bash`.
+- eng: `bin/provision.sh` (the `bin/up.sh` alias execs it), `bin/clone-papi-repos.bash`.

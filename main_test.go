@@ -546,7 +546,7 @@ func TestVerifiedRecipientsCmd(t *testing.T) {
 }
 
 func TestBootstrapCmd(t *testing.T) {
-	const shim = "#!/bin/sh\nset -eu\ngit clone https://github.com/amarbel-llc/eng \"$HOME/eng\"\nexec \"$HOME/eng/bin/up.sh\"\n"
+	const shim = "#!/bin/sh\nset -eu\n# eng bin/provision.sh (self-contained): clone eng, then stage host\ngit clone https://github.com/amarbel-llc/eng \"$HOME/eng\"\nexec \"$HOME/eng/bin/provision.sh\"\n"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/papi/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")

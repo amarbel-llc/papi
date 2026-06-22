@@ -454,7 +454,7 @@ func (c *Client) SSHAuthorizedKeys(ctx context.Context) (body []byte, status int
 // Bootstrap fetches GET /papi/bootstrap and returns the raw text/plain body — the
 // self-bootstrap shim a cold, YubiKey-provisioned host runs to provision itself
 // against eng (RFC-0001 §4.2). The shim's contents are owned and version-
-// controlled in eng (bin/self-bootstrap.sh); PAPI only hosts them. Public (no
+// controlled in eng (bin/provision.sh); PAPI only hosts them. Public (no
 // auth at fetch — gating it behind §5 would be circular) and optional per-domain;
 // it is not enveloped.
 func (c *Client) Bootstrap(ctx context.Context) (body []byte, status int, err error) {

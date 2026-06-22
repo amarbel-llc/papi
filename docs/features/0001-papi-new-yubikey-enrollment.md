@@ -302,8 +302,8 @@ Non-interactive generation building block (what the TUI runs under the hood):
   interactive huh TUI is also deferred. The shipped flag-driven command enrolls
   an already-provisioned card.
 - **Companion feature:** PAPI-hosted self-bootstrap shim (a host with a
-  provisioned card fetches a fetch-and-delegate script over PAPI and provisions
-  itself against eng). Owned by `eng` (the real logic is `eng/bin/up.sh`); papi
+  provisioned card fetches a self-bootstrap script over PAPI and provisions
+  itself against eng). Owned by `eng` (the real logic is `eng/bin/provision.sh`); papi
   hosts the shim body at a new `/papi/bootstrap` endpoint. Tracked as
   [papi#16](https://github.com/amarbel-llc/papi/issues/16) and gated on this
   feature publishing the card a host then authenticates with.
@@ -332,6 +332,6 @@ Non-interactive generation building block (what the TUI runs under the hood):
 - **site-linenisgreat** — deploy input is `api/protected/data/papi.json`'s
   `piggy` object; `PersonalApi.php` serves `/papi/piggy-ids` + `/papi/ssh-authorized-keys`.
   Adjacent: site #27 (request-time read-through), #32 (`_papi` DNS TXT backlink).
-- **eng** — `bin/up.sh`, `bin/bootstrap-identity.mjs`, `bin/clone-papi-repos.bash`;
+- **eng** — `bin/provision.sh`, `bin/bootstrap-identity.mjs`, `bin/clone-papi-repos.bash`;
   `docs/features/0005` ("pivot to PAPI", with papi#8) — the identity.toml→PAPI
   migration the self-bootstrap shim rides.
