@@ -970,7 +970,7 @@ func enrollGUIDFile(guid string) string {
 
 func newEnrollCmd() *cobra.Command {
 	var newGUID, newSerial, trustedGUID, pin, out, cnPrefix string
-	var allowReprovision bool
+	var allowReprovision, noGHRegister bool
 	cmd := &cobra.Command{
 		Use:   "enroll <domain>",
 		Short: "Provision + enroll a new YubiKey, emitting a signed receipt (FDR-0001)",
@@ -988,7 +988,9 @@ func newEnrollCmd() *cobra.Command {
 			"trusted attester is the sole provisioned card, or --trusted-guid. papi drives the " +
 			"papi-agnostic piggy primitives (piggy list / age-plugin-piggy to read back, " +
 			"piggy sign-bytes to sign): the new card self-signs its 9D↔9A binding and the " +
-			"trusted card attests; the receipt is written then verified against <domain>. All " +
+			"trusted card attests; the receipt is written then verified against <domain>. On " +
+			"success it also registers the new card's slot-9A key on your GitHub account as both " +
+			"an authentication and a signing key (via gh), unless --no-gh-register. All " +
 			"cards must be present (PCSC); provisioning prompts for the PIN on your terminal.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1067,12 +1069,34 @@ func newEnrollCmd() *cobra.Command {
 			if !res.OK {
 				return fmt.Errorf("receipt did not verify against %s", domain)
 			}
+
+			// Register the new card's slot-9A key on GitHub (auth + signing) so it
+			// can git-over-SSH and sign commits. Best-effort: the receipt is the
+			// durable artifact, so a gh failure (not installed / not authed) warns
+			// rather than failing the enroll. --no-gh-register skips it (e.g. when
+			// enrolling a card for someone else's account).
+			if !noGHRegister {
+				title := newCard.CN
+				if title == "" {
+					g := strings.ToLower(newGUID)
+					if len(g) > 8 {
+						g = g[:8]
+					}
+					title = "yubikey-" + g
+				}
+				if err := enroll.RegisterGitHubKey(ctx, run, newCard.SSHLine, title); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: GitHub key registration failed (%v); register manually with `gh ssh-key add`\n", err)
+				} else {
+					fmt.Fprintf(w, "registered slot-9A key on GitHub (auth + signing) as %q\n", title)
+				}
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&newGUID, "new-guid", "", "enroll this ALREADY-provisioned card by GUID (skip the picker + provisioning)")
 	cmd.Flags().StringVar(&newSerial, "new-serial", "", "provision the blank card with this serial (skip the picker)")
 	cmd.Flags().BoolVar(&allowReprovision, "allow-reprovision", false, "permit selecting an ALREADY-provisioned card and resetting it (destroys its keys) before re-provisioning — a loud extra confirm")
+	cmd.Flags().BoolVar(&noGHRegister, "no-gh-register", false, "do NOT register the new card's slot-9A key on GitHub (auth + signing); skip when enrolling a card for someone else's account")
 	cmd.Flags().StringVar(&cnPrefix, "cn-prefix", "", "name for the new card's slot certs (cn=…, surfaces in piggy list / ssh-authorized-keys); default: piggy's piv-auth@<guid8>. Interactive runs prompt for it")
 	cmd.Flags().StringVar(&trustedGUID, "trusted-guid", "", "GUID of the TRUSTED attester card (default: the sole provisioned card)")
 	cmd.Flags().StringVar(&pin, "pin", "", "PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")

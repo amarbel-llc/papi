@@ -145,3 +145,31 @@ func TestPiggySignBytesSigner(t *testing.T) {
 		t.Error("a non-64-byte signature should error")
 	}
 }
+
+func TestRegisterGitHubKey(t *testing.T) {
+	const pub = "ecdsa-sha2-nistp256 AAAAE2VjZHNhmzw= piggy slot=9A guid=X cn=laptop-alice"
+	var calls []string
+	run := func(_ context.Context, stdin []byte, name string, args ...string) ([]byte, error) {
+		if !strings.HasPrefix(string(stdin), "ecdsa-sha2-nistp256 AAAA") {
+			t.Errorf("pubkey not fed on stdin: %q", stdin)
+		}
+		calls = append(calls, strings.Join(append([]string{name}, args...), " "))
+		return nil, nil
+	}
+	if err := RegisterGitHubKey(context.Background(), run, pub, "laptop-alice"); err != nil {
+		t.Fatalf("RegisterGitHubKey: %v", err)
+	}
+	// Both an authentication AND a signing key are added (same material).
+	if len(calls) != 2 {
+		t.Fatalf("want 2 gh calls (auth + signing), got %d: %v", len(calls), calls)
+	}
+	if !strings.Contains(calls[0], "gh ssh-key add") ||
+		!strings.Contains(calls[0], "--type authentication") ||
+		!strings.Contains(calls[0], "--title laptop-alice") {
+		t.Errorf("auth call = %q", calls[0])
+	}
+	if !strings.Contains(calls[1], "--type signing") ||
+		!strings.Contains(calls[1], "--title laptop-alice (signing)") {
+		t.Errorf("signing call = %q", calls[1])
+	}
+}

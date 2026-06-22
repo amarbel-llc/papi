@@ -81,12 +81,19 @@
           # Unit tests run via `just test-go` (some reach the network); keep the
           # package build hermetic.
           doCheck = false;
-          # `papi enroll` shells out to piggy/age-plugin-piggy by name; wrap the
-          # binary so the pinned piggy/bin takes precedence over the ambient PATH.
+          # `papi enroll` shells out by name to piggy/age-plugin-piggy (card I/O)
+          # and to `gh` (registering the new card's slot-9A key on GitHub as an
+          # auth + signing key); wrap the binary so the pinned piggy/bin and gh
+          # take precedence over the ambient PATH.
           nativeBuildInputs = [ pkgs.makeWrapper ];
           postInstall = ''
             wrapProgram $out/bin/papi \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ piggyPkg ]}
+              --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  piggyPkg
+                  pkgs.gh
+                ]
+              }
           '';
           meta.mainProgram = "papi";
         };

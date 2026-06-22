@@ -223,3 +223,24 @@ func parseAgeRecipient(out []byte) (string, error) {
 func guidEqual(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
+
+// RegisterGitHubKey adds the card's slot-9A public key to the authenticated
+// GitHub account as BOTH an authentication key (git-over-SSH) and a signing key
+// (SSH commit-signature verification), via `gh ssh-key add` (run by name; the nix
+// build wraps gh onto papi's PATH). The key material is identical; GitHub tracks
+// the two uses as separate keys. pubkey is the OpenSSH authorized_keys line (the
+// card's published slot-9A key); title labels the keys on GitHub.
+func RegisterGitHubKey(ctx context.Context, run Runner, pubkey, title string) error {
+	if run == nil {
+		run = ExecRunner
+	}
+	for _, t := range []struct{ kind, suffix string }{
+		{"authentication", ""},
+		{"signing", " (signing)"},
+	} {
+		if _, err := run(ctx, []byte(pubkey+"\n"), "gh", "ssh-key", "add", "--title", title+t.suffix, "--type", t.kind); err != nil {
+			return fmt.Errorf("gh ssh-key add --type %s: %w", t.kind, err)
+		}
+	}
+	return nil
+}

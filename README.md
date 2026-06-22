@@ -220,7 +220,10 @@ it. The new card self-signs its 9D↔9A binding and the trusted card attests
 (`piggy sign-bytes --slot 9a`); the receipt is written then verified against
 `<domain>`. papi drives the papi-agnostic piggy primitives (`piggy list`,
 `age-plugin-piggy`, `piggy sign-bytes`); all cards must be present (PCSC) and
-provisioning prompts for the PIN on your terminal.
+provisioning prompts for the PIN on your terminal. On success papi also registers
+the new card's slot-9A key on **your GitHub account** as both an authentication
+and a signing key (via `gh`), so the card can immediately `git@github.com` and
+sign commits — pass `--no-gh-register` to skip (e.g. enrolling for someone else).
 
 - `--new-guid <G>` — enroll an **already-provisioned** card (skip the picker +
   provisioning).
@@ -232,6 +235,9 @@ provisioning prompts for the PIN on your terminal.
 - `--cn-prefix <name>` — name the new card's slot certs (`cn=…`, surfaces in
   `piggy list` and `/papi/ssh-authorized-keys`), e.g. `laptop-alice`. Default:
   piggy's `piv-auth@<guid8>`. Interactive runs prompt for it.
+- `--no-gh-register` — do NOT register the new card's slot-9A key on GitHub
+  (auth + signing). Registration is on by default; skip it when enrolling a card
+  for someone else's account.
 - `--trusted-guid <G>` — the attester (default: the sole provisioned card).
 
 Pair it with `verify-receipt` on the deploy side.
