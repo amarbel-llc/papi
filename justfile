@@ -116,6 +116,34 @@ debug-enroll-smoke guid domain="linenisgreat.com" pin="":
 debug-verify-receipt file domain="linenisgreat.com":
     nix develop --command go run . verify-receipt "{{file}}" --domain "{{domain}}"
 
+# Provision the SOLE attached blank card via pivy-tool (INTERIM, until piggy#194's
+# native `piggy card init`): init (assign GUID + CHUID) + generate eccp256 slot 9D
+# + 9A with piggy's CN convention. Run with ONLY the blank card attached —
+# pivy-tool can't target a blank card by serial alongside another. Factory admin
+# key is auto-tried; prints the new GUID for `just debug-enroll`. papi#15 prep.
+[group("debug")]
+debug-provision-blank:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    guid=$(nix develop --command piggy tool init | tr -dc '0-9A-Fa-f')
+    g8=$(printf '%s' "$guid" | cut -c1-8 | tr 'A-Z' 'a-z')
+    echo "init: new GUID = $guid"
+    nix develop --command piggy tool generate -a eccp256 -n "piv-key-mgmt@$g8" 9d >/dev/null
+    nix develop --command piggy tool generate -a eccp256 -n "piv-auth@$g8" 9a >/dev/null
+    echo "generated 9D + 9A (eccp256). Re-attach the trusted card, then run:"
+    echo "  just debug-enroll $guid <trusted-guid>"
+
+# Run `papi enroll` for a REAL two-card enrollment: the new card (--new-guid)
+# attested by the trusted card (--trusted-guid). Run in YOUR terminal (PIN
+# prompt); pass `pin=<PIN>` if it hangs. papi#15 live test.
+[group("debug")]
+debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    args=(enroll "{{domain}}" --new-guid "{{new_guid}}" --trusted-guid "{{trusted_guid}}")
+    if [[ -n "{{pin}}" ]]; then args+=(--pin "{{pin}}"); fi
+    nix develop --command go run . "${args[@]}"
+
 # --- codemod ---
 
 codemod-fmt: codemod-fmt-tree
