@@ -160,6 +160,22 @@ debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
 debug-imports-of target pkg=".":
     nix develop --command bash -c 'go list -deps -json {{pkg}} | jq -r --arg p "{{target}}" "select(.Imports != null and (.Imports | index(\$p))) | .ImportPath"'
 
+# Explore: trace WHY a package sits in the devShell closure (eval-only, no build)
+# — e.g. `just debug-why-depends ffmpeg-headless` pins what drags ffmpeg into the
+# merge-gate cold build. Finds the exact instance via --requisites, then prints the
+# dependency chain.
+[group("debug")]
+debug-why-depends pkg:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    sys=$(nix eval --impure --raw --expr 'builtins.currentSystem')
+    shell=".#devShells.${sys}.default"
+    drv=$(nix path-info --derivation "$shell")
+    target=$(nix-store -q --requisites "$drv" | grep -- '{{pkg}}' | grep '\.drv$' | head -1)
+    echo "devShell: $drv"
+    echo "target:   ${target:-<not found in closure>}"
+    [ -n "${target:-}" ] && nix why-depends --derivation "$shell" "$target"
+
 # Show PIV PIN/PUK retry counts per attached card (read-only via ykman) — diagnose
 # a blocked PIN after a live test. papi#15 live-test debug.
 [group("debug")]
