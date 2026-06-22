@@ -426,7 +426,11 @@ func installKeysOverSFTP(ctx context.Context, dest string, keys []string, port i
 		return 0, 0, err
 	}
 
-	push := "put " + mergedPath + " .ssh/authorized_keys\nchmod 600 .ssh/authorized_keys\n"
+	// `-chmod` is best-effort: managed/shared hosts (and chrooted sftp) often deny
+	// client setstat, but overwriting an existing authorized_keys preserves its
+	// perms and a freshly-created one is 0600 under a sane umask — so a denied
+	// chmod must not fail the install once the put has landed.
+	push := "put " + mergedPath + " .ssh/authorized_keys\n-chmod 600 .ssh/authorized_keys\n"
 	if _, err := sftpRunner(ctx, sftpArgs(dest, port, identity), push); err != nil {
 		return 0, 0, fmt.Errorf("sftp %s (push): %w", dest, err)
 	}

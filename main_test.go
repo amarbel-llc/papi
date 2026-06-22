@@ -224,7 +224,7 @@ func TestInstallKeysOverSFTP(t *testing.T) {
 				t.Fatal(err)
 			}
 			uploaded = string(b)
-			pushChmod = strings.Contains(batch, "chmod 600")
+			pushChmod = strings.Contains(batch, "-chmod 600") // best-effort: must not fail the install
 		}
 		return "", nil
 	}
