@@ -278,12 +278,23 @@ var sshRunner = func(ctx context.Context, args []string, stdin string) (string, 
 	c.Stdout = &out
 	c.Stderr = &errBuf
 	if err := c.Run(); err != nil {
-		if msg := strings.TrimSpace(errBuf.String()); msg != "" {
-			return "", fmt.Errorf("%w: %s", err, msg)
-		}
-		return "", err
+		return "", fmt.Errorf("%w: %s", err, sshFailureDetail(out.String(), errBuf.String()))
 	}
 	return out.String(), nil
+}
+
+// sshFailureDetail picks the most useful diagnostic from a failed ssh run: the
+// remote stderr, else its stdout, else a hint. A non-zero exit with NO output
+// usually means the destination ran no shell for the install script — a forced or
+// restricted command (e.g. an rsync-only target) — which ssh-copy-id cannot drive.
+func sshFailureDetail(stdout, stderr string) string {
+	if s := strings.TrimSpace(stderr); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(stdout); s != "" {
+		return s
+	}
+	return "no output from the destination — it likely runs a forced/restricted command (no shell), which ssh-copy-id requires"
 }
 
 var copyIDCount = regexp.MustCompile(`added=(\d+) present=(\d+)`)

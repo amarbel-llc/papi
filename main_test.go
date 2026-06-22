@@ -155,6 +155,19 @@ func TestBuildSSHInstallScript(t *testing.T) {
 	}
 }
 
+func TestSSHFailureDetail(t *testing.T) {
+	if got := sshFailureDetail("ignored", "permission denied"); got != "permission denied" {
+		t.Errorf("stderr should win, got %q", got)
+	}
+	if got := sshFailureDetail("remote stdout msg", ""); got != "remote stdout msg" {
+		t.Errorf("stdout is the fallback, got %q", got)
+	}
+	// A silent non-zero exit (the rsync-kp case) gets the no-shell hint.
+	if got := sshFailureDetail("  ", ""); !strings.Contains(got, "forced/restricted command") {
+		t.Errorf("empty streams should hint at a shell-less destination, got %q", got)
+	}
+}
+
 // sshCopyIDServer serves a two-key /papi/ssh-authorized-keys body of REAL keys
 // (extractAuthorizedKeys parse-validates, unlike the ssh-keys path).
 func sshCopyIDServer(t *testing.T) *httptest.Server {

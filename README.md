@@ -117,6 +117,10 @@ $ papi ssh-copy-id prod --domain linenisgreat.com   # 'prod' resolved from ~/.ss
 prod: 2 key(s) added, 1 already present
 ```
 
+The destination must give you a shell — the install runs a small `sh` script
+remotely. A forced/restricted-command host (e.g. an rsync-only target) can't be
+used, and papi says so rather than failing with a bare exit code.
+
 ### `papi person <domain>`
 
 Fetch `<domain>`'s `GET /papi` and print its `person` block as JSON — handle,
