@@ -306,6 +306,17 @@ func sshFailureDetail(stdout, stderr string) string {
 		"no output from the destination — it likely runs no shell (forced/restricted command); retry with --sftp")
 }
 
+// sshLevelError reports whether err is ssh's OWN failure (exit 255: connection,
+// auth, or name resolution) rather than the remote command's non-zero exit. ssh
+// reserves 255 for itself and otherwise passes the remote exit code through, so a
+// non-255 exit means the host answered but the shell path failed — the only case
+// where retrying over SFTP can help (a 255 would fail identically). SSH cannot
+// enumerate remote subsystems, so attempting is the only test.
+func sshLevelError(err error) bool {
+	var ee *exec.ExitError
+	return errors.As(err, &ee) && ee.ExitCode() == 255
+}
+
 var copyIDCount = regexp.MustCompile(`added=(\d+) present=(\d+)`)
 
 // installKeysOverSSH ships keys to target's authorized_keys via sshRunner and
@@ -454,9 +465,11 @@ func newSSHCopyIDCmd() *cobra.Command {
 			"~/.ssh and the file are created 0700/0600 if missing), so re-running keeps a host in " +
 			"sync as cards are enrolled or rotated. With --guid <HEX>, install only that one " +
 			"card's key. --port / --identity override the resolved config. The default install " +
-			"runs a small `sh` script remotely; for a shell-less destination (a forced/restricted " +
-			"command, e.g. sftp-only/nologin hosts) pass --sftp to instead fetch, merge, and " +
-			"re-upload authorized_keys over the SFTP subsystem — no remote shell needed.",
+			"runs a small `sh` script remotely; if the destination has no usable shell (a " +
+			"forced/restricted command, e.g. sftp-only/nologin hosts), papi automatically " +
+			"retries over the SFTP subsystem — fetching, merging, and re-uploading " +
+			"authorized_keys with no remote shell. Pass --sftp to force the SFTP path directly " +
+			"(skipping the shell attempt) for a host you already know is shell-less.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(domain)
@@ -471,15 +484,24 @@ func newSSHCopyIDCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			install := installKeysOverSSH
+			dest := args[0]
+			var added, present int
 			if useSFTP {
-				install = installKeysOverSFTP
+				added, present, err = installKeysOverSFTP(cmd.Context(), dest, keys, port, identity)
+			} else {
+				added, present, err = installKeysOverSSH(cmd.Context(), dest, keys, port, identity)
+				if err != nil && !sshLevelError(err) {
+					// The host answered but the shell path failed (no shell / forced
+					// command / unexpected output). SSH can't advertise its subsystems,
+					// so the only way to know SFTP works is to try it.
+					fmt.Fprintf(cmd.ErrOrStderr(), "ssh-copy-id: shell install on %s failed (%v); retrying over SFTP\n", dest, err)
+					added, present, err = installKeysOverSFTP(cmd.Context(), dest, keys, port, identity)
+				}
 			}
-			added, present, err := install(cmd.Context(), args[0], keys, port, identity)
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s: %d key(s) added, %d already present\n", args[0], added, present)
+			fmt.Fprintf(cmd.OutOrStdout(), "%s: %d key(s) added, %d already present\n", dest, added, present)
 			return nil
 		},
 	}
@@ -487,7 +509,7 @@ func newSSHCopyIDCmd() *cobra.Command {
 	cmd.Flags().StringVar(&guid, "guid", "", "install only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
 	cmd.Flags().IntVar(&port, "port", 0, "ssh port (default: ssh's own default)")
 	cmd.Flags().StringVar(&identity, "identity", "", "ssh identity file (passed as ssh/sftp -i)")
-	cmd.Flags().BoolVar(&useSFTP, "sftp", false, "install over SFTP (fetch+merge+upload) instead of a remote shell — for shell-less but SFTP-capable hosts")
+	cmd.Flags().BoolVar(&useSFTP, "sftp", false, "force the SFTP install path, skipping the shell attempt (papi otherwise tries a shell and falls back to SFTP automatically)")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }

@@ -6,11 +6,13 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -242,6 +244,89 @@ func TestInstallKeysOverSFTP(t *testing.T) {
 	}
 	if !strings.Contains(uploaded, strings.Fields(k1)[1]) || !strings.Contains(uploaded, strings.Fields(k2)[1]) {
 		t.Errorf("uploaded authorized_keys must carry both the existing and the new key:\n%s", uploaded)
+	}
+}
+
+func TestSSHLevelError(t *testing.T) {
+	exitErr := func(code int) error {
+		return exec.Command("sh", "-c", fmt.Sprintf("exit %d", code)).Run()
+	}
+	if !sshLevelError(exitErr(255)) {
+		t.Error("exit 255 is an ssh-level (connection/auth) error")
+	}
+	if sshLevelError(exitErr(1)) {
+		t.Error("exit 1 is a remote-command failure, not ssh-level — should be eligible for SFTP fallback")
+	}
+	if sshLevelError(errors.New("not an exit error")) {
+		t.Error("a non-exit error is not ssh-level")
+	}
+}
+
+// sshCopyIDRun executes a fresh ssh-copy-id command (silencing cobra usage, as
+// the root would in production) and returns stdout, stderr, and the error.
+func sshCopyIDRun(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+	cmd := newSSHCopyIDCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out, errOut bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background()) // run BEFORE reading the buffers
+	return out.String(), errOut.String(), err
+}
+
+func TestSSHCopyIDFallsBackToSFTP(t *testing.T) {
+	srv := sshCopyIDServer(t)
+	defer srv.Close()
+
+	origSSH, origSFTP := sshRunner, sftpRunner
+	// Shell path fails non-255 (host answered, no usable shell) → fall back.
+	sshRunner = func(context.Context, []string, string) (string, error) {
+		return "", exec.Command("sh", "-c", "exit 1").Run()
+	}
+	var sftpCalled bool
+	sftpRunner = func(context.Context, []string, string) (string, error) {
+		sftpCalled = true
+		return "", nil // empty fetch (no existing file) + accepted push
+	}
+	defer func() { sshRunner, sftpRunner = origSSH, origSFTP }()
+
+	out, errOut, err := sshCopyIDRun(t, "host", "--domain", srv.URL)
+	if err != nil {
+		t.Fatalf("should fall back to SFTP and succeed: %v", err)
+	}
+	if !sftpCalled {
+		t.Error("expected automatic SFTP fallback after the shell path failed")
+	}
+	if !strings.Contains(errOut, "retrying over SFTP") {
+		t.Errorf("expected a fallback notice on stderr, got %q", errOut)
+	}
+	if !strings.Contains(out, "2 key(s) added") {
+		t.Errorf("SFTP fallback should install both keys, got %q", out)
+	}
+}
+
+func TestSSHCopyIDNoFallbackOnSSHLevelError(t *testing.T) {
+	srv := sshCopyIDServer(t)
+	defer srv.Close()
+
+	origSSH, origSFTP := sshRunner, sftpRunner
+	sshRunner = func(context.Context, []string, string) (string, error) {
+		return "", exec.Command("sh", "-c", "exit 255").Run() // connection/auth failure
+	}
+	var sftpCalled bool
+	sftpRunner = func(context.Context, []string, string) (string, error) {
+		sftpCalled = true
+		return "", nil
+	}
+	defer func() { sshRunner, sftpRunner = origSSH, origSFTP }()
+
+	if _, _, err := sshCopyIDRun(t, "host", "--domain", srv.URL); err == nil {
+		t.Fatal("an ssh-level (255) failure should surface, not fall back")
+	}
+	if sftpCalled {
+		t.Error("must NOT fall back to SFTP on an ssh-level (255) failure — it would fail identically")
 	}
 }
 

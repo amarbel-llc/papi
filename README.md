@@ -117,20 +117,23 @@ $ papi ssh-copy-id prod --domain linenisgreat.com   # 'prod' resolved from ~/.ss
 prod: 2 key(s) added, 1 already present
 ```
 
-By default the install runs a small `sh` script remotely, so the destination
-must give you a shell. For a shell-less but SFTP-capable host (a forced-command,
-`sftp`-only, or `nologin`-shell target), pass `--sftp`: papi fetches
-`authorized_keys`, merges the new keys locally, and re-uploads it over the SFTP
-subsystem — no remote shell needed.
+The install runs a small `sh` script remotely by default. If the destination has
+no usable shell (a forced-command, `sftp`-only, or `nologin`-shell target), papi
+**automatically retries over SFTP** — fetching `authorized_keys`, merging the new
+keys locally, and re-uploading it, with no remote shell. (SSH can't advertise its
+subsystems, so attempting is the only way to discover SFTP works.) Pass `--sftp`
+to force the SFTP path directly and skip the shell attempt:
 
 ```console
-$ papi ssh-copy-id rsync-kp --domain linenisgreat.com --sftp
+$ papi ssh-copy-id rsync-kp --domain linenisgreat.com   # auto-falls back to SFTP
+ssh-copy-id: shell install on rsync-kp failed (…); retrying over SFTP
 rsync-kp: 2 key(s) added, 0 already present
 ```
 
-A host that offers neither a shell nor SFTP (e.g. a strict rsync-only target
-that confines paths away from `~/.ssh`) can't be driven in-band at all — and papi
-says so rather than failing with a bare exit code.
+A connection/auth failure is *not* retried over SFTP (it would fail
+identically). A host that offers neither a shell nor SFTP (e.g. a strict
+rsync-only target that confines paths away from `~/.ssh`) can't be driven in-band
+at all — papi surfaces that rather than a bare exit code.
 
 ### `papi person <domain>`
 
