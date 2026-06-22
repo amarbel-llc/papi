@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/amarbel-llc/crap/go-crap/v2 v2.2.2
+	github.com/charmbracelet/huh v1.0.0
 	github.com/gowebpki/jcs v1.0.1
 	github.com/itchyny/gojq v0.12.19
 	github.com/spf13/cobra v1.10.2
@@ -17,7 +18,7 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0 // indirect
 	github.com/charmbracelet/bubbletea v1.3.10 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
-	github.com/charmbracelet/huh v1.0.0 // indirect
+	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/charmbracelet/lipgloss v1.1.0 // indirect
 	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect

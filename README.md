@@ -110,30 +110,37 @@ it. The append is idempotent (deduped by key material; `~/.ssh` and the file are
 created `0700`/`0600` if missing), so re-running keeps a host in sync as cards
 are enrolled or rotated. With `--guid <HEX>`, install just one card's key. Only
 lines that parse as real SSH keys are installed (a hostile domain cannot inject
-text into the remote step):
+text into the remote step).
+
+The command presents via the **crap-TUI** ([amarbel-llc/crap](https://github.com/amarbel-llc/crap)):
+on a terminal it renders a live viewport of the operation (the fetch + install
+phases and a per-key tally); piped or redirected it emits raw ndjson-crap, so
+`… | crap-present` renders the same TUI and `… > run.ndjson` captures it.
 
 ```console
 $ papi ssh-copy-id prod --domain linenisgreat.com   # 'prod' resolved from ~/.ssh/config
-prod: 2 key(s) added, 1 already present
+▸ ssh-copy-id prod
+   ✓ fetch /papi/ssh-authorized-keys
+   ✓ install via ssh
+   ssh-copy-id prod — 2 done, 1 skipped, 0 failed
 ```
 
 The install runs a small `sh` script remotely by default. If the destination has
 no usable shell (a forced-command, `sftp`-only, or `nologin`-shell target), papi
 **automatically retries over SFTP** — fetching `authorized_keys`, merging the new
-keys locally, and re-uploading it, with no remote shell. (SSH can't advertise its
-subsystems, so attempting is the only way to discover SFTP works.) Pass `--sftp`
-to force the SFTP path directly and skip the shell attempt:
-
-```console
-$ papi ssh-copy-id rsync-kp --domain linenisgreat.com   # auto-falls back to SFTP
-ssh-copy-id: shell install on rsync-kp failed (…); retrying over SFTP
-rsync-kp: 2 key(s) added, 0 already present
-```
-
-A connection/auth failure is *not* retried over SFTP (it would fail
-identically). A host that offers neither a shell nor SFTP (e.g. a strict
+keys locally, and re-uploading it, with no remote shell. The crap stream shows
+this as a failed `install via ssh` phase followed by a passing `install via
+sftp`. (SSH can't advertise its subsystems, so attempting is the only way to
+discover SFTP works.) Pass `--sftp` to force the SFTP path directly and skip the
+shell attempt. A connection/auth failure is *not* retried over SFTP (it would
+fail identically); a host offering neither a shell nor SFTP (e.g. a strict
 rsync-only target that confines paths away from `~/.ssh`) can't be driven in-band
-at all — papi surfaces that rather than a bare exit code.
+at all.
+
+> **Note:** ssh-copy-id currently targets pre-provisioned, **non-interactive**
+> hosts — the live viewport owns the terminal, so a step that prompts for an SSH
+> passphrase or YubiKey touch isn't supported yet
+> ([crap#31](https://github.com/amarbel-llc/crap/issues/31)).
 
 ### `papi person <domain>`
 

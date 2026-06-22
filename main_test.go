@@ -17,10 +17,52 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/amarbel-llc/crap/go-crap/v2/ndjsoncrap"
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 	"golang.org/x/crypto/ssh"
 )
+
+// crapRecords decodes a raw ndjson-crap buffer into its records (the form an
+// operation command writes when stdout is not a TTY).
+func crapRecords(t *testing.T, s string) []ndjsoncrap.Record {
+	t.Helper()
+	rd := ndjsoncrap.NewReader(strings.NewReader(s))
+	var recs []ndjsoncrap.Record
+	for {
+		rec, err := rd.Next()
+		if err == io.EOF {
+			return recs
+		}
+		if err != nil {
+			t.Fatalf("decode ndjson-crap: %v\n%s", err, s)
+		}
+		recs = append(recs, rec)
+	}
+}
+
+// crapOpEnd returns the single operation_end record (the operation's verdict).
+func crapOpEnd(t *testing.T, recs []ndjsoncrap.Record) ndjsoncrap.OperationEnd {
+	t.Helper()
+	for _, rec := range recs {
+		if oe, ok := rec.(ndjsoncrap.OperationEnd); ok {
+			return oe
+		}
+	}
+	t.Fatal("no operation_end record in the crap stream")
+	return ndjsoncrap.OperationEnd{}
+}
+
+// crapHasFailedNode reports whether any execution phase ended with a non-zero
+// exit (e.g. the failed ssh phase before an SFTP fallback).
+func crapHasFailedNode(recs []ndjsoncrap.Record) bool {
+	for _, rec := range recs {
+		if ne, ok := rec.(ndjsoncrap.NodeEnd); ok && ne.ExitCode != nil && *ne.ExitCode != 0 {
+			return true
+		}
+	}
+	return false
+}
 
 // twoKeyBody is a two-line /papi/ssh-authorized-keys fixture: two slot-9A keys,
 // each annotated with guid=<HEX> and cn=<name> (RFC-0001 §4.2). The guids differ
@@ -292,18 +334,21 @@ func TestSSHCopyIDFallsBackToSFTP(t *testing.T) {
 	}
 	defer func() { sshRunner, sftpRunner = origSSH, origSFTP }()
 
-	out, errOut, err := sshCopyIDRun(t, "host", "--domain", srv.URL)
+	out, _, err := sshCopyIDRun(t, "host", "--domain", srv.URL)
 	if err != nil {
 		t.Fatalf("should fall back to SFTP and succeed: %v", err)
 	}
 	if !sftpCalled {
 		t.Error("expected automatic SFTP fallback after the shell path failed")
 	}
-	if !strings.Contains(errOut, "retrying over SFTP") {
-		t.Errorf("expected a fallback notice on stderr, got %q", errOut)
+	// The crap stream shows the failed ssh phase, and the operation ends OK with
+	// both keys installed (via the sftp fallback).
+	recs := crapRecords(t, out)
+	if oe := crapOpEnd(t, recs); !oe.OK || oe.Done != 2 {
+		t.Errorf("operation_end = %+v, want OK done=2 (both keys via SFTP)", oe)
 	}
-	if !strings.Contains(out, "2 key(s) added") {
-		t.Errorf("SFTP fallback should install both keys, got %q", out)
+	if !crapHasFailedNode(recs) {
+		t.Error("expected the failed ssh phase to appear as a non-zero NodeEnd")
 	}
 }
 
@@ -322,11 +367,15 @@ func TestSSHCopyIDNoFallbackOnSSHLevelError(t *testing.T) {
 	}
 	defer func() { sshRunner, sftpRunner = origSSH, origSFTP }()
 
-	if _, _, err := sshCopyIDRun(t, "host", "--domain", srv.URL); err == nil {
+	out, _, err := sshCopyIDRun(t, "host", "--domain", srv.URL)
+	if err == nil {
 		t.Fatal("an ssh-level (255) failure should surface, not fall back")
 	}
 	if sftpCalled {
 		t.Error("must NOT fall back to SFTP on an ssh-level (255) failure — it would fail identically")
+	}
+	if oe := crapOpEnd(t, crapRecords(t, out)); oe.OK {
+		t.Error("operation_end should be OK=false when the install fails")
 	}
 }
 
@@ -356,16 +405,13 @@ func TestSSHCopyIDInstallsKeys(t *testing.T) {
 	}
 	defer func() { sshRunner = orig }()
 
-	cmd := newSSHCopyIDCmd()
-	var out bytes.Buffer
-	cmd.SetOut(&out)
-	cmd.SetArgs([]string{"deploy@host.example", "--domain", srv.URL, "--port", "2222"})
-	if err := cmd.ExecuteContext(context.Background()); err != nil {
+	out, _, err := sshCopyIDRun(t, "deploy@host.example", "--domain", srv.URL, "--port", "2222")
+	if err != nil {
 		t.Fatalf("ssh-copy-id: %v", err)
 	}
 
-	if !strings.Contains(out.String(), "2 key(s) added, 0 already present") {
-		t.Errorf("summary: %q", out.String())
+	if oe := crapOpEnd(t, crapRecords(t, out)); !oe.OK || oe.Done != 2 || oe.Skipped != 0 {
+		t.Errorf("operation_end = %+v, want OK done=2 skipped=0", oe)
 	}
 	if got := strings.Join(gotArgs, " "); got != "-p 2222 deploy@host.example sh" {
 		t.Errorf("ssh args = %q, want %q", got, "-p 2222 deploy@host.example sh")

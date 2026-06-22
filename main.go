@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/amarbel-llc/crap/go-crap/v2/crap"
+	"github.com/amarbel-llc/crap/go-crap/v2/viewport"
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
@@ -448,6 +450,96 @@ func installKeysOverSFTP(ctx context.Context, dest string, keys []string, port i
 	return added, present, nil
 }
 
+// isTerminal reports whether w is an interactive terminal — the signal for
+// rendering the live crap viewport vs. emitting raw ndjson-crap. Mirrors crap's
+// presentcli: NO_COLOR forces the plain path, detection is a stdlib stat (no
+// isatty dependency), and non-*os.File writers (e.g. test buffers) are not TTYs.
+func isTerminal(w io.Writer) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	stat, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return stat.Mode()&os.ModeCharDevice != 0
+}
+
+// presentCrapOp runs produce against a crap.Reporter and presents the resulting
+// ndjson-crap stream (crap RFC-0001): a live viewport when out is a TTY, else the
+// raw ndjson-crap on out (pipe to `crap-present`, or capture). This is the shared
+// entry point for papi's operation commands. produce's returned error is the
+// operation's verdict (the process exit code); the records it emits are the
+// presentation.
+func presentCrapOp(out io.Writer, opts crap.ReporterOptions, title string, produce func(*crap.Reporter) error) error {
+	if !isTerminal(out) {
+		rep := crap.NewReporter(out, opts)
+		err := produce(rep)
+		if err == nil {
+			err = rep.Err()
+		}
+		return err
+	}
+	// TTY: feed the producer's records through a pipe into the live viewport,
+	// which renders to out (the terminal). Keystrokes are never read from the data
+	// pipe (the viewport gives its program an empty input reader).
+	pr, pw := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		rep := crap.NewReporter(pw, opts)
+		err := produce(rep)
+		if err == nil {
+			err = rep.Err()
+		}
+		_ = pw.Close() // EOF → the viewport quits
+		done <- err
+	}()
+	verr := viewport.Present(pr, viewport.Options{Title: title, Out: out, IsTTY: true})
+	if perr := <-done; perr != nil {
+		return perr
+	}
+	return verr
+}
+
+// installKeys performs the install (ssh with sftp fallback, or forced sftp),
+// wrapping each transport attempt in a crap execution phase under op, and returns
+// the aggregate added/present counts. The fallback policy matches the non-crap
+// path: a non-ssh-level shell failure retries over SFTP; a 255 (connection/auth)
+// does not.
+func installKeys(ctx context.Context, op *crap.Operation, dest string, keys []string, port int, identity string, useSFTP bool) (added, present int, err error) {
+	if useSFTP {
+		return installSFTPPhase(ctx, op, dest, keys, port, identity)
+	}
+	ph := op.Phase("install via ssh")
+	ph.Command("ssh " + dest + " sh")
+	added, present, err = installKeysOverSSH(ctx, dest, keys, port, identity)
+	if err == nil {
+		ph.Done()
+		return added, present, nil
+	}
+	ph.Fail(err)
+	if sshLevelError(err) {
+		return 0, 0, err // connection/auth — SFTP would fail identically
+	}
+	return installSFTPPhase(ctx, op, dest, keys, port, identity) // shell-less host → fall back
+}
+
+func installSFTPPhase(ctx context.Context, op *crap.Operation, dest string, keys []string, port int, identity string) (int, int, error) {
+	ph := op.Phase("install via sftp")
+	ph.Command("sftp " + dest)
+	added, present, err := installKeysOverSFTP(ctx, dest, keys, port, identity)
+	if err != nil {
+		ph.Fail(err)
+		return 0, 0, err
+	}
+	ph.Done()
+	return added, present, nil
+}
+
 func newSSHCopyIDCmd() *cobra.Command {
 	var domain, guid, identity string
 	var port int
@@ -476,33 +568,47 @@ func newSSHCopyIDCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			body, _, err := c.SSHAuthorizedKeys(cmd.Context())
-			if err != nil {
-				return err
-			}
-			keys, err := extractAuthorizedKeys(body, guid)
-			if err != nil {
-				return err
-			}
 			dest := args[0]
-			var added, present int
-			if useSFTP {
-				added, present, err = installKeysOverSFTP(cmd.Context(), dest, keys, port, identity)
-			} else {
-				added, present, err = installKeysOverSSH(cmd.Context(), dest, keys, port, identity)
-				if err != nil && !sshLevelError(err) {
-					// The host answered but the shell path failed (no shell / forced
-					// command / unexpected output). SSH can't advertise its subsystems,
-					// so the only way to know SFTP works is to try it.
-					fmt.Fprintf(cmd.ErrOrStderr(), "ssh-copy-id: shell install on %s failed (%v); retrying over SFTP\n", dest, err)
-					added, present, err = installKeysOverSFTP(cmd.Context(), dest, keys, port, identity)
+			ctx := cmd.Context()
+
+			// produce drives the operation AND emits its ndjson-crap presentation:
+			// a fetch phase, the install attempt(s) as execution phases (ssh →
+			// sftp fallback), and the per-key tally on the operation. The returned
+			// error is the verdict (exit code); the SFTP fallback shows up as the
+			// failed ssh phase followed by the sftp phase.
+			produce := func(rep *crap.Reporter) error {
+				op := rep.Operation("ssh-copy-id "+dest, crap.OpOptions{})
+				defer op.Finish()
+
+				fp := op.Phase("fetch /papi/ssh-authorized-keys")
+				body, _, ferr := c.SSHAuthorizedKeys(ctx)
+				if ferr != nil {
+					fp.Fail(ferr)
+					op.Fail("fetch keys", ferr)
+					return ferr
 				}
+				keys, kerr := extractAuthorizedKeys(body, guid)
+				if kerr != nil {
+					fp.Fail(kerr)
+					op.Fail("fetch keys", kerr)
+					return kerr
+				}
+				fp.Done()
+
+				added, present, ierr := installKeys(ctx, op, dest, keys, port, identity, useSFTP)
+				if ierr != nil {
+					op.Fail("install", ierr)
+					return ierr
+				}
+				for i := 0; i < added; i++ {
+					op.Item("authorized key", 0)
+				}
+				for i := 0; i < present; i++ {
+					op.Skip("authorized key", "already present")
+				}
+				return nil
 			}
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s: %d key(s) added, %d already present\n", dest, added, present)
-			return nil
+			return presentCrapOp(cmd.OutOrStdout(), crap.ReporterOptions{Source: "papi"}, "papi ssh-copy-id "+dest, produce)
 		},
 	}
 	cmd.Flags().StringVar(&domain, "domain", "", "PAPI domain to source enrolled slot-9A keys from (required)")
