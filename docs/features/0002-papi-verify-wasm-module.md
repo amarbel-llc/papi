@@ -106,9 +106,54 @@ $ jq -n --slurpfile r enroll-receipt-2835305c.json \
   compiles; running it end-to-end needs a WASI runtime (wasmtime or a wazero Go
   harness) added to the devShell — a follow-up.
 
+## Composition with PIV-gated decrypt (linenisgreat ADR-0006)
+
+linenisgreat ADR-0006 ("Serve PIV-gated blob data as `.ebox`, decrypted
+client-side") introduces a *second*, complementary WASM module: a **browser**
+`piggy-wasm` that decrypts `.ebox` blobs by performing slot-**9D** ECDH on the
+user's card over WebUSB. That is the *read* gate; this module is the *enrollment*
+gate. They sit at opposite ends of the same card identity and compose — not as a
+merged module (piggy-wasm is browser/WebUSB-bound and interactive; this one is
+server-side/`wasip1` and card-free), but at the **data layer**, joined by the
+receipt itself:
+
+| | piggy-wasm (ADR-0006) | papi-verify-wasm (this) |
+|---|---|---|
+| Question | "decrypt this `.ebox` for me" | "is this card legitimately enrolled?" |
+| Slot | 9D ECDH (decrypt) | 9A ECDSA (verify) |
+| Card | present (WebUSB, PIN/touch) | none (public-key crypto only) |
+| When | read-time, per unlock | deploy/enroll-time |
+| Runtime | browser | `wasip1` (server/PHP) |
+
+The connective tissue is the receipt's **`self_proof`, which binds a card's
+slot-9D recipient to its slot-9A key**. ADR-0006 hand-curates `.pivy-ids` — the
+set of slot-9D recipients an `.ebox` is encrypted *to* — via a `just` recipe.
+That authorized set is exactly *the slot-9D recipients of every card with a valid
+enrollment receipt*. So this module gates that recipe:
+
+```
+enrollment receipts ─(papi-verify-wasm: 9A attestation valid?)─▶ trusted cards
+        │ receipt self_proof binds 9A ↔ 9D
+        ▼
+   verified .pivy-ids (slot-9D recipients) ─▶ piggy-ids encrypt ─▶ .ebox
+                                                                     │
+                                          piggy-wasm (browser, WebUSB 9D) ◀┘
+```
+
+**papi-verify decides *who's allowed*; piggy-wasm is *how they read*.** This
+replaces the hand-curated recipient list with papi's verified trust set as the
+single source of truth, and it validates the `wasip1` target: verification is a
+deploy-time/server-side concern, so no browser (`GOOS=js`) build is needed for
+the composition. The split also respects the layering — piggy owns the decrypt
+crypto, papi owns enrollment-trust, linenisgreat consumes both. The recipient-set
+slice is tracked as a follow-up (gated, like ADR-0006, on the piggy hardware FDR).
+
 ## More Information
 
 - FDR-0001 (`0001-papi-new-yubikey-enrollment.md`) — the enrollment receipt this
   module verifies, the slot roles, and the native `papi verify-receipt` CLI.
+- linenisgreat ADR-0006 (`docs/decisions/0006-piv-gated-blob-data-client-side-decrypt.md`)
+  and the piggy FDR `docs/fdr/FDR-piv-gated-wasm-decrypt.md` — the decrypt half
+  of the composition above.
 - `internal/alfa/inspect/receipt.go` — the fetch/verify split.
 - `cmd/papi-verify-wasm/main.go` — the module entry point.
