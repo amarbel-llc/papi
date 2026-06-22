@@ -64,20 +64,11 @@ debug-sample-receipt:
 
 # Inspect attached PIV cards (read-only, PIN-free) to verify provisioning state
 # before a live `papi enroll` run — which card is provisioned (slot 9D+9A) vs
-# blank. piggy/age-plugin-piggy come from the nix profile, not the devShell, so
-# they're called directly. Serves the papi#15 live-test prep.
+# blank. Runs via the PINNED piggy (the flake input papi uses), so blank cards
+# show up via piggy#193. Serves the papi#15 live-test prep.
 [group("debug")]
 debug-cards:
-    #!/usr/bin/env bash
-    set -uo pipefail
-    echo "=== piggy list (human) ==="
-    piggy list || echo "(piggy list failed: $?)"
-    echo
-    echo "=== piggy list --format=ndjson (populated slots per card) ==="
-    piggy list --format=ndjson || echo "(piggy list ndjson failed: $?)"
-    echo
-    echo "=== piggy list --format=ssh (slot-9A/9C/9E authorized_keys lines) ==="
-    piggy list --format=ssh || echo "(piggy list ssh failed: $?)"
+    nix develop --command bash -c 'echo "=== piggy list --format=ndjson (all cards, incl. blank via piggy#193) ==="; piggy list --format=ndjson; echo; echo "=== piggy list --format=ssh ==="; piggy list --format=ssh'
 
 # Run the current papi against a live domain (go run, so it picks up uncommitted
 # changes). For live-test verification, e.g. `just debug-papi piggy-ids
@@ -90,7 +81,7 @@ debug-papi *ARGS:
 # age-plugin-piggy readback parser. Serves the papi#15 live-test prep.
 [group("debug")]
 debug-age guid:
-    age-plugin-piggy generate --guid {{guid}}
+    nix develop --command age-plugin-piggy generate --guid {{guid}}
 
 # Run pivy-tool (via piggy's passthrough) for live-test exploration — e.g.
 # `just debug-pivy list` to enumerate all PIV cards incl. blank ones that
@@ -99,11 +90,11 @@ debug-age guid:
 debug-pivy *ARGS:
     piggy tool {{ARGS}}
 
-# Confirm the installed piggy exposes `sign-bytes` (piggy#190) — papi enroll's
-# slot-9A signer. Fails loudly if your piggy predates it. papi#15 live-test prep.
+# Confirm the PINNED piggy (the flake input papi burns in, not ambient PATH)
+# exposes `sign-bytes` (piggy#190) — papi enroll's slot-9A signer. papi#15 prep.
 [group("debug")]
 debug-piggy-signcheck:
-    piggy sign-bytes --help
+    nix develop --command piggy sign-bytes --help
 
 # Smoke-test `papi enroll` end-to-end against a real card + a live domain by
 # enrolling a provisioned card INTO ITSELF (degenerate: new==trusted) — exercises

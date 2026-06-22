@@ -26,6 +26,18 @@
       inputs.nixpkgs-master.follows = "nixpkgs";
       inputs.utils.follows = "utils";
     };
+
+    # piggy provides the slot-9A byte-signer (`piggy sign-bytes`), the card
+    # enumeration (`piggy list`), and the bundled `age-plugin-piggy` that
+    # `papi enroll` shells out to. Pinning it here (instead of resolving `piggy`
+    # off the operator's ambient PATH) makes enrollment reproducible and
+    # independent of whatever piggy build happens to be installed.
+    piggy = {
+      url = "github:amarbel-llc/piggy";
+      inputs.igloo.follows = "igloo";
+      inputs.nixpkgs-master.follows = "nixpkgs";
+      inputs.utils.follows = "utils";
+    };
   };
 
   outputs =
@@ -36,6 +48,7 @@
       nixpkgs,
       nixpkgs-master,
       purse-first,
+      piggy,
       utils,
     }:
     utils.lib.eachDefaultSystem (
@@ -50,6 +63,11 @@
         # ca-derivations feature); swap to `.conformist-bga` to avoid it.
         conformistPkg = conformist.packages.${system}.default;
 
+        # piggy bundles `piggy` + `age-plugin-piggy` in bin/; `papi enroll` execs
+        # both by name, so the pinned package is burned onto the wrapped binary's
+        # PATH (below) and added to the devShell.
+        piggyPkg = piggy.packages.${system}.piggy;
+
         # The papi CLI. version/commit are injected by the fork's
         # buildGoApplication from version.env + self.rev — no ldflags here.
         papi = pkgs.buildGoApplication {
@@ -63,6 +81,13 @@
           # Unit tests run via `just test-go` (some reach the network); keep the
           # package build hermetic.
           doCheck = false;
+          # `papi enroll` shells out to piggy/age-plugin-piggy by name; wrap the
+          # binary so the pinned piggy/bin takes precedence over the ambient PATH.
+          nativeBuildInputs = [ pkgs.makeWrapper ];
+          postInstall = ''
+            wrapProgram $out/bin/papi \
+              --prefix PATH : ${pkgs.lib.makeBinPath [ piggyPkg ]}
+          '';
           meta.mainProgram = "papi";
         };
 
@@ -109,6 +134,10 @@
             # (`just bump-version` / `tag` / `release`).
             pkgs.gum
             pkgs.gh
+            # Pinned piggy + age-plugin-piggy, so `go run .` (the debug recipes /
+            # live test) execs the same piggy the wrapped binary does — not the
+            # operator's ambient PATH piggy.
+            piggyPkg
           ];
         };
       }
