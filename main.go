@@ -316,16 +316,18 @@ func newSSHCopyIDCmd() *cobra.Command {
 	var domain, guid, identity string
 	var port int
 	cmd := &cobra.Command{
-		Use:   "ssh-copy-id <user@host>",
-		Short: "Install a PAPI domain's enrolled slot-9A keys into <host>'s authorized_keys",
+		Use:   "ssh-copy-id <destination>",
+		Short: "Install a PAPI domain's enrolled slot-9A keys into an SSH destination's authorized_keys",
 		Long: "Fetch ALL of --domain's published slot-9A SSH keys (GET /papi/ssh-authorized-keys, " +
-			"via the §8.1 discovery-following client) and install them into <user@host>'s " +
+			"via the §8.1 discovery-following client) and install them into <destination>'s " +
 			"~/.ssh/authorized_keys — like ssh-copy-id(1), but sourcing the keys from PAPI " +
-			"instead of a local file. The append is idempotent (deduped by key material; ~/.ssh " +
-			"and the file are created 0700/0600 if missing), so re-running keeps a host in sync " +
-			"as cards are enrolled or rotated. With --guid <HEX>, install only that one card's " +
-			"key. Shells to ssh, inheriting your SSH config/agent; pass --port / --identity to " +
-			"override.",
+			"instead of a local file. <destination> is anything ssh accepts: a hostname, an IP, " +
+			"a user@host, or — most usefully — a Host alias from your ~/.ssh/config, since the " +
+			"install shells to `ssh <destination>` and ssh resolves the config (HostName, User, " +
+			"Port, IdentityFile, ProxyJump, …). The append is idempotent (deduped by key material; " +
+			"~/.ssh and the file are created 0700/0600 if missing), so re-running keeps a host in " +
+			"sync as cards are enrolled or rotated. With --guid <HEX>, install only that one " +
+			"card's key. --port / --identity override the resolved config.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(domain)
