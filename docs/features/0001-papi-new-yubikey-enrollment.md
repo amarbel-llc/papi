@@ -78,7 +78,11 @@ four steps over the low-level piggy primitives above and emits one artifact:
 > unselectable) → confirm → `piggy card init`. `papi enroll <domain>` shows the
 > picker by default; `--new-guid <G>` enrolls an already-provisioned card,
 > `--new-serial <N>` picks the blank one non-interactively, `--trusted-guid` (or
-> the sole provisioned card) is the attester. **Gated on piggy** for the live
+> the sole provisioned card) is the attester, and `--allow-reprovision`
+> ([papi#18](https://github.com/amarbel-llc/papi/issues/18)) makes provisioned
+> cards selectable too — choosing one resets it (destroys its keys) and
+> re-provisions, behind a loud extra confirm (the explicit, opt-in escape hatch).
+> **Gated on piggy** for the live
 > data: the blank card only appears once `piggy list` lists unprovisioned cards
 > (piggy#193) and is provisioned by piggy#194 (`piggy card init --serial`);
 > papi is wired to both and works the moment they ship

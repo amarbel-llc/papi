@@ -207,6 +207,10 @@ provisioning prompts for the PIN on your terminal.
 - `--new-guid <G>` — enroll an **already-provisioned** card (skip the picker +
   provisioning).
 - `--new-serial <N>` — pick the blank card to provision non-interactively.
+- `--allow-reprovision` — also offer **provisioned** cards in the picker;
+  choosing one **resets** it (destroys its keys) and re-provisions from scratch,
+  behind a loud extra confirm. Off by default — re-provisioning is destructive
+  and never the silent default.
 - `--trusted-guid <G>` — the attester (default: the sole provisioned card).
 
 Pair it with `verify-receipt` on the deploy side.

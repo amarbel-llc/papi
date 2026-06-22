@@ -1,6 +1,9 @@
 package enroll
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // realProvisionedList is the real `piggy list --format=ndjson` FORMAT for a
 // provisioned card (one record per slot, serial as a JSON number) — card serials
@@ -55,26 +58,52 @@ func TestParseCardListWithBlank(t *testing.T) {
 	}
 }
 
-func TestFindBlankCard(t *testing.T) {
+func TestFindCardToEnroll(t *testing.T) {
 	cards, _ := parseCardList([]byte(realProvisionedList + "\n" + blankRecord))
 
-	// sole blank card, no serial → picks it
-	got, err := findBlankCard(cards, "")
-	if err != nil || got.Serial != "19000002" {
-		t.Fatalf("findBlankCard(sole) = %+v, %v", got, err)
+	// sole blank card, no serial → picks it (either mode)
+	if got, err := findCardToEnroll(cards, "", false); err != nil || got.Serial != "19000002" {
+		t.Fatalf("findCardToEnroll(sole blank) = %+v, %v", got, err)
 	}
-	// by serial → matches
-	if got, err := findBlankCard(cards, "19000002"); err != nil || got.Serial != "19000002" {
-		t.Errorf("findBlankCard(serial) = %+v, %v", got, err)
+	// blank by serial → matches
+	if got, err := findCardToEnroll(cards, "19000002", false); err != nil || got.Serial != "19000002" {
+		t.Errorf("findCardToEnroll(blank serial) = %+v, %v", got, err)
 	}
-	// a provisioned serial is not a blank card
-	if _, err := findBlankCard(cards, "19000001"); err == nil {
-		t.Error("findBlankCard on a provisioned serial should error")
+	// a provisioned serial WITHOUT the flag → error pointing at --allow-reprovision
+	if _, err := findCardToEnroll(cards, "19000001", false); err == nil {
+		t.Error("a provisioned serial without --allow-reprovision should error")
 	}
-	// no blank card at all
+	// a provisioned serial WITH the flag → returns the provisioned card (to reset)
+	if got, err := findCardToEnroll(cards, "19000001", true); err != nil || got.Serial != "19000001" || !got.Provisioned {
+		t.Errorf("findCardToEnroll(provisioned, allow) = %+v, %v; want the provisioned card", got, err)
+	}
+	// empty serial never auto-picks a provisioned card, even under the flag
 	only, _ := parseCardList([]byte(realProvisionedList))
-	if _, err := findBlankCard(only, ""); err == nil {
-		t.Error("findBlankCard with no blank card should error")
+	if _, err := findCardToEnroll(only, "", true); err == nil {
+		t.Error("empty serial with no blank card should error even under --allow-reprovision")
+	}
+}
+
+func TestReprovisionCard(t *testing.T) {
+	var calls [][]string
+	irun := func(_ context.Context, name string, args ...string) error {
+		calls = append(calls, append([]string{name}, args...))
+		return nil
+	}
+	// After reset + init the card reports provisioned with a fresh GUID.
+	list := func(_ context.Context, _ []byte, _ string, _ ...string) ([]byte, error) {
+		return []byte(`{"serial":"19000002","guid":"ABCD1234ABCD1234","slot":"9D","cn":"piv-key-mgmt"}`), nil
+	}
+	guid, err := ReprovisionCard(context.Background(), irun, list, "19000002")
+	if err != nil {
+		t.Fatalf("ReprovisionCard: %v", err)
+	}
+	if guid != "ABCD1234ABCD1234" {
+		t.Errorf("guid = %q, want ABCD1234ABCD1234", guid)
+	}
+	// reset MUST run before init — new keys land on a freshly-reset applet.
+	if len(calls) != 2 || calls[0][2] != "reset" || calls[1][2] != "init" {
+		t.Fatalf("calls = %v, want [piggy card reset …] then [piggy card init …]", calls)
 	}
 }
 
