@@ -144,6 +144,20 @@ debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
     if [[ -n "{{pin}}" ]]; then args+=(--pin "{{pin}}"); fi
     nix develop --command go run . "${args[@]}"
 
+# Show PIV PIN/PUK retry counts per attached card (read-only via ykman) — diagnose
+# a blocked PIN after a live test. papi#15 live-test debug.
+[group("debug")]
+debug-pin-status:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "=== ykman list ==="
+    ykman list || true
+    for s in $(ykman list --serials 2>/dev/null); do
+        echo
+        echo "=== serial $s ==="
+        ykman --device "$s" piv info 2>&1 | grep -iE 'PIN|PUK|tries|retr|attempt|management|WARNING' || ykman --device "$s" piv info 2>&1
+    done
+
 # --- codemod ---
 
 codemod-fmt: codemod-fmt-tree

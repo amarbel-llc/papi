@@ -403,6 +403,25 @@ func runQuery(out io.Writer, query *gojq.Query, input any, raw bool) error {
 	return nil
 }
 
+// labeledSigner wraps an enroll.Signer to announce, on out, which card + role
+// each slot-9A signature is for just before the (PIN-prompting) sign — papi's
+// tty-side mitigation for the otherwise-ambiguous PIN prompt. The askpass/zenity
+// prompt naming the card is a piggy-side fix (it owns the prompt).
+type labeledSigner struct {
+	inner enroll.Signer
+	out   io.Writer
+	roles map[string]string // guid → human role label
+}
+
+func (l labeledSigner) SignSlot9A(ctx context.Context, guid string, msg []byte) ([]byte, error) {
+	role := l.roles[guid]
+	if role == "" {
+		role = "card " + guid
+	}
+	fmt.Fprintf(l.out, "→ signing with %s — enter its PIN if prompted\n", role)
+	return l.inner.SignSlot9A(ctx, guid, msg)
+}
+
 // enrollGUIDFile is the default receipt filename for a new card's GUID.
 func enrollGUIDFile(guid string) string {
 	g := strings.ToLower(strings.TrimSpace(guid))
@@ -459,7 +478,18 @@ func newEnrollCmd() *cobra.Command {
 				return fmt.Errorf("read trusted card: %w", err)
 			}
 
-			signer := enroll.PiggySignBytesSigner{PIN: pin}
+			// Wrap the signer so each PIN-prompting sign is announced with the
+			// card + role it's for — the operator otherwise can't tell which card's
+			// PIN a prompt wants (the freshly-provisioned new card still has the
+			// default PIN, the trusted card has the operator's).
+			signer := labeledSigner{
+				inner: enroll.PiggySignBytesSigner{PIN: pin},
+				out:   cmd.ErrOrStderr(),
+				roles: map[string]string{
+					newGUID:     fmt.Sprintf("the NEW card %s [%s] (self_proof)", newGUID, newCard.CN),
+					trustedGUID: fmt.Sprintf("the TRUSTED card %s [%s] (attestation)", trustedGUID, trustedCard.CN),
+				},
+			}
 			receipt, err := enroll.BuildReceipt(ctx, signer, newCard, domain, trustedGUID, trustedCard.SSHID, time.Now().Unix())
 			if err != nil {
 				return err
