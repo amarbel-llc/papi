@@ -520,6 +520,28 @@ func TestVerifiedRecipientsCmd(t *testing.T) {
 	}
 }
 
+func TestBootstrapCmd(t *testing.T) {
+	const shim = "#!/bin/sh\nset -eu\ngit clone https://github.com/amarbel-llc/eng \"$HOME/eng\"\nexec \"$HOME/eng/bin/up.sh\"\n"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/bootstrap", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, shim)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cmd := newBootstrapCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{srv.URL})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+	if out.String() != shim {
+		t.Errorf("bootstrap shim not printed verbatim:\ngot:  %q\nwant: %q", out.String(), shim)
+	}
+}
+
 // personDocServer serves a /papi whose person block carries display_name and a
 // nested contact.email — the scoped projection's shape (RFC-0001 §6). The
 // anonymous `person` path decodes the same struct, so this exercises the new

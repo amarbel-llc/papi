@@ -63,6 +63,7 @@ func main() {
 	root.AddCommand(newSSHKeysCmd())
 	root.AddCommand(newSSHCopyIDCmd())
 	root.AddCommand(newVerifiedRecipientsCmd())
+	root.AddCommand(newBootstrapCmd())
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newQueryCmd())
@@ -151,6 +152,33 @@ func newPiggyIDsCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&recipientsOnly, "recipients-only", false,
 		"emit only slot-9D encryption recipients (drop comments and slot-9A auth ids)")
+	return cmd
+}
+
+func newBootstrapCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "bootstrap <domain>",
+		Short: "Print a domain's PAPI self-bootstrap shim (GET /papi/bootstrap)",
+		Long: "Fetch <domain>'s GET /papi/bootstrap and print the self-bootstrap shim verbatim — " +
+			"the small POSIX-sh script a cold, YubiKey-provisioned host runs to clone eng (over " +
+			"HTTPS) and exec its provisioner. This is the inspect-before-you-run affordance for " +
+			"the cold-host entrypoint `curl -fsSL https://<domain>/papi/bootstrap | sh`: review the " +
+			"body, then pipe it to sh yourself. The shim's contents are owned and version-controlled " +
+			"in eng (bin/provision.sh); PAPI only hosts them. Optional per-domain.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			body, _, err := c.Bootstrap(cmd.Context())
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(body)
+			return err
+		},
+	}
 	return cmd
 }
 

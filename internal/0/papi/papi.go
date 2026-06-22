@@ -451,6 +451,23 @@ func (c *Client) SSHAuthorizedKeys(ctx context.Context) (body []byte, status int
 	return body, status, nil
 }
 
+// Bootstrap fetches GET /papi/bootstrap and returns the raw text/plain body — the
+// self-bootstrap shim a cold, YubiKey-provisioned host runs to provision itself
+// against eng (RFC-0001 §4.2). The shim's contents are owned and version-
+// controlled in eng (bin/self-bootstrap.sh); PAPI only hosts them. Public (no
+// auth at fetch — gating it behind §5 would be circular) and optional per-domain;
+// it is not enveloped.
+func (c *Client) Bootstrap(ctx context.Context) (body []byte, status int, err error) {
+	body, status, err = c.get(ctx, "/papi/bootstrap")
+	if err != nil {
+		return nil, status, err
+	}
+	if status != http.StatusOK {
+		return nil, status, fmt.Errorf("/papi/bootstrap returned HTTP %d", status)
+	}
+	return body, status, nil
+}
+
 // FilterRecipients returns the bare encryption-recipient ids of a piggy-ids file
 // — the first token of each line whose id begins with RecipientPrefix — dropping
 // comment lines, slot-9A auth ids, and any trailing `  # <label>`. This is

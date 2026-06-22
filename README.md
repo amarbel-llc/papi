@@ -33,7 +33,8 @@ ADR-0004.
 `papi` has these subcommands: `validate` checks a domain against the spec;
 `piggy-ids` / `ssh-keys` / `person` / `repos` surface a domain's published
 identity material, keys, and repositories for downstream consumption;
-`ssh-copy-id` installs those keys onto a host; `query` runs a jq expression
+`ssh-copy-id` installs those keys onto a host; `bootstrap` prints a domain's
+cold-host self-bootstrap shim; `query` runs a jq expression
 over the document; `enroll` emits a signed enrollment receipt for a new
 YubiKey; `verify-receipt` checks that receipt against a domain's published
 keys (FDR-0001); and `verified-recipients` distils a batch of receipts into the
@@ -143,6 +144,23 @@ at all.
 > hosts — the live viewport owns the terminal, so a step that prompts for an SSH
 > passphrase or YubiKey touch isn't supported yet
 > ([crap#31](https://github.com/amarbel-llc/crap/issues/31)).
+
+### `papi bootstrap <domain>`
+
+Fetch `<domain>`'s `GET /papi/bootstrap` and print the **self-bootstrap shim**
+verbatim — the small POSIX-sh script a cold, YubiKey-provisioned host runs to
+clone eng over HTTPS and `exec` its provisioner. It is the inspect-before-you-run
+companion to the cold-host entrypoint, which needs no papi binary at all
+([FDR-0003](docs/features/0003-papi-self-bootstrap-endpoint.md)):
+
+```console
+$ curl -fsSL https://linenisgreat.com/papi/bootstrap | sh   # cold host: only a card + network
+$ papi bootstrap linenisgreat.com | less                    # or review it first
+```
+
+The shim's contents are owned and version-controlled in eng (`bin/provision.sh`);
+PAPI only **hosts** them — public and unprojected, since gating a bootstrap shim
+behind §5 would be circular.
 
 ### `papi person <domain>`
 
@@ -321,7 +339,7 @@ internal/0/markl/      markl-id (blech32) parser (RFC-0002)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, person, enroll, verify-receipt, verified-recipients)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, bootstrap, person, enroll, verify-receipt, verified-recipients)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic

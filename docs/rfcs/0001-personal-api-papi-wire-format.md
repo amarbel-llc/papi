@@ -189,6 +189,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/caches`              | projected `caches[]`, JSON                  | projected          |
 | GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids file (recipients + auth ids) | projected          |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
+| GET    | `/papi/bootstrap`           | `text/plain` self-bootstrap shim (OPTIONAL) | no                 |
 | POST   | `/papi/auth/challenge`      | challenge JSON (§5)                         | no                 |
 | POST   | `/papi/auth/response`       | session JSON (§5)                           | no                 |
 
@@ -207,7 +208,8 @@ unauthenticated request, the registered principal for an authenticated one.
   `/papi/organizations`, `/papi/sitemap`, (when the document advertises
   templates, §7) `/papi/templates`, (when the document advertises proofs,
   §9) `/papi/proofs`, (when the document advertises caches, §11)
-  `/papi/caches`, and
+  `/papi/caches`, (when the document serves a self-bootstrap shim, §4.2)
+  `/papi/bootstrap`, and
 - `auth` — `{scheme: "piggy-challenge-response", challenge, response,
 present_session_as}`, where `challenge`/`response` are absolute URLs.
 
@@ -231,9 +233,10 @@ endpoints (`/papi/forges`, `/papi/repos`, `/papi/organizations`, `/papi/sitemap`
 `"public"` for the anonymous principal and `"scoped"` for an authenticated
 principal.
 
-The two `text/plain` endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`)
-MUST NOT use the envelope; they return a raw body with `Content-Type:
-text/plain`. Clients MUST NOT assume every PAPI response is the JSON envelope.
+The `text/plain` endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`, and
+the OPTIONAL `/papi/bootstrap`) MUST NOT use the envelope; they return a raw body
+with `Content-Type: text/plain`. Clients MUST NOT assume every PAPI response is
+the JSON envelope.
 
 - `/papi/piggy-ids` MUST emit a piggy-ids file: comment lines beginning with `#`,
   then one piggy `id` per line (each OPTIONALLY followed by `  # <label>`) — the
@@ -243,8 +246,19 @@ text/plain`. Clients MUST NOT assume every PAPI response is the JSON envelope.
   encryption recipients.
 - `/papi/ssh-authorized-keys` MUST emit one `authorized_keys` line per visible
   SSH key, suitable for appending to `~/.ssh/authorized_keys`.
+- `/papi/bootstrap` (OPTIONAL) MAY serve a **self-bootstrap shim**: a POSIX-sh
+  script a cold, YubiKey-provisioned host runs to provision itself — e.g. clone a
+  provisioner repo over HTTPS, then `exec` it — for the entrypoint `curl -fsSL
+  https://<domain>/papi/bootstrap | sh`. When present it is served **public and
+  unprojected**: a cold host has no card-auth stack yet, and gating the shim
+  behind §5 would be circular (the shim is what bootstraps the ability to
+  authenticate). The shim's contents SHOULD be owned and version-controlled out
+  of band (so the `curl | sh` surface stays reviewed) and hosted verbatim; any
+  sensitive data the shim later needs stays §5-gated downstream (§6, §12).
 
-Both text endpoints draw only from nodes visible to the principal under §2.
+The two projected text endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`)
+draw only from nodes visible to the principal under §2; `/papi/bootstrap` is
+public and the same for every requester.
 
 #### 4.3. CORS
 
