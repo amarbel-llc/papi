@@ -37,8 +37,9 @@ identity material, keys, and repositories for downstream consumption;
 cold-host self-bootstrap shim; `query` runs a jq expression
 over the document; `enroll` emits a signed enrollment receipt for a new
 YubiKey; `verify-receipt` checks that receipt against a domain's published
-keys (FDR-0001); and `verified-recipients` distils a batch of receipts into the
-verified slot-9D encryption-recipient set (FDR-0002).
+keys (FDR-0001); `verified-recipients` distils a batch of receipts into the
+verified slot-9D encryption-recipient set (FDR-0002); and `gh-check` reconciles
+your GitHub SSH keys against a domain's published keys.
 
 ### `papi validate <domain>`
 
@@ -291,6 +292,22 @@ piggy-recipient-v1@pivy_ecdh_p256_pub-qfjr3sgs…
 # enroll-receipt-bogus.json: excluded — attestation: …not published…   (stderr)
 ```
 
+### `papi gh-check <domain>`
+
+Cross-check the SSH keys on your authenticated GitHub account — both
+authentication and signing, via `gh api` — against `<domain>`'s published slot-9A
+keys, matching by key material. It flags **orphans** (a key on GitHub the domain
+doesn't publish — a revoked/rogue card that can still reach GitHub) and **gaps**
+(a domain-published card not yet on GitHub). Presented via the crap-TUI; exits
+non-zero if anything is out of sync (needs `gh` authenticated):
+
+```console
+$ papi gh-check linenisgreat.com
+✓ GitHub authentication key "piv-auth@2835305c" is published on linenisgreat.com
+✗ GitHub authentication key "old-laptop" is published on linenisgreat.com
+    reason: orphan — on GitHub but not published on the domain
+```
+
 ## Install
 
 The CLI is distributed as a Nix flake package — there is no non-Nix install
@@ -345,7 +362,7 @@ internal/0/markl/      markl-id (blech32) parser (RFC-0002)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, bootstrap, person, enroll, verify-receipt, verified-recipients)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, bootstrap, gh-check, person, enroll, verify-receipt, verified-recipients)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic

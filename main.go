@@ -64,6 +64,7 @@ func main() {
 	root.AddCommand(newSSHCopyIDCmd())
 	root.AddCommand(newVerifiedRecipientsCmd())
 	root.AddCommand(newBootstrapCmd())
+	root.AddCommand(newGHCheckCmd())
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newQueryCmd())
@@ -177,6 +178,138 @@ func newBootstrapCmd() *cobra.Command {
 			}
 			_, err = cmd.OutOrStdout().Write(body)
 			return err
+		},
+	}
+	return cmd
+}
+
+// sshLineMaterial reduces an SSH public-key line (authorized_keys form, or a bare
+// "type base64") to its canonical "type base64" material — comments/annotations
+// dropped — so the same key compares equal regardless of how it was framed.
+func sshLineMaterial(line string) (string, error) {
+	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(line)))
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))), nil
+}
+
+// domainKey is one of a domain's published slot-9A keys: its canonical material
+// plus a short label (the guid= annotation, else the line) for display.
+type domainKey struct {
+	material string
+	label    string
+}
+
+// domainKeyMaterials parses a /papi/ssh-authorized-keys body into domainKeys in
+// body order, skipping comments/blanks and unparseable lines.
+func domainKeyMaterials(body []byte) []domainKey {
+	var out []domainKey
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		mat, err := sshLineMaterial(line)
+		if err != nil {
+			continue
+		}
+		label := line
+		if m := guidAnnotation.FindStringSubmatch(line); m != nil {
+			label = "guid=" + m[1]
+		}
+		out = append(out, domainKey{material: mat, label: label})
+	}
+	return out
+}
+
+// ghKeysFn is the GitHub-key lister behind a seam, swapped in tests so gh-check's
+// reconciliation runs without a real gh.
+var ghKeysFn = enroll.ListGitHubKeys
+
+func newGHCheckCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "gh-check <domain>",
+		Short: "Reconcile your GitHub SSH keys against a domain's published slot-9A keys",
+		Long: "Cross-check the SSH keys on your authenticated GitHub account (both " +
+			"authentication and signing, via `gh api`) against <domain>'s published slot-9A " +
+			"keys (GET /papi/ssh-authorized-keys), matching by key material. Reports each " +
+			"GitHub key NOT published on the domain (an orphan — it still authenticates to " +
+			"GitHub but the domain doesn't recognize it: a revoked or rogue card) and each " +
+			"domain-published key NOT on GitHub (a gap — an enrolled card that can't yet use " +
+			"GitHub). Presented via the crap-TUI; exits non-zero if anything is out of sync. " +
+			"Needs gh authenticated.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			produce := func(rep *crap.Reporter) error {
+				body, _, err := c.SSHAuthorizedKeys(ctx)
+				if err != nil {
+					return err
+				}
+				domain := domainKeyMaterials(body)
+				domainSet := make(map[string]bool, len(domain))
+				for _, d := range domain {
+					domainSet[d.material] = true
+				}
+
+				ghKeys, err := ghKeysFn(ctx, enroll.ExecRunner)
+				if err != nil {
+					return err
+				}
+				ghSet := map[string]bool{}
+
+				type check struct {
+					desc string
+					ok   bool
+					diag map[string]any
+				}
+				var checks []check
+				for _, k := range ghKeys {
+					mat, merr := sshLineMaterial(k.Key)
+					if merr != nil {
+						continue
+					}
+					ghSet[mat] = true
+					published := domainSet[mat]
+					desc := fmt.Sprintf("GitHub %s key %q is published on %s", k.Kind, k.Title, args[0])
+					var diag map[string]any
+					if !published {
+						diag = map[string]any{"reason": "orphan — on GitHub but not published on the domain"}
+					}
+					checks = append(checks, check{desc, published, diag})
+				}
+				for _, d := range domain {
+					onGitHub := ghSet[d.material]
+					desc := fmt.Sprintf("domain key %s is registered on GitHub", d.label)
+					var diag map[string]any
+					if !onGitHub {
+						diag = map[string]any{"reason": "gap — published on the domain but not on GitHub"}
+					}
+					checks = append(checks, check{desc, onGitHub, diag})
+				}
+
+				ts := rep.TestStream(len(checks))
+				allOK := true
+				for _, ck := range checks {
+					if ck.ok {
+						ts.Ok(ck.desc)
+					} else {
+						ts.NotOk(ck.desc, ck.diag)
+						allOK = false
+					}
+				}
+				ts.Finish()
+				if !allOK {
+					return errors.New("GitHub SSH keys and the domain's published keys are out of sync")
+				}
+				return nil
+			}
+			return presentCrapOp(cmd.OutOrStdout(), crap.ReporterOptions{Source: "papi"}, "papi gh-check "+args[0], produce)
 		},
 	}
 	return cmd

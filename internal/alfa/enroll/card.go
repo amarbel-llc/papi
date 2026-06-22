@@ -244,3 +244,42 @@ func RegisterGitHubKey(ctx context.Context, run Runner, pubkey, title string) er
 	}
 	return nil
 }
+
+// GitHubKey is one SSH key on the authenticated GitHub account: its GitHub title,
+// its kind ("authentication" or "signing"), and the raw OpenSSH public key string.
+type GitHubKey struct {
+	Title string
+	Kind  string
+	Key   string
+}
+
+// ListGitHubKeys returns the authenticated GitHub account's SSH keys — both
+// authentication keys (GET /user/keys) and signing keys (GET /user/ssh_signing_keys)
+// — via `gh api`. It is the read counterpart of RegisterGitHubKey, for
+// reconciling GitHub against a domain's published slot-9A keys.
+func ListGitHubKeys(ctx context.Context, run Runner) ([]GitHubKey, error) {
+	if run == nil {
+		run = ExecRunner
+	}
+	var out []GitHubKey
+	for _, ep := range []struct{ path, kind string }{
+		{"user/keys", "authentication"},
+		{"user/ssh_signing_keys", "signing"},
+	} {
+		raw, err := run(ctx, nil, "gh", "api", ep.path)
+		if err != nil {
+			return nil, fmt.Errorf("gh api %s: %w", ep.path, err)
+		}
+		var keys []struct {
+			Key   string `json:"key"`
+			Title string `json:"title"`
+		}
+		if err := json.Unmarshal(raw, &keys); err != nil {
+			return nil, fmt.Errorf("parse gh api %s: %w", ep.path, err)
+		}
+		for _, k := range keys {
+			out = append(out, GitHubKey{Title: k.Title, Kind: ep.kind, Key: k.Key})
+		}
+	}
+	return out, nil
+}

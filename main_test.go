@@ -19,9 +19,24 @@ import (
 
 	"github.com/amarbel-llc/crap/go-crap/v2/ndjsoncrap"
 	"github.com/amarbel-llc/papi/internal/0/papi"
+	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 	"golang.org/x/crypto/ssh"
 )
+
+// genSSHKey returns a fresh ed25519 key in canonical "type base64" form.
+func genSSHKey(t *testing.T) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
+}
 
 // crapRecords decodes a raw ndjson-crap buffer into its records (the form an
 // operation command writes when stdout is not a TTY).
@@ -539,6 +554,40 @@ func TestBootstrapCmd(t *testing.T) {
 	}
 	if out.String() != shim {
 		t.Errorf("bootstrap shim not printed verbatim:\ngot:  %q\nwant: %q", out.String(), shim)
+	}
+}
+
+func TestGHCheckCmd(t *testing.T) {
+	k1 := genSSHKey(t) // published on the domain AND on GitHub
+	k2 := genSSHKey(t) // on GitHub only — an orphan
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/ssh-authorized-keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, k1+" piggy slot=9A guid=AAAA\n")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	orig := ghKeysFn
+	ghKeysFn = func(context.Context, enroll.Runner) ([]enroll.GitHubKey, error) {
+		return []enroll.GitHubKey{
+			{Title: "card", Kind: "authentication", Key: k1},  // published → OK
+			{Title: "stale", Kind: "authentication", Key: k2}, // orphan → NotOk
+		}, nil
+	}
+	defer func() { ghKeysFn = orig }()
+
+	cmd := newGHCheckCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{srv.URL})
+	if err := cmd.ExecuteContext(context.Background()); err == nil {
+		t.Fatal("an orphan GitHub key should make gh-check exit non-zero")
+	}
+	if !crapHasFailedTest(crapRecords(t, out.String())) {
+		t.Errorf("expected a failed test point (the orphan) in the crap stream:\n%s", out.String())
 	}
 }
 

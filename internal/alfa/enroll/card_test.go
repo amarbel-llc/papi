@@ -173,3 +173,31 @@ func TestRegisterGitHubKey(t *testing.T) {
 		t.Errorf("signing call = %q", calls[1])
 	}
 }
+
+func TestListGitHubKeys(t *testing.T) {
+	run := func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+		if name != "gh" || len(args) < 2 || args[0] != "api" {
+			t.Fatalf("unexpected exec: %s %v", name, args)
+		}
+		switch args[1] {
+		case "user/keys":
+			return []byte(`[{"key":"ssh-ed25519 AAAAauth1","title":"laptop"}]`), nil
+		case "user/ssh_signing_keys":
+			return []byte(`[{"key":"ssh-ed25519 AAAAsign1","title":"laptop-sign"}]`), nil
+		}
+		return nil, fmt.Errorf("unexpected gh api path %q", args[1])
+	}
+	keys, err := ListGitHubKeys(context.Background(), run)
+	if err != nil {
+		t.Fatalf("ListGitHubKeys: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("want 2 keys (1 auth + 1 signing), got %d: %+v", len(keys), keys)
+	}
+	if keys[0].Kind != "authentication" || keys[0].Key != "ssh-ed25519 AAAAauth1" || keys[0].Title != "laptop" {
+		t.Errorf("auth key = %+v", keys[0])
+	}
+	if keys[1].Kind != "signing" || keys[1].Title != "laptop-sign" {
+		t.Errorf("signing key = %+v", keys[1])
+	}
+}
