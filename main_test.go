@@ -3,12 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // twoKeyBody is a two-line /papi/ssh-authorized-keys fixture: two slot-9A keys,
@@ -79,6 +84,115 @@ func TestSSHKeysVerbatim(t *testing.T) {
 	}
 	if out != twoKeyBody {
 		t.Errorf("verbatim body mismatch:\ngot:  %q\nwant: %q", out, twoKeyBody)
+	}
+}
+
+// authorizedKeyLine builds a real, parseable OpenSSH authorized_keys line with a
+// guid=<HEX> annotation — extractAuthorizedKeys validates with ParseAuthorizedKey,
+// so the twoKeyBody placeholder material won't do here.
+func authorizedKeyLine(t *testing.T, guid string) string {
+	t.Helper()
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%s piggy slot=9A guid=%s cn=test",
+		strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))), guid)
+}
+
+func TestExtractAuthorizedKeys(t *testing.T) {
+	k1 := authorizedKeyLine(t, "DEADBEEF")
+	k2 := authorizedKeyLine(t, "cafef00d")
+	body := "# a comment line\n" + k1 + "\n\n" + k2 + "\nnot a valid key line\n"
+
+	all, err := extractAuthorizedKeys([]byte(body), "")
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if len(all) != 2 || all[0] != k1 || all[1] != k2 {
+		t.Fatalf("want [k1 k2] (comment/blank/garbage dropped), got %v", all)
+	}
+
+	// guid filter is case-insensitive and selects exactly one.
+	one, err := extractAuthorizedKeys([]byte(body), "deadbeef")
+	if err != nil {
+		t.Fatalf("extract --guid: %v", err)
+	}
+	if len(one) != 1 || one[0] != k1 {
+		t.Fatalf("guid filter want [k1], got %v", one)
+	}
+
+	if _, err := extractAuthorizedKeys([]byte(body), "00000000"); err == nil {
+		t.Error("a non-matching guid should error")
+	}
+	if _, err := extractAuthorizedKeys([]byte("# only a comment\njunk text\n"), ""); err == nil {
+		t.Error("a body with no valid keys should error")
+	}
+}
+
+func TestBuildSSHInstallScript(t *testing.T) {
+	k1 := authorizedKeyLine(t, "DEADBEEF")
+	script := buildSSHInstallScript([]string{k1})
+	for _, want := range []string{
+		`mkdir -p "$HOME/.ssh"`,
+		`chmod 700 "$HOME/.ssh"`,
+		`chmod 600 "$HOME/.ssh/authorized_keys"`,
+		"<<'PAPI_KEYS_EOF'", // quoted heredoc — no expansion of key contents
+		k1,
+		`printf 'added=%d present=%d\n'`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script missing %q\n--- script ---\n%s", want, script)
+		}
+	}
+}
+
+// sshCopyIDServer serves a two-key /papi/ssh-authorized-keys body of REAL keys
+// (extractAuthorizedKeys parse-validates, unlike the ssh-keys path).
+func sshCopyIDServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	body := authorizedKeyLine(t, "DEADBEEF") + "\n" + authorizedKeyLine(t, "cafef00d") + "\n"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/ssh-authorized-keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		io.WriteString(w, body)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestSSHCopyIDInstallsKeys(t *testing.T) {
+	srv := sshCopyIDServer(t)
+	defer srv.Close()
+
+	var gotArgs []string
+	var gotScript string
+	orig := sshRunner
+	sshRunner = func(_ context.Context, args []string, stdin string) (string, error) {
+		gotArgs, gotScript = args, stdin
+		return "added=2 present=0\n", nil
+	}
+	defer func() { sshRunner = orig }()
+
+	cmd := newSSHCopyIDCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"deploy@host.example", "--domain", srv.URL, "--port", "2222"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ssh-copy-id: %v", err)
+	}
+
+	if !strings.Contains(out.String(), "2 key(s) added, 0 already present") {
+		t.Errorf("summary: %q", out.String())
+	}
+	if got := strings.Join(gotArgs, " "); got != "-p 2222 deploy@host.example sh" {
+		t.Errorf("ssh args = %q, want %q", got, "-p 2222 deploy@host.example sh")
+	}
+	if !strings.Contains(gotScript, "PAPI_KEYS_EOF") || !strings.Contains(gotScript, "guid=DEADBEEF") {
+		t.Errorf("install script not piped to ssh:\n%s", gotScript)
 	}
 }
 

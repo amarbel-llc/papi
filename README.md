@@ -33,9 +33,10 @@ ADR-0004.
 `papi` has these subcommands: `validate` checks a domain against the spec;
 `piggy-ids` / `ssh-keys` / `person` / `repos` surface a domain's published
 identity material, keys, and repositories for downstream consumption;
-`query` runs a jq expression over the document; `enroll` emits a signed
-enrollment receipt for a new YubiKey; and `verify-receipt` checks that receipt
-against a domain's published keys (FDR-0001).
+`ssh-copy-id` installs those keys onto a host; `query` runs a jq expression
+over the document; `enroll` emits a signed enrollment receipt for a new
+YubiKey; and `verify-receipt` checks that receipt against a domain's published
+keys (FDR-0001).
 
 ### `papi validate <domain>`
 
@@ -93,6 +94,23 @@ affordance a bootstrapping client uses to pin its own card's signing key:
 
 ```console
 $ papi ssh-keys --guid DEADBEEF linenisgreat.com
+```
+
+### `papi ssh-copy-id <user@host> --domain <domain>`
+
+Fetch **all** of `<domain>`'s published slot-9A keys and install them into
+`<user@host>`'s `~/.ssh/authorized_keys` — like `ssh-copy-id(1)`, but sourcing
+the keys from PAPI instead of a local file. The append is idempotent (deduped by
+key material; `~/.ssh` and the file are created `0700`/`0600` if missing), so
+re-running keeps a host in sync as cards are enrolled or rotated. With
+`--guid <HEX>`, install just one card's key. It shells to `ssh`, inheriting your
+SSH config and agent; `--port` and `--identity` override the connection. Only
+lines that parse as real SSH keys are installed (a hostile domain cannot inject
+text into the remote step):
+
+```console
+$ papi ssh-copy-id deploy@host.example --domain linenisgreat.com
+deploy@host.example: 2 key(s) added, 1 already present
 ```
 
 ### `papi person <domain>`
@@ -246,7 +264,7 @@ internal/0/markl/      markl-id (blech32) parser (RFC-0002)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, person, enroll, verify-receipt)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, person, enroll, verify-receipt)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic

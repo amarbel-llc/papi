@@ -7,13 +7,16 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +25,7 @@ import (
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 	"github.com/itchyny/gojq"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
 )
 
 // version and commit are injected via -ldflags at build time (eng-versioning(7),
@@ -54,6 +58,7 @@ func main() {
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newPiggyIDsCmd())
 	root.AddCommand(newSSHKeysCmd())
+	root.AddCommand(newSSHCopyIDCmd())
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newQueryCmd())
@@ -188,6 +193,165 @@ func newSSHKeysCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&guid, "guid", "",
 		"print only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
+	return cmd
+}
+
+// extractAuthorizedKeys parses a /papi/ssh-authorized-keys body into installable
+// authorized_keys lines, kept verbatim (annotations and all). It skips blanks and
+// comment lines and — crucially — anything that does not parse as a well-formed
+// SSH public key, so a hostile domain cannot smuggle arbitrary text into the
+// remote install script (the lines are fed to a shell heredoc). With guid set,
+// only the line whose guid=<HEX> annotation matches (case-insensitively) is kept.
+func extractAuthorizedKeys(body []byte, guid string) ([]string, error) {
+	var keys []string
+	for _, raw := range strings.Split(string(body), "\n") {
+		line := strings.TrimSpace(strings.TrimRight(raw, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line)); err != nil {
+			continue // not a real key (stray text / malformed) — never install it
+		}
+		if guid != "" {
+			m := guidAnnotation.FindStringSubmatch(line)
+			if m == nil || !strings.EqualFold(m[1], guid) {
+				continue
+			}
+		}
+		keys = append(keys, line)
+	}
+	if len(keys) == 0 {
+		if guid != "" {
+			return nil, fmt.Errorf("no ssh-authorized-keys line with guid=%s", guid)
+		}
+		return nil, fmt.Errorf("no installable slot-9A keys in /papi/ssh-authorized-keys")
+	}
+	return keys, nil
+}
+
+// buildSSHInstallScript renders a POSIX-sh script that installs keys into the
+// remote ~/.ssh/authorized_keys idempotently: it hardens ~/.ssh (0700) and the
+// file (0600), then appends only keys whose "type base64" material is not already
+// present, and prints "added=N present=M". The keys ride a quoted heredoc so
+// their contents are never shell-expanded; the whole script is fed to a remote
+// `sh` on stdin (the heredoc body is read from that same stream).
+func buildSSHInstallScript(keys []string) string {
+	var b strings.Builder
+	b.WriteString(`set -eu
+umask 077
+mkdir -p "$HOME/.ssh"
+touch "$HOME/.ssh/authorized_keys"
+chmod 700 "$HOME/.ssh"
+chmod 600 "$HOME/.ssh/authorized_keys"
+added=0
+present=0
+while IFS= read -r line; do
+	[ -n "$line" ] || continue
+	km=$(printf '%s\n' "$line" | awk '{print $1" "$2}')
+	if grep -qF -- "$km" "$HOME/.ssh/authorized_keys"; then
+		present=$((present + 1))
+	else
+		printf '%s\n' "$line" >>"$HOME/.ssh/authorized_keys"
+		added=$((added + 1))
+	fi
+done <<'PAPI_KEYS_EOF'
+`)
+	for _, k := range keys {
+		b.WriteString(k)
+		b.WriteByte('\n')
+	}
+	b.WriteString(`PAPI_KEYS_EOF
+printf 'added=%d present=%d\n' "$added" "$present"
+`)
+	return b.String()
+}
+
+// sshRunner runs `ssh <args>` with stdin and returns stdout — the single exec
+// seam, swapped in tests so the command's fetch→extract→install wiring runs
+// without a real host. Production execs ssh, inheriting the operator's SSH
+// config/agent (the same affordance ssh-copy-id(1) relies on).
+var sshRunner = func(ctx context.Context, args []string, stdin string) (string, error) {
+	c := exec.CommandContext(ctx, "ssh", args...)
+	c.Stdin = strings.NewReader(stdin)
+	var out, errBuf bytes.Buffer
+	c.Stdout = &out
+	c.Stderr = &errBuf
+	if err := c.Run(); err != nil {
+		if msg := strings.TrimSpace(errBuf.String()); msg != "" {
+			return "", fmt.Errorf("%w: %s", err, msg)
+		}
+		return "", err
+	}
+	return out.String(), nil
+}
+
+var copyIDCount = regexp.MustCompile(`added=(\d+) present=(\d+)`)
+
+// installKeysOverSSH ships keys to target's authorized_keys via sshRunner and
+// returns how many were added vs already present.
+func installKeysOverSSH(ctx context.Context, target string, keys []string, port int, identity string) (added, present int, err error) {
+	args := make([]string, 0, 6)
+	if port != 0 {
+		args = append(args, "-p", strconv.Itoa(port))
+	}
+	if identity != "" {
+		args = append(args, "-i", identity)
+	}
+	args = append(args, target, "sh")
+	out, err := sshRunner(ctx, args, buildSSHInstallScript(keys))
+	if err != nil {
+		return 0, 0, fmt.Errorf("ssh %s: %w", target, err)
+	}
+	m := copyIDCount.FindStringSubmatch(out)
+	if m == nil {
+		return 0, 0, fmt.Errorf("unexpected remote output: %q", strings.TrimSpace(out))
+	}
+	added, _ = strconv.Atoi(m[1])
+	present, _ = strconv.Atoi(m[2])
+	return added, present, nil
+}
+
+func newSSHCopyIDCmd() *cobra.Command {
+	var domain, guid, identity string
+	var port int
+	cmd := &cobra.Command{
+		Use:   "ssh-copy-id <user@host>",
+		Short: "Install a PAPI domain's enrolled slot-9A keys into <host>'s authorized_keys",
+		Long: "Fetch ALL of --domain's published slot-9A SSH keys (GET /papi/ssh-authorized-keys, " +
+			"via the §8.1 discovery-following client) and install them into <user@host>'s " +
+			"~/.ssh/authorized_keys — like ssh-copy-id(1), but sourcing the keys from PAPI " +
+			"instead of a local file. The append is idempotent (deduped by key material; ~/.ssh " +
+			"and the file are created 0700/0600 if missing), so re-running keeps a host in sync " +
+			"as cards are enrolled or rotated. With --guid <HEX>, install only that one card's " +
+			"key. Shells to ssh, inheriting your SSH config/agent; pass --port / --identity to " +
+			"override.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(domain)
+			if err != nil {
+				return err
+			}
+			body, _, err := c.SSHAuthorizedKeys(cmd.Context())
+			if err != nil {
+				return err
+			}
+			keys, err := extractAuthorizedKeys(body, guid)
+			if err != nil {
+				return err
+			}
+			added, present, err := installKeysOverSSH(cmd.Context(), args[0], keys, port, identity)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s: %d key(s) added, %d already present\n", args[0], added, present)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&domain, "domain", "", "PAPI domain to source enrolled slot-9A keys from (required)")
+	cmd.Flags().StringVar(&guid, "guid", "", "install only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
+	cmd.Flags().IntVar(&port, "port", 0, "ssh port (default: ssh's own default)")
+	cmd.Flags().StringVar(&identity, "identity", "", "ssh identity file (passed as ssh -i)")
+	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }
 
