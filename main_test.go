@@ -643,6 +643,14 @@ func TestGHCheckCmdMissingScope(t *testing.T) {
 	}
 }
 
+func TestGHAuthArgs(t *testing.T) {
+	got := strings.Join(ghAuthArgs("github.com"), " ")
+	want := "auth refresh -h github.com -s admin:public_key -s admin:ssh_signing_key"
+	if got != want {
+		t.Errorf("ghAuthArgs = %q, want %q", got, want)
+	}
+}
+
 // personDocServer serves a /papi whose person block carries display_name and a
 // nested contact.email — the scoped projection's shape (RFC-0001 §6). The
 // anonymous `person` path decodes the same struct, so this exercises the new

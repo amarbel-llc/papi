@@ -65,6 +65,7 @@ func main() {
 	root.AddCommand(newVerifiedRecipientsCmd())
 	root.AddCommand(newBootstrapCmd())
 	root.AddCommand(newGHCheckCmd())
+	root.AddCommand(newGHAuthCmd())
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newQueryCmd())
@@ -241,8 +242,7 @@ func newGHCheckCmd() *cobra.Command {
 			"Needs gh authenticated with the admin:public_key (auth keys) and " +
 			"admin:ssh_signing_key (signing keys) scopes — or the read: variants. A missing " +
 			"scope SKIPS that key kind (surfacing gh's `gh auth refresh -s …` hint) rather than " +
-			"failing the whole check; grant both with `gh auth refresh -h github.com -s " +
-			"admin:public_key -s admin:ssh_signing_key`.",
+			"failing the whole check; grant both at once with `papi gh-auth`.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -335,6 +335,40 @@ func newGHCheckCmd() *cobra.Command {
 			return presentCrapOp(cmd.OutOrStdout(), crap.ReporterOptions{Source: "papi"}, "papi gh-check "+args[0], produce)
 		},
 	}
+	return cmd
+}
+
+// githubScopes are the gh OAuth scopes papi's GitHub integration needs: listing
+// and adding SSH authentication keys (admin:public_key) and SSH signing keys
+// (admin:ssh_signing_key). `papi gh-auth` requests them; `papi enroll` registration
+// and `papi gh-check` consume them.
+var githubScopes = []string{"admin:public_key", "admin:ssh_signing_key"}
+
+// ghAuthArgs builds the `gh auth refresh` argv that grants githubScopes on host.
+func ghAuthArgs(host string) []string {
+	args := []string{"auth", "refresh", "-h", host}
+	for _, s := range githubScopes {
+		args = append(args, "-s", s)
+	}
+	return args
+}
+
+func newGHAuthCmd() *cobra.Command {
+	var hostname string
+	cmd := &cobra.Command{
+		Use:   "gh-auth",
+		Short: "Grant gh the GitHub scopes papi needs (admin:public_key + admin:ssh_signing_key)",
+		Long: "Launch `gh auth refresh` to add the OAuth scopes papi's GitHub integration uses — " +
+			"admin:public_key (SSH authentication keys: `papi enroll` registration and `papi " +
+			"gh-check`) and admin:ssh_signing_key (SSH signing keys) — to your existing gh login. " +
+			"Interactive: gh runs its browser/device flow on your terminal. Run it once if gh " +
+			"reports a missing scope; needs an existing `gh auth login`.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return enroll.ExecInteractive(cmd.Context(), "gh", ghAuthArgs(hostname)...)
+		},
+	}
+	cmd.Flags().StringVar(&hostname, "hostname", "github.com", "GitHub hostname (gh -h)")
 	return cmd
 }
 
