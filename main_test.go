@@ -64,6 +64,43 @@ func crapHasFailedNode(recs []ndjsoncrap.Record) bool {
 	return false
 }
 
+// crapHasFailedTest reports whether the stream carries a failing result-family
+// test point (the form verify-receipt emits).
+func crapHasFailedTest(recs []ndjsoncrap.Record) bool {
+	for _, rec := range recs {
+		if tt, ok := rec.(ndjsoncrap.Test); ok && !tt.OK {
+			return true
+		}
+	}
+	return false
+}
+
+func TestVerifyReceiptCmdCrap(t *testing.T) {
+	// A wrong-schema receipt fails before any network fetch, so a stub server is
+	// enough to build the client; the crap stream carries a failed test point and
+	// the command exits non-zero.
+	srv := httptest.NewServer(http.NewServeMux())
+	defer srv.Close()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "receipt.json")
+	if err := os.WriteFile(path, []byte(`{"schema":"bogus-v9"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newVerifyReceiptCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{path, "--domain", srv.URL})
+	if err := cmd.ExecuteContext(context.Background()); err == nil {
+		t.Fatal("a wrong-schema receipt should error")
+	}
+	if !crapHasFailedTest(crapRecords(t, out.String())) {
+		t.Errorf("expected a failed test point in the crap stream:\n%s", out.String())
+	}
+}
+
 // twoKeyBody is a two-line /papi/ssh-authorized-keys fixture: two slot-9A keys,
 // each annotated with guid=<HEX> and cn=<name> (RFC-0001 §4.2). The guids differ
 // in case from the flag values the tests pass, to exercise case-insensitivity.

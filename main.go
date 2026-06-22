@@ -1055,7 +1055,8 @@ func newVerifyReceiptCmd() *cobra.Command {
 			"slot-9A key (a §9.3 papi-proof-sig-v1 over the claim), and its attestation is " +
 			"signed by a slot-9A key ALREADY published on --domain's /papi/piggy-ids (a " +
 			"papi-enroll-att-v1 over the receipt's canonical bytes) — an already-trusted " +
-			"card vouching for the new one. Prints one verdict line per check and exits " +
+			"card vouching for the new one. Presents the checks via the crap-TUI (a live " +
+			"viewport on a terminal; ndjson-crap when piped — `… | crap-present`) and exits " +
 			"non-zero if any check fails; this is the verifier a deploy gate runs before " +
 			"publishing a new key.",
 		Args: cobra.ExactArgs(1),
@@ -1071,22 +1072,33 @@ func newVerifyReceiptCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			res, err := inspect.VerifyReceipt(cmd.Context(), c, raw)
-			if err != nil {
-				return err
-			}
-			out := cmd.OutOrStdout()
-			for _, ck := range res.Checks {
-				status := "verified"
-				if !ck.OK {
-					status = "FAILED"
+			ctx := cmd.Context()
+			produce := func(rep *crap.Reporter) error {
+				res, verr := inspect.VerifyReceipt(ctx, c, raw)
+				if verr != nil {
+					// A hard error (unreadable JSON / wrong schema) before any
+					// check — surface it as a single failed test point.
+					ts := rep.TestStream(1)
+					ts.NotOk("verify-receipt", map[string]any{"error": verr.Error()})
+					ts.Finish()
+					return verr
 				}
-				fmt.Fprintf(out, "%s: %s — %s\n", ck.Name, status, ck.Detail)
+				ts := rep.TestStream(len(res.Checks))
+				for _, ck := range res.Checks {
+					if ck.OK {
+						ts.Ok(ck.Name + " — " + ck.Detail)
+					} else {
+						ts.NotOk(ck.Name, map[string]any{"detail": ck.Detail})
+					}
+				}
+				ts.Finish()
+				if !res.OK {
+					return errors.New("receipt verification failed")
+				}
+				return nil
 			}
-			if !res.OK {
-				return fmt.Errorf("receipt verification failed")
-			}
-			return nil
+			return presentCrapOp(cmd.OutOrStdout(), crap.ReporterOptions{Source: "papi"},
+				"papi verify-receipt "+filepath.Base(args[0]), produce)
 		},
 	}
 	cmd.Flags().StringVar(&domain, "domain", "",

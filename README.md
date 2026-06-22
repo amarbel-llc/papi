@@ -226,14 +226,15 @@ emitted when a new YubiKey is provisioned. Two checks, both required: the
 `papi-proof-sig-v1` over the claim, verified against the receipt's own slot-9A
 key), and the `attestation` is signed by a slot-9A key **already published** on
 `--domain`'s `/papi/piggy-ids` (a `papi-enroll-att-v1` over the receipt's
-canonical bytes) — an already-trusted card vouching for the new one. Prints one
-verdict line per check and exits non-zero if any fails; this is the verifier a
-deploy gate runs before publishing a new key.
+canonical bytes) — an already-trusted card vouching for the new one. The two
+checks are presented via the **crap-TUI** (live viewport on a terminal,
+ndjson-crap when piped to `crap-present`); the command exits non-zero if either
+fails — this is the verifier a deploy gate runs before publishing a new key.
 
 ```console
 $ papi verify-receipt enroll-receipt-55C3439D.json --domain linenisgreat.com
-self_proof: verified — new card's slot-9A key signs the 9D↔9A binding claim
-attestation: verified — an already-published slot-9A key attests the receipt
+✓ self_proof — new card's slot-9A key signs the 9D↔9A binding claim
+✓ attestation — an already-published slot-9A key attests the receipt
 ```
 
 A host without a Go binary (e.g. a php-wasm site verifying receipts natively) can
