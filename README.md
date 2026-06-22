@@ -117,9 +117,20 @@ $ papi ssh-copy-id prod --domain linenisgreat.com   # 'prod' resolved from ~/.ss
 prod: 2 key(s) added, 1 already present
 ```
 
-The destination must give you a shell — the install runs a small `sh` script
-remotely. A forced/restricted-command host (e.g. an rsync-only target) can't be
-used, and papi says so rather than failing with a bare exit code.
+By default the install runs a small `sh` script remotely, so the destination
+must give you a shell. For a shell-less but SFTP-capable host (a forced-command,
+`sftp`-only, or `nologin`-shell target), pass `--sftp`: papi fetches
+`authorized_keys`, merges the new keys locally, and re-uploads it over the SFTP
+subsystem — no remote shell needed.
+
+```console
+$ papi ssh-copy-id rsync-kp --domain linenisgreat.com --sftp
+rsync-kp: 2 key(s) added, 0 already present
+```
+
+A host that offers neither a shell nor SFTP (e.g. a strict rsync-only target
+that confines paths away from `~/.ssh`) can't be driven in-band at all — and papi
+says so rather than failing with a bare exit code.
 
 ### `papi person <domain>`
 

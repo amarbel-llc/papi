@@ -15,6 +15,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -283,18 +284,26 @@ var sshRunner = func(ctx context.Context, args []string, stdin string) (string, 
 	return out.String(), nil
 }
 
-// sshFailureDetail picks the most useful diagnostic from a failed ssh run: the
-// remote stderr, else its stdout, else a hint. A non-zero exit with NO output
-// usually means the destination ran no shell for the install script — a forced or
-// restricted command (e.g. an rsync-only target) — which ssh-copy-id cannot drive.
-func sshFailureDetail(stdout, stderr string) string {
+// cmdFailureDetail picks the most useful diagnostic from a failed ssh/sftp run:
+// the captured stderr, else stdout, else emptyHint (a non-zero exit with no
+// output at all needs the caller's context to be intelligible).
+func cmdFailureDetail(stdout, stderr, emptyHint string) string {
 	if s := strings.TrimSpace(stderr); s != "" {
 		return s
 	}
 	if s := strings.TrimSpace(stdout); s != "" {
 		return s
 	}
-	return "no output from the destination — it likely runs a forced/restricted command (no shell), which ssh-copy-id requires"
+	return emptyHint
+}
+
+// sshFailureDetail is cmdFailureDetail with the no-shell hint: a non-zero exit
+// with NO output usually means the destination ran no shell for the install
+// script — a forced or restricted command (e.g. an rsync-only target) — which the
+// `sh` install path cannot drive (try --sftp).
+func sshFailureDetail(stdout, stderr string) string {
+	return cmdFailureDetail(stdout, stderr,
+		"no output from the destination — it likely runs no shell (forced/restricted command); retry with --sftp")
 }
 
 var copyIDCount = regexp.MustCompile(`added=(\d+) present=(\d+)`)
@@ -323,9 +332,111 @@ func installKeysOverSSH(ctx context.Context, target string, keys []string, port 
 	return added, present, nil
 }
 
+// mergeAuthorizedKeys appends newKeys to an existing authorized_keys body,
+// skipping any whose key material (type+base64, comments/options ignored) is
+// already present, and reports how many were added vs already present. It is the
+// shell-free counterpart of buildSSHInstallScript's remote dedup: the merge runs
+// locally (the SFTP path), so no remote shell is needed.
+func mergeAuthorizedKeys(existing []byte, newKeys []string) (merged []byte, added, present int) {
+	have := map[string]bool{}
+	for _, line := range strings.Split(string(existing), "\n") {
+		if pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(line)); err == nil {
+			have[string(ssh.MarshalAuthorizedKey(pub))] = true
+		}
+	}
+	var b bytes.Buffer
+	b.Write(existing)
+	if len(existing) > 0 && !bytes.HasSuffix(existing, []byte("\n")) {
+		b.WriteByte('\n')
+	}
+	for _, k := range newKeys {
+		pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(k))
+		if err != nil {
+			continue // already validated upstream; be defensive
+		}
+		material := string(ssh.MarshalAuthorizedKey(pub))
+		if have[material] {
+			present++
+			continue
+		}
+		have[material] = true // dedup within newKeys too
+		b.WriteString(k)
+		b.WriteByte('\n')
+		added++
+	}
+	return b.Bytes(), added, present
+}
+
+// sftpRunner runs `sftp <args>` with a batch script on stdin and returns stdout —
+// the SFTP exec seam (swapped in tests). Like sshRunner it execs the openssh
+// client, so it resolves the same ~/.ssh/config and agent.
+var sftpRunner = func(ctx context.Context, args []string, batch string) (string, error) {
+	c := exec.CommandContext(ctx, "sftp", args...)
+	c.Stdin = strings.NewReader(batch)
+	var out, errBuf bytes.Buffer
+	c.Stdout = &out
+	c.Stderr = &errBuf
+	if err := c.Run(); err != nil {
+		return "", fmt.Errorf("%w: %s", err, cmdFailureDetail(out.String(), errBuf.String(),
+			"no output from sftp — the destination may not offer the sftp subsystem"))
+	}
+	return out.String(), nil
+}
+
+// sftpArgs builds the `sftp -b - [...] <dest>` argv (batch on stdin). Note sftp's
+// port flag is -P (capital), unlike ssh's -p.
+func sftpArgs(dest string, port int, identity string) []string {
+	args := []string{"-b", "-"}
+	if port != 0 {
+		args = append(args, "-P", strconv.Itoa(port))
+	}
+	if identity != "" {
+		args = append(args, "-i", identity)
+	}
+	return append(args, dest)
+}
+
+// installKeysOverSFTP installs keys into dest's ~/.ssh/authorized_keys without a
+// remote shell: it fetches the current file over SFTP, merges + dedups locally,
+// and uploads the result (creating ~/.ssh 0700 / the file 0600). This drives
+// shell-less but SFTP-capable hosts (forced-shell/nologin), which the `sh` path
+// cannot. Two short sftp batches bracket the local merge.
+func installKeysOverSFTP(ctx context.Context, dest string, keys []string, port int, identity string) (added, present int, err error) {
+	tmp, err := os.MkdirTemp("", "papi-ssh-copy-id-")
+	if err != nil {
+		return 0, 0, err
+	}
+	defer os.RemoveAll(tmp)
+	existingPath := filepath.Join(tmp, "existing")
+	mergedPath := filepath.Join(tmp, "merged")
+
+	// Fetch: ensure ~/.ssh, then pull the current authorized_keys. The leading `-`
+	// makes sftp ignore a missing dir/file (first run) without aborting the batch.
+	fetch := "-mkdir .ssh\n-chmod 700 .ssh\n-get .ssh/authorized_keys " + existingPath + "\n"
+	if _, err := sftpRunner(ctx, sftpArgs(dest, port, identity), fetch); err != nil {
+		return 0, 0, fmt.Errorf("sftp %s (fetch): %w", dest, err)
+	}
+	existing, _ := os.ReadFile(existingPath) // absent on first run → treated as empty
+
+	merged, added, present := mergeAuthorizedKeys(existing, keys)
+	if added == 0 {
+		return 0, present, nil // nothing new — skip the upload entirely
+	}
+	if err := os.WriteFile(mergedPath, merged, 0o600); err != nil {
+		return 0, 0, err
+	}
+
+	push := "put " + mergedPath + " .ssh/authorized_keys\nchmod 600 .ssh/authorized_keys\n"
+	if _, err := sftpRunner(ctx, sftpArgs(dest, port, identity), push); err != nil {
+		return 0, 0, fmt.Errorf("sftp %s (push): %w", dest, err)
+	}
+	return added, present, nil
+}
+
 func newSSHCopyIDCmd() *cobra.Command {
 	var domain, guid, identity string
 	var port int
+	var useSFTP bool
 	cmd := &cobra.Command{
 		Use:   "ssh-copy-id <destination>",
 		Short: "Install a PAPI domain's enrolled slot-9A keys into an SSH destination's authorized_keys",
@@ -338,7 +449,10 @@ func newSSHCopyIDCmd() *cobra.Command {
 			"Port, IdentityFile, ProxyJump, …). The append is idempotent (deduped by key material; " +
 			"~/.ssh and the file are created 0700/0600 if missing), so re-running keeps a host in " +
 			"sync as cards are enrolled or rotated. With --guid <HEX>, install only that one " +
-			"card's key. --port / --identity override the resolved config.",
+			"card's key. --port / --identity override the resolved config. The default install " +
+			"runs a small `sh` script remotely; for a shell-less destination (a forced/restricted " +
+			"command, e.g. sftp-only/nologin hosts) pass --sftp to instead fetch, merge, and " +
+			"re-upload authorized_keys over the SFTP subsystem — no remote shell needed.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(domain)
@@ -353,7 +467,11 @@ func newSSHCopyIDCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			added, present, err := installKeysOverSSH(cmd.Context(), args[0], keys, port, identity)
+			install := installKeysOverSSH
+			if useSFTP {
+				install = installKeysOverSFTP
+			}
+			added, present, err := install(cmd.Context(), args[0], keys, port, identity)
 			if err != nil {
 				return err
 			}
@@ -364,7 +482,8 @@ func newSSHCopyIDCmd() *cobra.Command {
 	cmd.Flags().StringVar(&domain, "domain", "", "PAPI domain to source enrolled slot-9A keys from (required)")
 	cmd.Flags().StringVar(&guid, "guid", "", "install only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
 	cmd.Flags().IntVar(&port, "port", 0, "ssh port (default: ssh's own default)")
-	cmd.Flags().StringVar(&identity, "identity", "", "ssh identity file (passed as ssh -i)")
+	cmd.Flags().StringVar(&identity, "identity", "", "ssh identity file (passed as ssh/sftp -i)")
+	cmd.Flags().BoolVar(&useSFTP, "sftp", false, "install over SFTP (fetch+merge+upload) instead of a remote shell — for shell-less but SFTP-capable hosts")
 	_ = cmd.MarkFlagRequired("domain")
 	return cmd
 }

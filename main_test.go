@@ -168,6 +168,83 @@ func TestSSHFailureDetail(t *testing.T) {
 	}
 }
 
+func TestMergeAuthorizedKeys(t *testing.T) {
+	k1 := authorizedKeyLine(t, "DEADBEEF")
+	k2 := authorizedKeyLine(t, "CAFEF00D")
+	// existing already carries k1's key material under a different comment.
+	f := strings.Fields(k1)
+	existing := []byte(f[0] + " " + f[1] + " some-other-comment\n")
+
+	merged, added, present := mergeAuthorizedKeys(existing, []string{k1, k2, k2})
+	if added != 1 || present != 2 {
+		t.Fatalf("added=%d present=%d, want added=1 (k2 once) present=2 (k1 + dup k2)", added, present)
+	}
+	if !strings.Contains(string(merged), strings.Fields(k2)[1]) {
+		t.Errorf("merged should contain k2's key material")
+	}
+	if !strings.Contains(string(merged), "some-other-comment") {
+		t.Errorf("merged should preserve the pre-existing line")
+	}
+}
+
+// sftpLocalArg pulls the local path token a batch line passes after prefix (e.g.
+// the get target or the put source).
+func sftpLocalArg(batch, prefix string) string {
+	i := strings.Index(batch, prefix)
+	if i < 0 {
+		return ""
+	}
+	rest := batch[i+len(prefix):]
+	if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+		rest = rest[:nl]
+	}
+	fields := strings.Fields(rest)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func TestInstallKeysOverSFTP(t *testing.T) {
+	k1 := authorizedKeyLine(t, "DEADBEEF")
+	k2 := authorizedKeyLine(t, "CAFEF00D")
+
+	var uploaded string
+	var pushChmod bool
+	orig := sftpRunner
+	sftpRunner = func(_ context.Context, _ []string, batch string) (string, error) {
+		switch {
+		case strings.Contains(batch, "-get"): // fetch: pretend the host already has k1
+			if err := os.WriteFile(sftpLocalArg(batch, "-get .ssh/authorized_keys "), []byte(k1+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		case strings.Contains(batch, "put "): // push: capture what we upload
+			b, err := os.ReadFile(sftpLocalArg(batch, "put "))
+			if err != nil {
+				t.Fatal(err)
+			}
+			uploaded = string(b)
+			pushChmod = strings.Contains(batch, "chmod 600")
+		}
+		return "", nil
+	}
+	defer func() { sftpRunner = orig }()
+
+	added, present, err := installKeysOverSFTP(context.Background(), "sftp-host", []string{k1, k2}, 0, "")
+	if err != nil {
+		t.Fatalf("installKeysOverSFTP: %v", err)
+	}
+	if added != 1 || present != 1 {
+		t.Fatalf("added=%d present=%d, want added=1 (k2) present=1 (k1 already there)", added, present)
+	}
+	if !pushChmod {
+		t.Error("push batch should chmod 600 authorized_keys")
+	}
+	if !strings.Contains(uploaded, strings.Fields(k1)[1]) || !strings.Contains(uploaded, strings.Fields(k2)[1]) {
+		t.Errorf("uploaded authorized_keys must carry both the existing and the new key:\n%s", uploaded)
+	}
+}
+
 // sshCopyIDServer serves a two-key /papi/ssh-authorized-keys body of REAL keys
 // (extractAuthorizedKeys parse-validates, unlike the ssh-keys path).
 func sshCopyIDServer(t *testing.T) *httptest.Server {
