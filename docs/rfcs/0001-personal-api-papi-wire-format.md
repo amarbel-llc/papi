@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-06-19
-amendments: 8
+amended: 2026-06-23
+amendments: 11
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -26,7 +26,9 @@ document asserts, and a detached document **signature** that lets a client verif
 authorship of a fetched document offline, independent of the host that served it.
 A further OPTIONAL `caches[]` member advertises the nix binary caches a caller may
 substitute from to bootstrap, gated like every other node so a subject's private
-infrastructure stays scoped to authenticated callers.
+infrastructure stays scoped to authenticated callers. An OPTIONAL `profiles[]`
+member similarly advertises the host profiles (flake references) a staged
+installer activates, scoped the same way.
 
 ## Introduction
 
@@ -85,6 +87,7 @@ The document MAY contain these top-level members; all are OPTIONAL:
 | `proofs[]`        | array  | Bidirectional identity-ownership proofs (see §9).                          |
 | `signatures[]`    | array  | Detached signatures binding the document to published keys (see §10).      |
 | `caches[]`        | array  | Advertised nix binary caches for substituter bootstrap (see §11).          |
+| `profiles[]`      | array  | Advertised host profiles (flakerefs) a staged installer activates (see §13). |
 | `localsend`       | object | Declared but disabled in `papi/v0`; `enabled` MUST be `false`.            |
 
 `person.handle`, when present, MUST be a string; it is used as the subject label
@@ -187,6 +190,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/templates`           | projected `templates[]`, JSON               | projected          |
 | GET    | `/papi/proofs`              | projected `proofs[]`, JSON                  | projected          |
 | GET    | `/papi/caches`              | projected `caches[]`, JSON                  | projected          |
+| GET    | `/papi/profiles`            | projected `profiles[]`, JSON                | projected          |
 | GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids file (recipients + auth ids) | projected          |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
 | GET    | `/papi/bootstrap`           | `text/plain` self-bootstrap shim (OPTIONAL) | no                 |
@@ -208,7 +212,8 @@ unauthenticated request, the registered principal for an authenticated one.
   `/papi/organizations`, `/papi/sitemap`, (when the document advertises
   templates, §7) `/papi/templates`, (when the document advertises proofs,
   §9) `/papi/proofs`, (when the document advertises caches, §11)
-  `/papi/caches`, (when the document serves a self-bootstrap shim, §4.2)
+  `/papi/caches`, (when the document advertises host profiles, §13)
+  `/papi/profiles`, (when the document serves a self-bootstrap shim, §4.2)
   `/papi/bootstrap`, and
 - `auth` — `{scheme: "piggy-challenge-response", challenge, response,
 present_session_as}`, where `challenge`/`response` are absolute URLs.
@@ -226,9 +231,10 @@ JSON endpoints MUST wrap their payload in the envelope:
 
     { "data": <payload>, "meta": { "count": <int>, "type": "<string>", ... } }
 
-`/papi` MUST add `meta.version` and `meta.visibility`. The seven projected-list
+`/papi` MUST add `meta.version` and `meta.visibility`. The eight projected-list
 endpoints (`/papi/forges`, `/papi/repos`, `/papi/organizations`, `/papi/sitemap`,
-`/papi/templates`, `/papi/proofs`, `/papi/caches`) MUST add `meta.visibility`.
+`/papi/templates`, `/papi/proofs`, `/papi/caches`, `/papi/profiles`) MUST add
+`meta.visibility`.
 `meta.visibility` MUST be
 `"public"` for the anonymous principal and `"scoped"` for an authenticated
 principal.
@@ -866,6 +872,77 @@ this subsection is implemented or REQUIRED in `papi/v0`.
   provisioning surface that mutates server state is out of scope for both `papi/v0`
   and this subsection and would require its own RFC.
 
+### 13. Host-Profile Advertisement
+
+A PAPI document MAY advertise one or more **host profiles** that a staged host
+installer activates to bring a machine into the subject's configuration. This
+turns "who is this person" into "configure this host the way they configure
+theirs", served from the same well-known document and gated by the same
+projection (§2) and authentication (§5) as every other node. The reference
+consumer is the staged installer (a papi-built binary); the installer's phase
+model and the timing of this read are specified in a separate RFC.
+
+#### 13.1. `profiles[]`
+
+The OPTIONAL top-level `profiles[]` member is an array of **profile entries**.
+Each entry is a JSON object with:
+
+| Member        | Type   | Required | Meaning                                                                                                                          |
+| ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `id`          | string | MUST     | Stable identifier, unique within `profiles[]`; the selector the installer presents (TUI choice or `#id`).                       |
+| `flakeref`    | string | MUST     | A nix-resolvable flake reference to the profile to activate, e.g. `github:amarbel-llc/eng#nixosConfigurations.<host>` or `…#homeConfigurations.<name>`. |
+| `description` | string | SHOULD   | One-line human summary, shown in the installer's selection UI.                                                                  |
+| `platform`    | string | MAY      | Target-platform hint (e.g. `"nixos"`, `"linux"`, `"darwin"`); a client MAY use it to filter the offered set.                    |
+| `kind`        | string | MAY      | Activation mechanism (see below).                                                                                               |
+
+A server MAY include additional members; clients MUST ignore members they do not
+recognize (§1.1). `id` MUST be a non-empty string and MUST be unique within the
+array; a document with duplicate `id`s is malformed, and a client MUST refuse to
+resolve a duplicated `id` rather than choose arbitrarily. `flakeref` MUST be a
+non-empty string; this RFC does not constrain its grammar beyond "a reference
+`nix` resolves", deferring to the nix flake-reference syntax.
+
+`kind` selects how a client activates the entry's `flakeref`. Defined values in
+`papi/v0`:
+
+- `"nixos-configuration"` — activate via `nixos-rebuild` against the flakeref (a
+  `nixosConfigurations.<host>` output);
+- `"home-configuration"` — activate via `home-manager` against the flakeref (a
+  `homeConfigurations.<name>` output).
+
+`kind` exists so future activation mechanisms can be added without a version
+bump. When `kind` is absent, a client SHOULD infer the mechanism from the
+flakeref's output attribute (`nixosConfigurations.*` ⇒ `"nixos-configuration"`,
+`homeConfigurations.*` ⇒ `"home-configuration"`). A client MUST skip an entry
+whose `kind` it does not understand rather than fail the whole list.
+
+#### 13.2. Projection
+
+`profiles[]` is an ordinary part of the document and MUST be projected through
+the requesting principal exactly as every other node (§2): a `"private"` entry
+is dropped for principals its `acl` does not admit, the `acl` member MUST be
+stripped from every serialized entry, and the array MUST contain only entries
+visible to the principal. Host profiles are commonly **scoped to authenticated
+callers** (a subject's host set is private infrastructure); a domain MAY publish
+public profiles to everyone and gate the rest behind the §5 handshake. A consumer
+that needs gated profiles MUST present an authenticated session (§5.3), which a
+forwarded or local piggy agent satisfies headless.
+
+#### 13.3. `GET /papi/profiles`
+
+A server that advertises profiles MUST serve `GET /papi/profiles`, returning the
+projected `profiles[]` in the JSON envelope (§4.2):
+
+    { "data": [ <profile entry>, ... ],
+      "meta": { "count": <int>, "type": "profiles",
+                "visibility": <"public"|"scoped"> } }
+
+`meta.count` MUST be the number of entries in `data` after projection;
+`meta.visibility` follows §4.2. A server whose projected `profiles[]` is empty
+MUST return a `200` with an empty `data` array (`count: 0`), not a `404`. The
+discovery document (§4.1) MUST list `profiles` in `resources` with an absolute
+URL to `/papi/profiles`.
+
 ## Security Considerations
 
 **Trust boundary on the document.** The document and the principal registry are
@@ -1222,3 +1299,15 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   the §10 markl-id machinery; the `papi-proof-sig-v1` purpose is registered in
   piggy's go/markl. Additive clarification of an OPTIONAL feature — no version
   bump.
+- **2026-06-23, Amendment 11 — Host-Profile Advertisement.** Added the OPTIONAL
+  `profiles[]` document member (§1, §13.1), its projection (§13.2), the
+  `GET /papi/profiles` endpoint (§4, §13.3), the `profiles` discovery resource
+  (§4.1), and the §4.2 envelope update (projected-list count `seven`→`eight`).
+  Advertises the host profiles (flakerefs to `nixosConfigurations` /
+  `homeConfigurations`) a staged host installer activates, gated like every other
+  node so a subject's host set stays scoped to authenticated callers. In the
+  staged installer it is the PAPI **datasource** the framework reads — after the
+  card-auth stack is up — to select and activate a host profile; the installer's
+  phase model is specified in a separate RFC. Additive and OPTIONAL — no version
+  bump. The consuming side is the amarbel-llc/papi client (a planned `papi
+  profiles`) and the papi-built installer framework.
