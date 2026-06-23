@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-23
-amendments: 11
+amendments: 12
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -891,6 +891,7 @@ Each entry is a JSON object with:
 | ------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `id`          | string | MUST     | Stable identifier, unique within `profiles[]`; the selector the installer presents (TUI choice or `#id`).                       |
 | `flakeref`    | string | MUST     | A nix-resolvable flake reference to the profile to activate, e.g. `github:amarbel-llc/eng#nixosConfigurations.<host>` or `…#homeConfigurations.<name>`. |
+| `home_flakeref`| string | MAY     | On a `nixos-configuration` entry: the flakeref of the host's **standalone** `homeConfiguration`, applied separately via `home-manager` (not the NixOS module). Absent/ignored for `home-configuration` entries. |
 | `description` | string | SHOULD   | One-line human summary, shown in the installer's selection UI.                                                                  |
 | `platform`    | string | MAY      | Target-platform hint (e.g. `"nixos"`, `"linux"`, `"darwin"`); a client MAY use it to filter the offered set.                    |
 | `kind`        | string | MAY      | Activation mechanism (see below).                                                                                               |
@@ -916,6 +917,14 @@ flakeref's output attribute (`nixosConfigurations.*` ⇒ `"nixos-configuration"`
 `homeConfigurations.*` ⇒ `"home-configuration"`). A client MUST skip an entry
 whose `kind` it does not understand rather than fail the whole list.
 
+`home_flakeref`, when present on a `nixos-configuration` entry, names the host's
+**standalone** home layer. A NixOS host profile is a pair: the `nixosConfiguration`
+(`flakeref`, applied as system configuration) and a standalone `homeConfiguration`
+(`home_flakeref`, applied separately via `home-manager`, **not** through the NixOS
+home-manager module). A `home-configuration` entry is itself the home layer and
+MUST NOT carry a `home_flakeref`. This member only carries the targets; how and
+when an installer applies each is specified by the installer phase-contract RFC.
+
 #### 13.2. Projection
 
 `profiles[]` is an ordinary part of the document and MUST be projected through
@@ -926,7 +935,9 @@ visible to the principal. Host profiles are commonly **scoped to authenticated
 callers** (a subject's host set is private infrastructure); a domain MAY publish
 public profiles to everyone and gate the rest behind the §5 handshake. A consumer
 that needs gated profiles MUST present an authenticated session (§5.3), which a
-forwarded or local piggy agent satisfies headless.
+forwarded or local piggy agent satisfies headless — or which a consumer MAY
+satisfy by **direct PIV-card access** (e.g. `pivy-box`) without a running agent,
+as the staged installer does (see the installer phase-contract RFC §4).
 
 #### 13.3. `GET /papi/profiles`
 
@@ -1311,3 +1322,13 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   phase model is specified in a separate RFC. Additive and OPTIONAL — no version
   bump. The consuming side is the amarbel-llc/papi client (a planned `papi
   profiles`) and the papi-built installer framework.
+- **2026-06-23, Amendment 12 — Host-profile system+home pairing + auth cross-ref.**
+  Added the OPTIONAL `home_flakeref` member to a `profiles[]` entry (§13.1): a
+  NixOS host profile is a pair — the `nixosConfiguration` (`flakeref`, system) and
+  a **standalone** `homeConfiguration` (`home_flakeref`, applied via `home-manager`,
+  not the NixOS module) — so one entry carries both targets, while a
+  `home-configuration` entry is itself the home layer and carries no
+  `home_flakeref`. Also added a §13.2 cross-reference noting a §5 session MAY be
+  satisfied by direct PIV-card access (`pivy-box`) without a running agent (the
+  staged installer's path, RFC-0003 §4). Resolves the eng-side line-level review's
+  system+home gap. Additive and OPTIONAL — no version bump.

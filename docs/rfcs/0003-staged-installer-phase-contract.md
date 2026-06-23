@@ -108,8 +108,10 @@ unsequenced.
 > See the editorial note in the Introduction. The **stage set + ordering** (§5)
 > are framework-owned (a shared correctness invariant — piggy-is-a-build-output
 > holds for every consumer, not just one host-config repo); a host-config
-> repository supplies the **per-stage content**. The manifest's exact
-> serialization remains to be finalized.
+> repository supplies the **per-stage content**. The manifest is carried by the
+> **bootstrap** host-config landed in stage 2 (§5) — the entry/binary pins that
+> bootstrap source, while `profiles[]` selects the later activation target. The
+> manifest's exact serialization remains to be finalized.
 
 The framework defines the canonical **stage set** and its order (§5); these are
 not consumer-configurable, because the order encodes the §5 correctness invariant.
@@ -177,10 +179,21 @@ Datasource reads fall into two tiers:
   agent, local or forwarded, MAY also satisfy the session but MUST NOT be a
   precondition.
 
+`caches[]` (§11) is consumed in **both** tiers, and the framework SHOULD configure
+each as early as its tier is available so builds substitute rather than compile
+from source: the **public** caches (anonymous read) SHOULD be configured at the
+earliest nix-bearing stage — `apply-minimal-sysconfig` (§5), as soon as nix exists
+— so the first build (`build-and-auth`) and every later build substitutes; any
+**gated** caches (authenticated read) are configured after the auth stage, before
+`apply-host-profile`. Before honoring a cache's `trusted_public_keys` the framework
+MUST verify the document's §10 signature (§11.4) — configuring caches early MUST
+NOT bypass that check.
+
 `profiles[]` (§13) is an authenticated read. The framework MUST read it only
 after the auth stage, select a profile (interactively via the TUI, or
-non-interactively by a pinned `#id`), and pass the resolved profile `id` and
-`flakeref` to subsequent phases (§8). A non-interactive run with more than one
+non-interactively by a pinned `#id`), and pass the resolved profile `id`,
+`flakeref`, and `home_flakeref` (when present, RFC-0001 §13) to subsequent phases
+(§8). A non-interactive run with more than one
 visible profile and no pinned `#id` MUST fail with a diagnostic rather than
 guess.
 
@@ -213,16 +226,29 @@ would therefore be circular.
 individual phases within each stage are platform-conditioned (§2, §3):
 
 1. `detect` — resolve platform and datasource (§2, §4).
-2. `land-content` — acquire the host-config repository.
+2. `land-content` — acquire the **bootstrap** host-config (a pinned reference,
+   e.g. the host-config repo at a known ref) that carries the phase manifest (§3)
+   and base modules. This is distinct from the **activation target** the
+   authenticated `profiles[]` read later selects (stages 6–7): the entry/binary
+   pins the bootstrap host-config; `profiles[]` names which configuration to
+   *activate*.
 3. `apply-minimal-sysconfig` — produce a build-capable nix (install nix on a host
-   that lacks it) and apply the minimal daemon settings; **gates** the build stage.
+   that lacks it), apply the minimal daemon settings, and configure the **public**
+   nix caches (§4) so the build stage substitutes; **gates** the build stage.
 4. `build-and-auth` — build the bootstrap tooling (pivy, the papi client) needed
    to authenticate against the card; the piggy agent service is NOT required here
    (§4).
-5. `authed-read` — authenticate (§5) and read `profiles[]`; resolve the selected
-   profile (§4).
-6. `apply-host-profile` — apply the full, profile-driven system configuration.
-7. `user-layer` — user-scoped configuration (identity, dotfiles, SSH key sync).
+5. `authed-read` — authenticate (§5) and read `profiles[]` and any gated
+   `caches[]`; resolve the selected profile and configure the gated caches (§4).
+6. `apply-host-profile` — activate the selected profile's `flakeref` (RFC-0001
+   §13): on NixOS a `nixos-rebuild` of the `nixosConfiguration` (system); on
+   non-NixOS a `home-manager switch` of the `homeConfiguration` (the whole host
+   config).
+7. `user-layer` — on NixOS, activate the host's **standalone** `homeConfiguration`
+   (the profile's `home_flakeref`, §13) via `home-manager` run standalone — NOT
+   through the NixOS home-manager module — plus any user-scoped wiring (identity,
+   dotfiles, SSH key sync); on non-NixOS the home layer was applied at stage 6, so
+   this stage carries only the additional user-scoped wiring.
 8. `final` — run completion; tear down any resume facility (§7).
 
 Reboot anchoring (§7) is most relevant at stage 6, where boot-level configuration
@@ -286,7 +312,7 @@ re-running a completed `once`/`per-instance` phase.
 The framework invokes each phase's `hook` with the resolved run context:
 
 - the resolved platform token (§2),
-- the selected profile `id` and `flakeref` when resolved (§4),
+- the selected profile's `id`, `flakeref`, and `home_flakeref` when resolved (§4),
 - a handle to the PAPI datasource and the established session (so a hook may
   perform further reads),
 - the run-state/stamp directory (§7).
