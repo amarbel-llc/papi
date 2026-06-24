@@ -428,8 +428,9 @@ Tests use binary injection via `bats-emo`:
 
 This is a new interface with no prior consumers. It coexists with FDR-0003's
 `provision.sh` self-bootstrap shim: the bash path remains the live cold-host
-entrypoint until the binary path is proven (the shim is iteration 1; this
-installer is iteration 2). This document specifies the v0 phase-manifest
+entrypoint until the binary installer lands and supersedes it. (The original plan
+to prove the bash path on a cold host first was dropped — the available cold host
+is too slow to test end to end.) This document specifies the v0 phase-manifest
 contract. Additive changes — new `frequency` values, new stage tokens, new
 OPTIONAL phase fields — SHOULD be designed so that an older installer skips what
 it does not understand rather than failing, following the skip-unknown discipline

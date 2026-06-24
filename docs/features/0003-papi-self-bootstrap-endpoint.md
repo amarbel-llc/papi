@@ -5,9 +5,11 @@ promotion-criteria: >
   proposed → experimental: MET 2026-06-22 — linenisgreat request-time-proxies
   eng@master:bin/provision.sh at GET /papi/bootstrap and `papi bootstrap
   linenisgreat.com` prints it verbatim.
-  experimental → testing: a real cold host runs `curl -fsSL
-  https://linenisgreat.com/papi/bootstrap | sh` and provisions against eng end to
-  end. testing → accepted: a second cold host bootstraps with no manual steps.
+  experimental → accepted via cold-host E2E is RETIRED: iteration 1 (proving the
+  bash path end to end on a real cold host) was dropped — the only available cold
+  host, the fanless Framework board, is too slow to provision testably. The bash
+  shim stays the live served `/papi/bootstrap` entrypoint in the interim and is
+  superseded by the binary installer (FDR-0006) when that lands.
 ---
 
 # PAPI self-bootstrap endpoint (`GET /papi/bootstrap`)

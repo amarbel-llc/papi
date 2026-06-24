@@ -4,8 +4,9 @@ date: 2026-06-23
 promotion-criteria: >
   proposed → experimental: the installer binary builds from the papi flake, links
   the internal/0/papi client + the crap TUI, and drives RFC-0003's phases on a
-  non-cold host (e.g. a re-provision) rendering per-phase progress; gated on
-  FDR-0003 reaching accepted (iter 1 proves the bash path end-to-end first).
+  non-cold host (e.g. a re-provision) rendering per-phase progress. (Iteration 1 —
+  proving the bash path on a cold host first — was dropped, so the binary path is
+  no longer gated on it.)
   experimental → testing: a real cold host (the fanless Framework board)
   provisions end to end through the binary — including the NixOS
   apply-minimal-sysconfig → build → apply-host-profile ordering and at least one
@@ -101,10 +102,11 @@ host-config repository (eng). Observable behavior:
 
 ## Limitations
 
-- **Not yet implemented.** This FDR is the design; the binary does not exist. Its
-  build is gated on FDR-0003 reaching accepted (iteration 1 proves the bash
-  `provision.sh` path end-to-end first), so the bash path remains the live
-  cold-host entrypoint until the binary path is proven.
+- **Not yet implemented.** This FDR is the design; the binary does not exist.
+  (Iteration 1 — proving the bash `provision.sh` path on a cold host first — was
+  dropped, as the only available cold host is too slow to test end to end; the
+  binary path is no longer gated on it.) The bash `provision.sh` shim remains the
+  live `/papi/bootstrap` entrypoint until the binary path lands.
 - **Installer, not content.** The binary owns ordering and execution; the work
   each phase performs lives in eng (RFC-0003 §3). Reboot-resume on NixOS depends
   on eng's apply-host-profile module emitting the resume unit per the RFC-0003 §7
