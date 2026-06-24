@@ -393,8 +393,83 @@ type Profile struct {
 	Kind         string `json:"kind"`
 }
 
+// DecodeEnvelope unwraps a {data, meta} response body (RFC-0001 §4.2), returning
+// the data bytes and the meta block. A body that is not the envelope (no `data`)
+// is tolerated and returned verbatim as the data. It is the pure, network-free
+// core the fetching Client methods and the wasm client (FDR-0007) share.
+func DecodeEnvelope(body []byte) (json.RawMessage, map[string]any, error) {
+	var env Envelope
+	if err := json.Unmarshal(body, &env); err != nil {
+		return nil, nil, fmt.Errorf("not JSON: %w", err)
+	}
+	data := env.Data
+	if len(data) == 0 {
+		data = body // tolerate an un-enveloped body
+	}
+	return data, env.Meta, nil
+}
+
+// DecodeDocument decodes a GET /papi body into the projected Document plus the raw
+// meta block (RFC-0001 §1). Pure / network-free (FDR-0007).
+func DecodeDocument(body []byte) (*Document, map[string]any, error) {
+	data, meta, err := DecodeEnvelope(body)
+	if err != nil {
+		return nil, nil, err
+	}
+	var doc Document
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, meta, fmt.Errorf("/papi data: %w", err)
+	}
+	return &doc, meta, nil
+}
+
+// DecodeRepos decodes a GET /papi/repos body into the flattened repository list.
+func DecodeRepos(body []byte) ([]Repo, error) {
+	data, _, err := DecodeEnvelope(body)
+	if err != nil {
+		return nil, err
+	}
+	var repos []Repo
+	if err := json.Unmarshal(data, &repos); err != nil {
+		return nil, fmt.Errorf("/papi/repos data: %w", err)
+	}
+	return repos, nil
+}
+
+// DecodeProfiles decodes a GET /papi/profiles body into the host-profile list
+// (RFC-0001 §13).
+func DecodeProfiles(body []byte) ([]Profile, error) {
+	data, _, err := DecodeEnvelope(body)
+	if err != nil {
+		return nil, err
+	}
+	var profiles []Profile
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		return nil, fmt.Errorf("/papi/profiles data: %w", err)
+	}
+	return profiles, nil
+}
+
+// DecodeCaches decodes a GET /papi/caches body into the nix binary-cache list
+// (RFC-0001 §11).
+func DecodeCaches(body []byte) ([]Cache, error) {
+	data, _, err := DecodeEnvelope(body)
+	if err != nil {
+		return nil, err
+	}
+	var caches []Cache
+	if err := json.Unmarshal(data, &caches); err != nil {
+		return nil, fmt.Errorf("/papi/caches data: %w", err)
+	}
+	return caches, nil
+}
+
+// DecodeDiscovery decodes a GET /.well-known/papi body into the Discovery document
+// (RFC-0001 §4.1), accepting both the bare object and the {data, meta} envelope.
+func DecodeDiscovery(body []byte) (*Discovery, error) { return decodeDiscovery(body) }
+
 // envelope GETs path, requires 200, and returns the unwrapped {data,meta} data
-// bytes plus the meta block (tolerating an un-enveloped body).
+// bytes plus the meta block via DecodeEnvelope.
 func (c *Client) envelope(ctx context.Context, path string) (json.RawMessage, map[string]any, int, error) {
 	body, status, err := c.get(ctx, path)
 	if err != nil {
@@ -403,43 +478,39 @@ func (c *Client) envelope(ctx context.Context, path string) (json.RawMessage, ma
 	if status != http.StatusOK {
 		return nil, nil, status, fmt.Errorf("%s returned HTTP %d", path, status)
 	}
-	var env Envelope
-	if err := json.Unmarshal(body, &env); err != nil {
-		return nil, nil, status, fmt.Errorf("%s is not JSON: %w", path, err)
+	data, meta, err := DecodeEnvelope(body)
+	if err != nil {
+		return nil, nil, status, fmt.Errorf("%s: %w", path, err)
 	}
-	data := env.Data
-	if len(data) == 0 {
-		data = body // tolerate an un-enveloped body
-	}
-	return data, env.Meta, status, nil
+	return data, meta, status, nil
 }
 
 // Document fetches GET /papi and returns the projected document (unwrapping the
 // envelope when present) plus the raw meta block.
 func (c *Client) Document(ctx context.Context) (*Document, map[string]any, int, error) {
-	data, meta, status, err := c.envelope(ctx, "/papi")
+	body, status, err := c.get(ctx, "/papi")
 	if err != nil {
-		return nil, meta, status, err
+		return nil, nil, status, err
 	}
-	var doc Document
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, meta, status, fmt.Errorf("/papi data: %w", err)
+	if status != http.StatusOK {
+		return nil, nil, status, fmt.Errorf("/papi returned HTTP %d", status)
 	}
-	return &doc, meta, status, nil
+	doc, meta, err := DecodeDocument(body)
+	return doc, meta, status, err
 }
 
 // Repos fetches GET /papi/repos and returns the flattened repository list,
 // unwrapping the {data,meta} envelope.
 func (c *Client) Repos(ctx context.Context) ([]Repo, int, error) {
-	data, _, status, err := c.envelope(ctx, "/papi/repos")
+	body, status, err := c.get(ctx, "/papi/repos")
 	if err != nil {
 		return nil, status, err
 	}
-	var repos []Repo
-	if err := json.Unmarshal(data, &repos); err != nil {
-		return nil, status, fmt.Errorf("/papi/repos data: %w", err)
+	if status != http.StatusOK {
+		return nil, status, fmt.Errorf("/papi/repos returned HTTP %d", status)
 	}
-	return repos, status, nil
+	repos, err := DecodeRepos(body)
+	return repos, status, err
 }
 
 // Profiles fetches GET /papi/profiles and returns the projected host-profile list,
@@ -447,15 +518,15 @@ func (c *Client) Repos(ctx context.Context) ([]Repo, int, error) {
 // §5-gated; an unauthenticated fetch returns only the anonymous-visible set
 // (possibly empty).
 func (c *Client) Profiles(ctx context.Context) ([]Profile, int, error) {
-	data, _, status, err := c.envelope(ctx, "/papi/profiles")
+	body, status, err := c.get(ctx, "/papi/profiles")
 	if err != nil {
 		return nil, status, err
 	}
-	var profiles []Profile
-	if err := json.Unmarshal(data, &profiles); err != nil {
-		return nil, status, fmt.Errorf("/papi/profiles data: %w", err)
+	if status != http.StatusOK {
+		return nil, status, fmt.Errorf("/papi/profiles returned HTTP %d", status)
 	}
-	return profiles, status, nil
+	profiles, err := DecodeProfiles(body)
+	return profiles, status, err
 }
 
 // RawDocument fetches GET /papi and returns its projected data as a generic JSON

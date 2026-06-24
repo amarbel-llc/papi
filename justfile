@@ -30,7 +30,7 @@ lint-worktree:
 
 # --- build ---
 
-build: build-gomod2nix build-go build-wasm build-nix
+build: build-gomod2nix build-go build-wasm build-wasm-client build-nix
 
 # Regenerate gomod2nix.toml from go.mod/go.sum. A no-op when current; run after
 # changing deps. (conformist-justfile(7): a build-* leaf lives in the build
@@ -50,6 +50,13 @@ build-go:
 build-wasm:
     nix develop --command env GOOS=wasip1 GOARCH=wasm go build -o build/papi-verify.wasm ./cmd/papi-verify-wasm
     @ls -lh build/papi-verify.wasm
+
+# Cross-build the network-free client core (cmd/papi-client-wasm, FDR-0007) to a
+# wasip1 WASM module — the decode/verify surface a TS/zx wrapper drives. In `build`
+# so the merge pre-hook keeps the client core wasip1-able (no TUI/os.user import).
+build-wasm-client:
+    nix develop --command env GOOS=wasip1 GOARCH=wasm go build -o build/papi-client.wasm ./cmd/papi-client-wasm
+    @ls -lh build/papi-client.wasm
 
 # Full nix build of the papi CLI (injects the real version/commit).
 build-nix:
