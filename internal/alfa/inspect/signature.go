@@ -71,6 +71,85 @@ func signaturePoints(ctx context.Context, c *papi.Client) []point {
 	return []point{skip("signature: unsigned (§10.3)", "no signature or signatures member")}
 }
 
+// SigCheck is one §10 signature verdict line (stable lowercase wire shape for the
+// wasm client, FDR-0007). OK is false only for a signed-but-invalid signature (a
+// §10.3 MUST failure); Skipped marks an unverifiable/unsigned entry (neutral).
+type SigCheck struct {
+	Name    string `json:"name"`
+	OK      bool   `json:"ok"`
+	Skipped bool   `json:"skipped"`
+	Detail  string `json:"detail"`
+}
+
+// SigVerifyResult is the §10 document-signature verdict. Authentic is true iff a
+// published slot-9A key signed the document and no present signature is broken.
+type SigVerifyResult struct {
+	Authentic bool       `json:"authentic"`
+	Checks    []SigCheck `json:"checks"`
+}
+
+// VerifyDocumentWithPublishedIDs verifies a document's §10 signature(s) over the
+// anonymous /papi document `data` (the {data} payload, not the envelope) against
+// the trusted slot-9A keys given as the markl-id strings a domain publishes at
+// /papi/piggy-ids. Network-free — the caller supplies the published ids — so it
+// runs under WASI/wasip1 (the wasm client, FDR-0007); the networked equivalent is
+// signaturePoints. Mirrors VerifyReceiptWithPublishedIDs.
+func VerifyDocumentWithPublishedIDs(data []byte, publishedIDs []string) (SigVerifyResult, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return SigVerifyResult{}, fmt.Errorf("document data is not a JSON object: %w", err)
+	}
+	input, err := canonicalSigningInput(doc)
+	if err != nil {
+		return SigVerifyResult{}, fmt.Errorf("canonicalize: %w", err)
+	}
+	var pts []point
+	if sigsRaw, ok := doc["signatures"]; ok {
+		var entries []papi.Signature
+		if json.Unmarshal(sigsRaw, &entries) == nil && len(entries) > 0 {
+			for i, e := range entries {
+				pts = append(pts, verifyMarklSignature(i, e, input, doc, publishedIDs))
+			}
+		}
+	}
+	if pts == nil {
+		if sigRaw, present := doc["signature"]; present {
+			pts = []point{verifyLegacySignature(sigRaw, input, doc)}
+		} else {
+			pts = []point{skip("signature: unsigned (§10.3)", "no signature or signatures member")}
+		}
+	}
+	return sigResultFromPoints(pts), nil
+}
+
+// sigResultFromPoints maps internal verdict points to the public SigVerifyResult:
+// Authentic iff no point is a MUST failure (signed-but-invalid) and at least one
+// is signed-and-valid (an ok point that is not a skip).
+func sigResultFromPoints(pts []point) SigVerifyResult {
+	res := SigVerifyResult{Checks: make([]SigCheck, 0, len(pts))}
+	anyValid, allOK := false, true
+	for _, p := range pts {
+		c := SigCheck{Name: p.desc, OK: p.ok, Skipped: p.reason != ""}
+		switch {
+		case c.Skipped:
+			c.Detail = p.reason
+		case !p.ok && len(p.diag) > 0:
+			if b, err := json.Marshal(p.diag); err == nil {
+				c.Detail = string(b)
+			}
+		}
+		if !c.OK {
+			allOK = false
+		}
+		if c.OK && !c.Skipped {
+			anyValid = true
+		}
+		res.Checks = append(res.Checks, c)
+	}
+	res.Authentic = allOK && anyValid
+	return res
+}
+
 // verifyMarklSignature evaluates one Amendment 9 `signatures[]` entry: `sig` is a
 // papi-doc-sig-v1@ecdsa_p256_sig markl-id (raw 64-byte r‖s), `key` is a
 // …@ssh_ecdsa_nistp256_pub markl-id (33-byte SEC1 point). The method is carried

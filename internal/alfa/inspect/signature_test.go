@@ -253,6 +253,47 @@ func TestSignaturesValidPointMatch(t *testing.T) {
 	}
 }
 
+// TestVerifyDocumentWithPublishedIDs exercises the network-free §10 verify the
+// wasm client uses (FDR-0007): a validly-signed document is authentic; a tampered
+// one is not (signed-but-invalid); an unsigned one is not (a neutral skip).
+func TestVerifyDocumentWithPublishedIDs(t *testing.T) {
+	s := newMarklSigner(t)
+	base := map[string]any{
+		"version": "papi/v0",
+		"piggy":   map[string]any{"ssh_authorized_keys": []any{s.sshLine}},
+	}
+	input := marklInput(t, base)
+	base["signatures"] = []any{map[string]any{"key": s.keyID, "sig": s.sigID(t, input)}}
+
+	res, err := VerifyDocumentWithPublishedIDs(marshalDoc(t, base), []string{s.keyID})
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !res.Authentic {
+		t.Fatalf("validly-signed document not authentic: %+v", res)
+	}
+
+	// Tamper a signed field: the recomputed canonical input no longer matches the
+	// signature → signed-but-invalid → not authentic.
+	base["version"] = "papi/v0-tampered"
+	res, err = VerifyDocumentWithPublishedIDs(marshalDoc(t, base), []string{s.keyID})
+	if err != nil {
+		t.Fatalf("verify tampered: %v", err)
+	}
+	if res.Authentic {
+		t.Errorf("tampered document should not be authentic: %+v", res)
+	}
+
+	// Unsigned → not authentic, but a neutral skip (no MUST failure).
+	res, err = VerifyDocumentWithPublishedIDs([]byte(`{"version":"papi/v0"}`), nil)
+	if err != nil {
+		t.Fatalf("verify unsigned: %v", err)
+	}
+	if res.Authentic || len(res.Checks) != 1 || !res.Checks[0].Skipped {
+		t.Errorf("unsigned document verdict = %+v", res)
+	}
+}
+
 func TestSignaturesValidViaPiggyIDs(t *testing.T) {
 	s := newMarklSigner(t)
 	// Key published ONLY as a piggy-ids markl-id (ssh_authorized_keys empty),

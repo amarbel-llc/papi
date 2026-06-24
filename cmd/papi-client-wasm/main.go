@@ -12,7 +12,9 @@
 //	stdout: {<decoded Document>}
 //
 // fn ∈ {decode_document, decode_discovery, decode_repos, decode_profiles,
-// decode_caches}. Exit code: 0 ok, 2 malformed input / unknown fn / decode error.
+// decode_caches, verify_document}. verify_document additionally takes
+// "published_ids" (the domain's /papi/piggy-ids slot-9A markl-ids, the §10 trust
+// anchor). Exit code: 0 ok, 2 malformed input / unknown fn / decode error.
 // It performs no network I/O (a wasip1 module has no sockets): the caller fetches
 // the body and passes it in.
 package main
@@ -24,12 +26,17 @@ import (
 	"os"
 
 	"github.com/amarbel-llc/papi/internal/0/papi"
+	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 )
 
 // request is the stdin envelope: a function selector and the raw endpoint body.
 type request struct {
 	Fn   string `json:"fn"`
 	Body string `json:"body"`
+	// PublishedIDs are the domain's published slot-9A markl-ids (its
+	// /papi/piggy-ids), supplied for verify_document (the RFC-0001 §10.1 trust
+	// anchor; the verifier takes keys from here, never the document itself).
+	PublishedIDs []string `json:"published_ids,omitempty"`
 }
 
 func main() { os.Exit(run(os.Stdin, os.Stdout, os.Stderr)) }
@@ -72,7 +79,13 @@ func dispatch(req request) (any, error) {
 		return papi.DecodeProfiles(body)
 	case "decode_caches":
 		return papi.DecodeCaches(body)
+	case "verify_document":
+		data, _, err := papi.DecodeEnvelope(body)
+		if err != nil {
+			return nil, err
+		}
+		return inspect.VerifyDocumentWithPublishedIDs(data, req.PublishedIDs)
 	default:
-		return nil, fmt.Errorf("unknown fn (want decode_document|decode_discovery|decode_repos|decode_profiles|decode_caches)")
+		return nil, fmt.Errorf("unknown fn (want decode_document|decode_discovery|decode_repos|decode_profiles|decode_caches|verify_document)")
 	}
 }

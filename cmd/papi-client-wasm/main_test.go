@@ -78,3 +78,22 @@ func TestDecodeDocumentAndUnknownFn(t *testing.T) {
 		t.Errorf("unknown fn exit = %d, want 2", code)
 	}
 }
+
+func TestVerifyDocumentDispatch(t *testing.T) {
+	// An unsigned document decodes + verifies (exit 0) but is not authentic; this
+	// exercises the verify_document dispatch wiring (the §10 crypto is covered in
+	// internal/alfa/inspect).
+	out, code := runFn(t, "verify_document", `{"data":{"version":"papi/v0"},"meta":{}}`)
+	if code != 0 {
+		t.Fatalf("verify_document exit %d:\n%s", code, out)
+	}
+	var res struct {
+		Authentic bool `json:"authentic"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("output not JSON: %v\n%s", err, out)
+	}
+	if res.Authentic {
+		t.Errorf("unsigned document reported authentic:\n%s", out)
+	}
+}
