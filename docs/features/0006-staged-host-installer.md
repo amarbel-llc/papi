@@ -54,6 +54,12 @@ host-config repository (eng). Observable behavior:
   FDR-0004). **No eng package is nix-built before auth**, so a cold host never
   compiles eng's closure with no cache to draw from. After auth it reads the
   subject's PAPI datasource: identity (§12), nix caches (§11), host profiles (§13).
+- **Cardless hosts via SSH certificate.** The installer auto-detects its auth path
+  — local card → forwarded agent → **provisioned SSH certificate** — so cloud /
+  headless / CI hosts with no card authenticate via the §5.4 certificate-signature
+  proof (a card-blessed, short-lived cert injected at instance creation). That path
+  needs **no box backend**, so cardless hosts aren't blocked by the box-backend
+  gate (below).
 - **Host-profile selection.** After the authenticated read, the TUI presents the
   visible `profiles[]` for the operator to choose; `--profile <id>` selects one
   non-interactively. The chosen entry's `flakeref` is activated (`nixos-rebuild`
@@ -108,11 +114,13 @@ host-config repository (eng). Observable behavior:
   tracked apart from this FDR.
 - **macOS is partial.** Profile activation via `home-manager` is in scope; native
   `codesign` of the binary for macOS is a later phase (papi#28 v2).
-- **Authed reads need a live §5 box backend.** `profiles[]` (and the identity
-  decrypt) ride the slot-9D §5 path; the reference server's box backend is
-  currently absent/503 (papi#8), so the authed-read stage — and thus
-  apply-host-profile — is gated on that backend going live. Known iteration-2
-  operational dependency.
+- **Card-path auth needs a live §5 box backend.** The slot-9D card/forwarded auth
+  path (§5.1) and the encrypted person decrypt ride the box backend, currently
+  absent/503 on the reference server (papi#8) — so a **card-based** host's auth
+  (and thus its run) is gated on that backend going live. **Cardless hosts are
+  not:** the §5.4 certificate path needs no box backend, and projected gated reads
+  (`profiles[]`/`caches[]`) only need the session. Known iteration-2 operational
+  dependency for card-based hosts.
 - **Substitution assumes a warm cache.** "No compile on a weak host" holds only
   when the subject's gated cache already holds the host-profile closures; on a
   cache miss the host still compiles from source (slow on constrained hardware).

@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-23
-amendments: 12
+amendments: 13
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -216,7 +216,10 @@ unauthenticated request, the registered principal for an authenticated one.
   `/papi/profiles`, (when the document serves a self-bootstrap shim, §4.2)
   `/papi/bootstrap`, and
 - `auth` — `{scheme: "piggy-challenge-response", challenge, response,
-present_session_as}`, where `challenge`/`response` are absolute URLs.
+present_session_as}`, where `challenge`/`response` are absolute URLs. A server
+that supports the §5.4 certificate-signature method MAY additionally advertise it
+(e.g. a `methods: ["piggy-challenge-response", "ssh-cert"]` member); the same
+`challenge`/`response` URLs serve both proof types.
 
 When the document carries `signatures[]` (§10), the discovery document MUST
 additionally expose a `signatures` member equal to the document's `signatures`
@@ -274,16 +277,21 @@ Authorization`, and pin `Access-Control-Allow-Origin` to a configured origin.
 
 ### 5. Authentication Handshake
 
-Private nodes are unlocked by a reflexive challenge/response handshake. The
-caller proves control of the PIV private key behind a **published** encryption
-recipient; the server only ever **encrypts** (pure software, no card).
+Private nodes are unlocked by a reflexive challenge/response handshake with two
+proof types: a **decrypt proof** (§5.1–5.2), in which the caller proves control of
+the PIV private key behind a **published** encryption recipient and the server
+only ever **encrypts** (pure software, no card); and a **certificate-signature
+proof** (§5.4), in which a cardless caller signs a challenge with a provisioned
+SSH certificate that chains to the subject's published CA. Both mint the same
+session (§5.3).
 
 #### 5.1. Challenge
 
 `POST /papi/auth/challenge` with a JSON body `{ "recipient": "<recipient-id>" }`.
 
 - The `recipient` member MUST be a non-empty string. A missing or non-string
-  `recipient` MUST yield HTTP `400`.
+  `recipient` MUST yield HTTP `400`, unless the request selects the §5.4
+  certificate path by carrying `method: "ssh-cert"` in place of `recipient`.
 - If the server cannot perform encryption (no box backend available), it MUST
   yield HTTP `503`.
 - If `recipient` is not present in the principal registry (§3), the server MUST
@@ -332,6 +340,52 @@ session, or an unknown/expired session, MUST resolve to the **anonymous**
 principal (public-only projection) rather than an error. The session is an
 ephemeral capability; the durable identity is the piggy recipient that was
 proven to obtain it.
+
+#### 5.4. Certificate-signature proof (cardless)
+
+A caller that holds a **provisioned SSH certificate** instead of a live PIV card
+MAY authenticate by signature rather than by the slot-9D decrypt of §5.1–5.2 —
+serving cloud, headless, and CI hosts where no card is present (locally or
+forwarded). The certificate is issued out of band on a machine with the physical
+card, which signs it as an SSH **certificate authority**; the host then
+authenticates cardless until the certificate expires.
+
+**Challenge.** `POST /papi/auth/challenge` with `{ "method": "ssh-cert" }` (no
+`recipient`). The server MUST mint a cryptographically random nonce and return
+HTTP `200` with `{ "challenge_id": "<hex>", "nonce_b64": "<base64>",
+"expires_at": <unix-seconds> }`. This path performs **no encryption** and
+therefore requires **no box backend** (contrast §5.1).
+
+**Response.** `POST /papi/auth/response` with `{ "challenge_id": "<hex>",
+"certificate": "<OpenSSH certificate>", "signature_b64": "<base64>" }`, where the
+signature is over the exact challenge nonce, produced by the certificate's
+private key. The server MUST verify ALL of, else yield HTTP `401`:
+
+1. the signature verifies against the certificate's public key over the exact
+   nonce;
+2. the certificate is a well-formed OpenSSH certificate whose **signing key (CA)
+   is a published slot-9A key** of the subject — matched by the §10.1 union (a
+   point-match against `ssh_authorized_keys[]` or string-equality against a
+   `/papi/piggy-ids` slot-9A id);
+3. the certificate is currently **valid** — its validity window covers the present
+   time and its certificate type (and principals, if constrained) admit this use.
+
+On success the server MUST mint a session (§5.2) bound to the principal the
+certificate authorizes.
+
+**CA identity.** In `papi/v0` the CA is the subject's published **slot-9A** key
+(the same key that signs documents, §10, and SSHes as the subject) acting as an
+SSH CA — so a verifier needs no key beyond what PAPI already publishes, and there
+is no standing dedicated key that can mint credentials.
+
+**Validity and revocation.** Certificates SHOULD be **short-lived** (scoped to the
+bootstrap window); expiry is the revocation bound, so `papi/v0` publishes no
+revocation list. Issuance requires the physical card acting as CA; the certificate
+then works cardless until it expires.
+
+**Future (not `papi/v0`):** multiple redundant CA keys (a certificate verifies if
+it chains to ANY published CA), and a published Key Revocation List (KRL) for
+revoke-before-expiry of longer-lived certificates.
 
 ### 6. Examples
 
@@ -1332,3 +1386,16 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   satisfied by direct PIV-card access (`pivy-box`) without a running agent (the
   staged installer's path, RFC-0003 §4). Resolves the eng-side line-level review's
   system+home gap. Additive and OPTIONAL — no version bump.
+- **2026-06-24, Amendment 13 — Certificate-signature §5 proof (cardless auth).**
+  Added §5.4: a second §5 proof type alongside the slot-9D decrypt proof — a
+  cardless caller signs the challenge with a provisioned OpenSSH **certificate**
+  whose CA is the subject's published **slot-9A** key (verified by the §10.1 union
+  match), valid and in-window. Serves cloud / headless / CI hosts with no card
+  (local or forwarded). The path performs **no encryption** and so needs **no box
+  backend**. Certificates SHOULD be short-lived (expiry = revocation); issuance
+  requires the physical card acting as CA. Updated the §5 intro (two proof types),
+  §5.1 (the challenge endpoint dispatches on `recipient` vs `method:"ssh-cert"`),
+  and §4.1 (discovery MAY advertise the `ssh-cert` method). Future, not `papi/v0`:
+  multiple redundant CA keys and a published KRL. Security considerations are
+  inline in §5.4. Additive and OPTIONAL — no version bump. The reference consumer
+  is the staged installer's `auth` stage (RFC-0003 §4).

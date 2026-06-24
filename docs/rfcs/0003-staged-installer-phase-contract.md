@@ -118,8 +118,17 @@ not consumer-configurable, because the order encodes the §5 correctness invaria
 A **phase manifest** binds **phase content** to those installer-defined stages: it
 declares the phases the installer runs, each assigned to a `stage`. A host-config
 repository supplies the per-stage phases and MAY declare more than one phase
-within a stage, but MUST NOT introduce, remove, or reorder stages. Each **phase
-entry** MUST contain:
+within a stage, but MUST NOT introduce, remove, or reorder stages.
+
+**Bootstrap manifest and activation target are decoupled.** The phase manifest
+comes from the pinned bootstrap host-config (stage 2, §5); the selected profile's
+`flakeref` (post-auth) MAY name any revision or repository — enabling per-host
+rev-pinning, reproducibility, and non-eng hosts. The installer MUST apply a
+**compatibility guard**: the activation target's expected stage set MUST be
+satisfied by the bootstrap manifest's stage set, and the installer MUST fail the
+run rather than activate a target that expects stages the manifest does not define.
+
+Each **phase entry** MUST contain:
 
 | Field   | Type   | Required | Meaning                                                                 |
 | ------- | ------ | -------- | ----------------------------------------------------------------------- |
@@ -178,6 +187,25 @@ Datasource reads fall into two tiers:
   `auth` stage** (§5): the binary is self-contained through the entire pre-auth
   phase. A running piggy agent MAY also satisfy the session but MUST NOT be a
   precondition.
+
+**Auth-path resolution (`auth` stage).** The installer **auto-detects** how to
+prove the §5 session, trying in order and taking the first available: (1) a
+**local PIV card** (card-direct slot-9D §5 — the on-prem case); (2) a **forwarded
+agent** (`SSH_AUTH_SOCK` / `PIGGY_AUTH_SOCK` — the laptop-driven case); (3) a
+**provisioned SSH certificate** (the cardless §5.4 certificate-signature proof —
+the cloud / headless / CI case). Selection is zero-config: each host naturally has
+exactly one. The certificate path uses RFC-0001 §5.4 and so needs **no box
+backend**, unlike the card paths (§5.1). A provisioned certificate is expected to
+be **injected at instance creation** (card-signed on a machine that has the card,
+delivered via cloud user-data / instance metadata) so the host boots already
+holding it — no fetch-time chicken-and-egg.
+
+**Gated tailnet key.** Bringing up the gated network uses a **short-lived,
+ACL-scoped tailscale auth-key that papi serves as a §5-gated datasource** (fetched
+after `auth`, alongside `profiles[]`/`caches[]`); the host `tailscale up`s with it
+and holds **no standing tailnet secret** — the card/cert gates the join. This is
+the realization of FDR-0004 (card-gated tailnet join); minting the ephemeral key
+is a papi↔tailscale integration on the server side.
 
 `caches[]` (§11) is configured **post-auth, immediately before the single heavy
 build** (`apply-host-profile`): after the `auth` stage the installer reads the
@@ -243,10 +271,11 @@ individual phases within each stage are platform-conditioned (§2, §3):
    that lacks it) and apply the minimal daemon settings. It MUST NOT compile any
    eng package (no subject cache exists yet); it only makes nix capable of the
    later heavy build, which it **gates**.
-4. `auth` — authenticate with the local PIV card directly (§4) using the
-   installer's **embedded** papi client + PIV ECDH (no eng package is nix-built
-   here), and bring up the gated network (the card-gated tailnet, FDR-0004) so the
-   gated cache becomes reachable for the post-auth build.
+4. `auth` — establish the §5 session via the **auto-detected** auth path (§4:
+   local card → forwarded agent → provisioned cert) using the installer's
+   **embedded** tooling (no eng package is nix-built here), and bring up the gated
+   network (the card-gated tailnet, FDR-0004) so the gated cache becomes reachable
+   for the post-auth build.
 5. `authed-read` — over the session established in stage 4, read `profiles[]` and
    the (typically gated) `caches[]`; resolve the selected profile and **configure
    the gated caches now** (§4) so the next stage's heavy build substitutes.
@@ -296,7 +325,9 @@ mechanism that honors it:
 
 - The installer MUST persist its own binary (or be persisted) at a stable,
   root-owned path, and MUST record that path and the run-state location in the
-  persisted run state.
+  persisted run state. (Unlike cloud-init, whose binary is a pre-installed package,
+  this installer is **fetched** — so for the resume re-exec it MUST persist the
+  verified binary alongside the run-state, or re-fetch and re-verify it on resume.)
 - The re-invocation MUST be performed by a **boot-anchored unit**. On `nixos`,
   the bootstrap generation's NixOS module MUST declare a one-shot systemd unit
   that, on next boot, re-execs the persisted installer binary in resume mode
@@ -315,7 +346,14 @@ The run-state store and the persisted binary MUST live at a stable, root-owned
 path that is not group- or world-writable. Resume MUST be idempotent: if the host
 reboots unexpectedly mid-phase, re-invocation MUST re-enter at the correct phase
 as determined by the stamps (§6), neither skipping an incomplete phase nor
-re-running a completed `once`/`per-instance` phase.
+re-running a completed `once`/`per-instance` phase. This mirrors cloud-init's
+root-owned, instance-keyed run-state and per-frequency semaphores under
+`/var/lib/cloud`; the run-state store SHOULD live under an analogous root-owned
+`/var/lib/<installer>/` (mode 0700). Two divergences are deliberate, because this
+is a **one-time installer**, not a permanent agent: (a) the binary is persisted or
+re-fetched for the resume re-exec (above), which cloud-init never faces; and (b)
+the resume facility is **torn down at `final`** — cloud-init never tears down
+`/var/lib/cloud`, but tearing ours down removes a standing re-exec foothold.
 
 ### 8. Phase-hook invocation contract
 
