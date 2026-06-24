@@ -280,6 +280,7 @@ type Document struct {
 	Templates     []Template                 `json:"templates"`
 	Proofs        []Proof                    `json:"proofs"`
 	Caches        []Cache                    `json:"caches"`
+	Profiles      []Profile                  `json:"profiles"`
 	Signatures    []Signature                `json:"signatures"`
 	Signature     *Signature                 `json:"signature"`
 }
@@ -378,6 +379,20 @@ type Repo struct {
 	Description   string `json:"description"`
 }
 
+// Profile is a host-profile entry from the GET /papi/profiles endpoint (RFC-0001
+// §13.1, Amendments 11–12): a flakeref a staged installer activates. On a
+// `nixos-configuration` entry, HomeFlakeref names the host's standalone
+// homeConfiguration (applied via standalone home-manager). Lenient: unknown
+// members ignored, missing ones default to zero.
+type Profile struct {
+	ID           string `json:"id"`
+	Flakeref     string `json:"flakeref"`
+	HomeFlakeref string `json:"home_flakeref"`
+	Description  string `json:"description"`
+	Platform     string `json:"platform"`
+	Kind         string `json:"kind"`
+}
+
 // envelope GETs path, requires 200, and returns the unwrapped {data,meta} data
 // bytes plus the meta block (tolerating an un-enveloped body).
 func (c *Client) envelope(ctx context.Context, path string) (json.RawMessage, map[string]any, int, error) {
@@ -425,6 +440,22 @@ func (c *Client) Repos(ctx context.Context) ([]Repo, int, error) {
 		return nil, status, fmt.Errorf("/papi/repos data: %w", err)
 	}
 	return repos, status, nil
+}
+
+// Profiles fetches GET /papi/profiles and returns the projected host-profile list,
+// unwrapping the {data,meta} envelope (RFC-0001 §13.3). Host profiles are commonly
+// §5-gated; an unauthenticated fetch returns only the anonymous-visible set
+// (possibly empty).
+func (c *Client) Profiles(ctx context.Context) ([]Profile, int, error) {
+	data, _, status, err := c.envelope(ctx, "/papi/profiles")
+	if err != nil {
+		return nil, status, err
+	}
+	var profiles []Profile
+	if err := json.Unmarshal(data, &profiles); err != nil {
+		return nil, status, fmt.Errorf("/papi/profiles data: %w", err)
+	}
+	return profiles, status, nil
 }
 
 // RawDocument fetches GET /papi and returns its projected data as a generic JSON

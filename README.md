@@ -242,6 +242,20 @@ https://github.com/amarbel-llc/eng
 …
 ```
 
+### `papi profiles <domain>`
+
+Fetch `<domain>`'s `GET /papi/profiles` — the host profiles (flakerefs) a staged
+installer activates (RFC-0001 §13) — and print them. By default emits the
+profiles as JSON; `--id` selects a single profile (erroring if none matches);
+`--flakeref` prints one flakeref per line. Host profiles are commonly §5-gated, so
+an unauthenticated fetch shows only the anonymous-visible set:
+
+```console
+$ papi profiles linenisgreat.com                       # JSON: id/flakeref/home_flakeref/…
+$ papi profiles linenisgreat.com --id framework-laptop --flakeref
+github:amarbel-llc/eng#nixosConfigurations.framework-laptop
+```
+
 ### `papi query <domain> <jq-expr>`
 
 Fetch `<domain>`'s `GET /papi` document and evaluate a jq expression against it —

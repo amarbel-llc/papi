@@ -69,6 +69,7 @@ func main() {
 	root.AddCommand(newGHAuthCmd())
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
+	root.AddCommand(newProfilesCmd())
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newEnrollCmd())
 	root.AddCommand(newVerifyReceiptCmd())
@@ -1276,6 +1277,60 @@ func newReposCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&owner, "owner", "", "only list repositories with this owner")
 	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one repository url per line instead of JSON")
+	return cmd
+}
+
+func newProfilesCmd() *cobra.Command {
+	var id string
+	var flakerefOnly bool
+	cmd := &cobra.Command{
+		Use:   "profiles <domain>",
+		Short: "List a domain's PAPI host profiles (GET /papi/profiles)",
+		Long: "Fetch <domain>'s GET /papi/profiles — the host profiles (flakerefs) a " +
+			"staged installer activates — and print them as JSON. --id selects a single " +
+			"profile (erroring if none matches); --flakeref prints one flakeref per line. " +
+			"Host profiles are commonly §5-gated, so an unauthenticated fetch shows only " +
+			"the anonymous-visible set.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			profiles, _, err := c.Profiles(cmd.Context())
+			if err != nil {
+				return err
+			}
+			if id != "" {
+				filtered := make([]papi.Profile, 0, 1)
+				for _, p := range profiles {
+					if p.ID == id {
+						filtered = append(filtered, p)
+					}
+				}
+				if len(filtered) == 0 {
+					return fmt.Errorf("no profile with id %q", id)
+				}
+				profiles = filtered
+			}
+			out := cmd.OutOrStdout()
+			if flakerefOnly {
+				for _, p := range profiles {
+					if p.Flakeref != "" {
+						if _, err := fmt.Fprintln(out, p.Flakeref); err != nil {
+							return err
+						}
+					}
+				}
+				return nil
+			}
+			enc := json.NewEncoder(out)
+			enc.SetIndent("", "  ")
+			return enc.Encode(profiles)
+		},
+	}
+	cmd.Flags().StringVar(&id, "id", "", "select only the profile with this id")
+	cmd.Flags().BoolVar(&flakerefOnly, "flakeref", false, "print one flakeref per line instead of JSON")
 	return cmd
 }
 

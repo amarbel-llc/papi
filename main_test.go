@@ -1034,6 +1034,73 @@ func TestReposURLOwnerFilter(t *testing.T) {
 	}
 }
 
+// profilesServer serves a /papi/profiles list: a NixOS host (system + standalone
+// home, carrying home_flakeref) and a non-NixOS home profile (no home_flakeref).
+func profilesServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/profiles", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[`+
+			`{"id":"framework-laptop","flakeref":"github:amarbel-llc/eng#nixosConfigurations.framework-laptop","home_flakeref":"github:amarbel-llc/eng#homeConfigurations.framework-laptop","kind":"nixos-configuration","platform":"nixos","description":"Framework 13 laptop"},`+
+			`{"id":"dev","flakeref":"github:amarbel-llc/eng#homeConfigurations.dev","kind":"home-configuration","platform":"linux","description":"non-NixOS dev home"}`+
+			`],"meta":{"type":"profiles","visibility":"public","count":2}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func runProfiles(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newProfilesCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+func TestProfilesJSON(t *testing.T) {
+	srv := profilesServer(t)
+	defer srv.Close()
+	out, err := runProfiles(t, srv.URL)
+	if err != nil {
+		t.Fatalf("profiles: %v", err)
+	}
+	var ps []papi.Profile
+	if err := json.Unmarshal([]byte(out), &ps); err != nil {
+		t.Fatalf("profiles output not JSON: %v\n%s", err, out)
+	}
+	if len(ps) != 2 {
+		t.Fatalf("want 2 profiles, got %d", len(ps))
+	}
+	if ps[0].ID != "framework-laptop" || ps[0].HomeFlakeref == "" || ps[0].Kind != "nixos-configuration" {
+		t.Errorf("profile[0] = %+v", ps[0])
+	}
+	if ps[1].HomeFlakeref != "" {
+		t.Errorf("non-nixos profile should carry no home_flakeref, got %q", ps[1].HomeFlakeref)
+	}
+}
+
+func TestProfilesIDAndFlakeref(t *testing.T) {
+	srv := profilesServer(t)
+	defer srv.Close()
+
+	// --id selects exactly one; --flakeref prints its activation target.
+	out, err := runProfiles(t, srv.URL, "--id", "framework-laptop", "--flakeref")
+	if err != nil {
+		t.Fatalf("profiles --id --flakeref: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], "nixosConfigurations.framework-laptop") {
+		t.Errorf("want the framework-laptop flakeref, got %q", out)
+	}
+
+	// an unknown id errors.
+	if _, err := runProfiles(t, srv.URL, "--id", "nope"); err == nil {
+		t.Error("unknown --id should error")
+	}
+}
+
 // queryDocServer serves a /papi document with nested forges[].repos[] for jq.
 func queryDocServer(t *testing.T) *httptest.Server {
 	t.Helper()
