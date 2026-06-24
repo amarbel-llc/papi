@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-23
-amendments: 14
+amendments: 15
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -377,8 +377,11 @@ and a session TTL on the order of fifteen minutes (reference defaults 120 s and
 
 A subsequent request authenticates by presenting the session id in **either**:
 
-- the header `Authorization: PiggySession <session-id>`, or
-- the query parameter `?papi_session=<session-id>`.
+- the header `Authorization: PiggySession <session-id>` (RECOMMENDED), or
+- the query parameter `?papi_session=<session-id>` (NOT RECOMMENDED — query
+  strings leak into access logs, `Referer` headers, and proxy caches; use it only
+  where the header cannot be delivered, e.g. a deployment that strips
+  `Authorization`).
 
 The server MUST resolve a live session to its bound principal. A request with no
 session, or an unknown/expired session, MUST resolve to the **anonymous**
@@ -1103,8 +1106,9 @@ an allowlist rather than trusting it blindly.
 **Authorization header transport.** The `Authorization: PiggySession` path
 depends on the header reaching PHP as `HTTP_AUTHORIZATION`; some FastCGI/Apache
 deployments strip it unless explicitly forwarded (e.g. `CGIPassAuth`). Operators
-MUST verify forwarding, or rely on the `?papi_session=` fallback, lest every
-authenticated caller silently degrade to anonymous.
+SHOULD verify forwarding so the header works, lest every authenticated caller
+silently degrade to anonymous; the `?papi_session=` query param is a last-resort
+fallback only (§5.3, NOT RECOMMENDED — it leaks the session into logs/`Referer`).
 
 **Session storage.** Sessions and one-time challenges are stored as atomic JSON
 files (reference: under `api/tmp/papi-auth/`). The store MUST key lookups by the
@@ -1464,3 +1468,11 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   the validator's `ecdsa_p256_sig` / `ssh_ecdsa_nistp256_pub` formats. Client signer
   tracked as papi#31. Additive (decrypt retained, discovery-negotiated) — no version
   bump.
+- **2026-06-24, Amendment 15 — Session transport: header preferred.** Marked the
+  §5.3 `?papi_session=` query-param session presentation **NOT RECOMMENDED** (query
+  strings leak into access logs, `Referer`, and proxy caches), with the
+  `Authorization: PiggySession` header RECOMMENDED; the query param stays defined
+  as a last-resort fallback for deployments that strip the header. Tempered the
+  Security Considerations "Authorization header transport" note accordingly. From
+  the reference server defaulting to header-only sessions (site-linenisgreat).
+  Clarification of an existing OPTIONAL transport — no version bump.
