@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-06-23
-amendments: 13
+amendments: 14
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -54,8 +54,9 @@ rationale, considered alternatives, and trade-offs are recorded in ADR-0004
 RFC is the normative interface contract derived from it and from the reference
 implementation in that repository's `api/protected/lib/`, served live at
 <https://api.linenisgreat.com/.well-known/papi>. Scope is the `papi/v0` wire
-format. The `localsend` ingestion block and a slot-9A HTTP-signature
-authentication strategy are named but out of scope, deferred to `papi/v1`.
+format. The `localsend` ingestion block is named but out of scope, deferred to
+`papi/v1` (a slot-9A signature authentication strategy, once deferred to `papi/v1`,
+is now the RECOMMENDED `papi/v0` §5 sign-challenge scheme — see §5, Amendment 14).
 
 ## Requirements Language
 
@@ -161,15 +162,19 @@ A **principal** is the identity a request is projected through. It is one of:
 The anonymous principal MUST NOT match any ACL subject, including
 `authenticated`.
 
-A server MUST maintain a **principal registry** mapping a piggy **recipient id**
-(§5) to a principal `{id, groups}`. The reference implementation loads it from
+A server MUST maintain a **principal registry** mapping a published piggy key id
+(§5) to a principal `{id, groups}` — a **slot-9A auth-key id**
+(`piggy-piv_auth-v1@…`, for sign-challenge) and/or a **slot-9D recipient id**
+(`piggy-recipient-v1@…`, for decrypt-challenge). The sign-challenge verifier takes
+the public key from the registered id (the trust anchor), never from the caller.
+The reference implementation loads it from
 `api/protected/data/papi_principals.json` (overridable via the
 `PAPI_PRINCIPALS_PATH` environment variable). Registry values are **public**
 recipient ids and group names only; the registry MUST NOT contain secrets and is
 safe to commit and ship with the document.
 
-Provisioning a caller is a registry edit: add a `recipient-id → {id, groups}`
-entry, then list that `id`, one of its `groups`, or `authenticated` in the `acl`
+Provisioning a caller is a registry edit: add a `key-id → {id, groups}` entry
+(a slot-9A auth-key or slot-9D recipient), then list that `id`, one of its `groups`, or `authenticated` in the `acl`
 of each node the caller should see.
 
 ### 4. HTTP Endpoints
@@ -215,11 +220,12 @@ unauthenticated request, the registered principal for an authenticated one.
   `/papi/caches`, (when the document advertises host profiles, §13)
   `/papi/profiles`, (when the document serves a self-bootstrap shim, §4.2)
   `/papi/bootstrap`, and
-- `auth` — `{scheme: "piggy-challenge-response", challenge, response,
-present_session_as}`, where `challenge`/`response` are absolute URLs. A server
-that supports the §5.4 certificate-signature method MAY additionally advertise it
-(e.g. a `methods: ["piggy-challenge-response", "ssh-cert"]` member); the same
-`challenge`/`response` URLs serve both proof types.
+- `auth` — `{scheme, challenge, response, present_session_as}`, where
+`challenge`/`response` are absolute URLs and `scheme` is the §5 scheme the server
+offers: `"piggy-sign-challenge"` (the RECOMMENDED slot-9A signature scheme) or
+`"piggy-challenge-response"` (the OPTIONAL slot-9D decrypt scheme). A server MAY
+list a `methods` array to advertise more than one (including the §5.4 cardless
+`ssh-cert` variant); the same `challenge`/`response` URLs serve all of them.
 
 When the document carries `signatures[]` (§10), the discovery document MUST
 additionally expose a `signatures` member equal to the document's `signatures`
@@ -277,56 +283,95 @@ Authorization`, and pin `Access-Control-Allow-Origin` to a configured origin.
 
 ### 5. Authentication Handshake
 
-Private nodes are unlocked by a reflexive challenge/response handshake with two
-proof types: a **decrypt proof** (§5.1–5.2), in which the caller proves control of
-the PIV private key behind a **published** encryption recipient and the server
-only ever **encrypts** (pure software, no card); and a **certificate-signature
-proof** (§5.4), in which a cardless caller signs a challenge with a provisioned
-SSH certificate that chains to the subject's published CA. Both mint the same
-session (§5.3).
+Private nodes are unlocked by a reflexive challenge/response handshake. A server
+advertises which **scheme** it offers in discovery (§4.1):
+
+- the **sign-challenge** scheme (RECOMMENDED; `auth.scheme:
+  "piggy-sign-challenge"`) — the caller signs a server-issued nonce with the
+  published **slot-9A** auth key, proving control of it. The server performs **no
+  cryptography of its own** (it verifies a signature) and so needs no box backend;
+- the **decrypt-challenge** scheme (OPTIONAL; `auth.scheme:
+  "piggy-challenge-response"`) — the server encrypts a nonce to a published
+  **slot-9D** recipient (a piggy ebox) and the caller decrypts it, proving control
+  of the recipient key. This requires the server to produce the ebox (a box
+  backend).
+
+A **cardless variant** of sign-challenge (§5.4) lets a host that holds no card sign
+with a provisioned certificate chaining to the published slot-9A. §5.1–5.2 specify
+the challenge and response for both schemes; all paths mint the same session
+(§5.3). A server implements at least one scheme and advertises it.
 
 #### 5.1. Challenge
 
-`POST /papi/auth/challenge` with a JSON body `{ "recipient": "<recipient-id>" }`.
+`POST /papi/auth/challenge`. The request body selects the scheme.
 
-- The `recipient` member MUST be a non-empty string. A missing or non-string
-  `recipient` MUST yield HTTP `400`, unless the request selects the §5.4
-  certificate path by carrying `method: "ssh-cert"` in place of `recipient`.
-- If the server cannot perform encryption (no box backend available), it MUST
-  yield HTTP `503`.
-- If `recipient` is not present in the principal registry (§3), the server MUST
-  yield HTTP `403` and MUST NOT reveal whether the recipient grammar was valid.
-- Otherwise the server MUST mint a cryptographically random **nonce**, encrypt it
-  **to that recipient** (producing a piggy ebox), store a one-time challenge
-  record, and return HTTP `200` with:
+**Sign-challenge** (RECOMMENDED): `{ "auth_key_id": "<slot-9A auth-key id>" }`,
+where `auth_key_id` is a published slot-9A id of the form
+`piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<blech32>`.
 
-      { "challenge_id": "<hex>", "ebox_b64": "<base64 ebox>", "expires_at": <unix-seconds> }
+- A missing or non-string `auth_key_id` MUST yield HTTP `400`.
+- If `auth_key_id` is not in the principal registry (§3), the server MUST yield
+  HTTP `403`.
+- If the server cannot verify signatures (verifier unavailable), it MUST yield
+  HTTP `503`.
+- Otherwise the server MUST mint a cryptographically random **nonce** — a
+  plaintext 64-hex string — store a one-time challenge record, and return HTTP
+  `200` with `{ "challenge_id": "<hex>", "nonce": "<64-hex>", "expires_at":
+  <unix-seconds> }`. `challenge_id` MUST be unpredictable. No encryption is
+  performed and no box backend is required.
 
-  The nonce MUST NOT leave the server in cleartext. `challenge_id` MUST be
-  unpredictable. The recipient id MUST match the grammar
-  `^piggy-recipient-v1@pivy_ecdh_p256_pub-[0-9a-z-]+$` before it is passed to the
-  box backend.
+**Decrypt-challenge** (OPTIONAL): `{ "recipient": "<recipient-id>" }`.
+
+- A missing or non-string `recipient` MUST yield HTTP `400`.
+- If the server cannot perform encryption (no box backend), it MUST yield HTTP
+  `503`.
+- If `recipient` is not in the principal registry (§3), the server MUST yield HTTP
+  `403` and MUST NOT reveal whether the recipient grammar was valid.
+- Otherwise the server MUST mint a random nonce, encrypt it **to that recipient**
+  (a piggy ebox), store a one-time challenge record, and return HTTP `200` with
+  `{ "challenge_id": "<hex>", "ebox_b64": "<base64 ebox>", "expires_at":
+  <unix-seconds> }`. The nonce MUST NOT leave the server in cleartext. The
+  recipient id MUST match `^piggy-recipient-v1@pivy_ecdh_p256_pub-[0-9a-z-]+$`
+  before it is passed to the box backend.
 
 #### 5.2. Response
 
-The caller decrypts `ebox_b64` with their PIV card to recover the nonce, then
-calls `POST /papi/auth/response` with
+**Sign-challenge.** The caller forms the domain-separated preimage
+
+      papi-auth-v1\n<identity-domain>\n<nonce>
+
+— where `<identity-domain>` is the PAPI identity domain, binding the signature to
+this site and defending against cross-site relay — signs `SHA-256(preimage)` with
+the slot-9A key (ECDSA P-256), and encodes the signature as a markl id
+`papi-auth-sig-v1@ecdsa_p256_sig-<blech32>` (raw 64-byte `r‖s`, the §9.3/§10
+signature format). It then calls `POST /papi/auth/response` with
+`{ "challenge_id": "<hex>", "signature": "<papi-auth-sig-v1 markl id>" }`.
+
+- A missing or non-string `challenge_id` or `signature` MUST yield HTTP `400`.
+- The server MUST verify the signature: it decodes the registered `auth_key_id`'s
+  markl to a 33-byte SEC1 compressed point → P-256 public key (the trust anchor,
+  taken from the **registry** (§3), never the caller's word), decodes the
+  `signature` markl to the 64-byte `r‖s`, and ECDSA-verifies it over
+  `SHA-256(preimage)`. A failure MUST yield HTTP `401`.
+
+**Decrypt-challenge.** The caller decrypts `ebox_b64` with their slot-9D PIV key
+to recover the nonce, then calls `POST /papi/auth/response` with
 `{ "challenge_id": "<hex>", "nonce": "<recovered nonce>" }`.
 
 - A missing or non-string `challenge_id` or `nonce` MUST yield HTTP `400`.
-- The server MUST consume the challenge **one-time**: a `challenge_id` that is
-  unknown, already consumed, or expired MUST yield HTTP `401`.
-- The nonce comparison MUST be constant-time. A mismatch MUST yield HTTP `401`.
-- On a match the server MUST mint a short-lived **session** bound to the
-  challenge's principal and return HTTP `200` with:
+- The nonce comparison MUST be constant-time; a mismatch MUST yield HTTP `401`.
+
+For either scheme the server MUST consume the challenge **one-time**: a
+`challenge_id` that is unknown, already consumed, or expired MUST yield HTTP `401`.
+On success the server MUST mint a short-lived **session** bound to the challenge's
+principal and return HTTP `200` with:
 
       { "session": "<hex>", "principal": "<id>", "groups": [<string>...], "expires_at": <unix-seconds> }
 
-- If the session cannot be persisted, the server SHOULD yield HTTP `502` rather
-  than an unhandled `500`.
-
-A server SHOULD use a challenge TTL on the order of two minutes and a session TTL
-on the order of fifteen minutes (the reference defaults are 120 s and 900 s).
+If the session cannot be persisted, the server SHOULD yield HTTP `502` rather than
+an unhandled `500`. A server SHOULD use a challenge TTL on the order of two minutes
+and a session TTL on the order of fifteen minutes (reference defaults 120 s and
+900 s).
 
 #### 5.3. Presenting a session
 
@@ -338,13 +383,14 @@ A subsequent request authenticates by presenting the session id in **either**:
 The server MUST resolve a live session to its bound principal. A request with no
 session, or an unknown/expired session, MUST resolve to the **anonymous**
 principal (public-only projection) rather than an error. The session is an
-ephemeral capability; the durable identity is the piggy recipient that was
-proven to obtain it.
+ephemeral capability; the durable identity is the published key — the slot-9A
+auth key (sign-challenge) or slot-9D recipient (decrypt-challenge) — proven to
+obtain it.
 
 #### 5.4. Certificate-signature proof (cardless)
 
 A caller that holds a **provisioned SSH certificate** instead of a live PIV card
-MAY authenticate by signature rather than by the slot-9D decrypt of §5.1–5.2 —
+MAY authenticate by signature — a **cardless variant of the §5.2 sign-challenge** —
 serving cloud, headless, and CI hosts where no card is present (locally or
 forwarded). The certificate is issued out of band on a machine with the physical
 card, which signs it as an SSH **certificate authority**; the host then
@@ -358,8 +404,9 @@ therefore requires **no box backend** (contrast §5.1).
 
 **Response.** `POST /papi/auth/response` with `{ "challenge_id": "<hex>",
 "certificate": "<OpenSSH certificate>", "signature_b64": "<base64>" }`, where the
-signature is over the exact challenge nonce, produced by the certificate's
-private key. The server MUST verify ALL of, else yield HTTP `401`:
+signature is over `SHA-256(preimage)` (the §5.2 domain-separated preimage),
+produced by the certificate's private key. The server MUST verify ALL of, else
+yield HTTP `401`:
 
 1. the signature verifies against the certificate's public key over the exact
    nonce;
@@ -1201,9 +1248,10 @@ and echoed in `meta.version` on `GET /papi`.
   `caches[]` is unchanged, a client predating §11 ignores both, and the discovery
   `caches` resource appears only when the document advertises caches. No version
   bump is required.
-- The `localsend` block and a slot-9A HTTP-signature authentication strategy are
-  reserved for `papi/v1`; in `papi/v0` `localsend.enabled` MUST be `false` and a
-  server MUST NOT advertise a signature auth scheme in discovery.
+- The `localsend` block is reserved for `papi/v1`; in `papi/v0`
+  `localsend.enabled` MUST be `false`. (The slot-9A signature auth strategy once
+  reserved here is now the RECOMMENDED `papi/v0` §5 sign-challenge scheme — §5,
+  Amendment 14 — advertised as `auth.scheme: "piggy-sign-challenge"`.)
 - PAPI coexists with the host's other collections under the same `{data, meta}`
   envelope; this RFC does not alter those collections.
 
@@ -1399,3 +1447,20 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   multiple redundant CA keys and a published KRL. Security considerations are
   inline in §5.4. Additive and OPTIONAL — no version bump. The reference consumer
   is the staged installer's `auth` stage (RFC-0003 §4).
+- **2026-06-24, Amendment 14 — Sign-challenge §5 scheme (slot-9A signature).**
+  Re-spec'd §5 around two discovery-advertised schemes: the new **sign-challenge**
+  (slot-9A signs the domain-separated preimage `papi-auth-v1\n<identity-domain>\n
+  <nonce>`, verified against the registered slot-9A auth-key markl id — no server
+  crypto, no box backend) is now RECOMMENDED, and the original **decrypt-challenge**
+  (slot-9D ebox) is retained as an OPTIONAL alternative. `auth.scheme` advertises
+  which (`piggy-sign-challenge` | `piggy-challenge-response`). Introduced the markl
+  purpose `papi-auth-sig-v1@ecdsa_p256_sig-…` (sibling of `papi-doc-sig-v1` /
+  `papi-proof-sig-v1`); reframed §5.4 as the cardless variant of sign-challenge;
+  updated §3 (registry keys on the slot-9A auth-key id; pubkey from the registry,
+  never the caller), §4.1 (`auth.scheme`), the Introduction, and the §14 reservation
+  (the slot-9A signature strategy once deferred to `papi/v1` is now the `papi/v0`
+  default). Captured from a merged reference-server impl (site-linenisgreat
+  sign-challenge, replacing the decrypt path the NFSN host cannot produce); mirrors
+  the validator's `ecdsa_p256_sig` / `ssh_ecdsa_nistp256_pub` formats. Client signer
+  tracked as papi#31. Additive (decrypt retained, discovery-negotiated) — no version
+  bump.
