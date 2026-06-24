@@ -144,7 +144,7 @@ the run with a diagnostic rather than execute a partial or reordered set.
 
 A conformant manifest fragment (illustrative):
 
-    stages: [detect, land-content, apply-minimal-sysconfig, build-and-auth,
+    stages: [detect, land-content, apply-minimal-sysconfig, auth,
              authed-read, apply-host-profile, user-layer, final]
     phases:
       - id: minimal-nix-settings
@@ -169,25 +169,27 @@ identity material (RFC-0001 §12), nix binary caches (§11), and host profiles
 Datasource reads fall into two tiers:
 
 - **Anonymous reads** (public PAPI projection) MAY occur at any stage.
-- **Authenticated reads** (a §5 session) MUST NOT occur before the
-  `build-and-auth` stage (§5) has produced the build tooling and established a §5
-  session. The framework satisfies the §5 challenge/response by **direct access
-  to the local PIV card** (the slot-9D ECDH operation, e.g. via `pivy-box`),
-  requiring only that the card is present and the build tooling (pivy) exists — it
-  MUST NOT require the piggy **agent service**, which is itself a build /
-  home-manager output and would deepen the build/auth cycle (§5). A running piggy
-  agent, local or forwarded, MAY also satisfy the session but MUST NOT be a
+- **Authenticated reads** (a §5 session) MUST NOT occur before the `auth` stage
+  (§5) has established a §5 session. The framework satisfies the §5
+  challenge/response by **direct access to the local PIV card** (the slot-9D ECDH
+  operation), using an **embedded** implementation it carries — NOT a nix-built
+  tool. It MUST NOT require the piggy **agent service** (itself a build /
+  home-manager output), and more broadly **no eng package is nix-built before the
+  `auth` stage** (§5): the binary is self-contained through the entire pre-auth
+  phase. A running piggy agent MAY also satisfy the session but MUST NOT be a
   precondition.
 
-`caches[]` (§11) is consumed in **both** tiers, and the framework SHOULD configure
-each as early as its tier is available so builds substitute rather than compile
-from source: the **public** caches (anonymous read) SHOULD be configured at the
-earliest nix-bearing stage — `apply-minimal-sysconfig` (§5), as soon as nix exists
-— so the first build (`build-and-auth`) and every later build substitutes; any
-**gated** caches (authenticated read) are configured after the auth stage, before
-`apply-host-profile`. Before honoring a cache's `trusted_public_keys` the framework
-MUST verify the document's §10 signature (§11.4) — configuring caches early MUST
-NOT bypass that check.
+`caches[]` (§11) is configured **post-auth, immediately before the single heavy
+build** (`apply-host-profile`): after the `auth` stage the framework reads the
+projected `caches[]` and writes their substituters / `trusted_public_keys` so that
+one build substitutes from the subject's caches (typically **gated**, and reachable
+only once `auth` has brought up the gated network — e.g. the card-gated tailnet,
+FDR-0004) rather than compiling from source. There is deliberately **no eng
+compilation before `auth`** (§5): the framework binary carries the pre-auth tooling,
+and any stock dependency it stages (e.g. `tailscale`, plain nixpkgs) substitutes
+from the default public substituter — so no subject cache need be configured
+pre-auth. Before honoring a cache's `trusted_public_keys` the framework MUST verify
+the document's §10 signature (§11.4).
 
 `profiles[]` (§13) is an authenticated read. The framework MUST read it only
 after the auth stage, select a profile (interactively via the TUI, or
@@ -202,11 +204,15 @@ guess.
 **Ordering invariant.** The stage that applies system configuration MUST precede
 the stage that builds or activates against it.
 
-**The cycle.** The card-auth agent (piggy) is itself a build output, so the
-authenticated datasource read (`profiles[]`) depends on piggy, which depends on
-build/activate, which depends on the system configuration that makes the build
-possible. A single, profile-driven system-config stage placed before the build
-would therefore be circular.
+**Why the split — no eng build before the gated cache.** The single heavy build
+(the host profile) must substitute from the subject's caches (typically **gated**,
+§11) rather than compile from source — and a gated cache is reachable only
+**post-auth** (it sits behind the card-gated network, e.g. the tailnet of
+FDR-0004). Authentication is **card-direct** (§4) and the framework binary carries
+all pre-auth tooling itself (embedded papi client + an embedded PIV ECDH), so **no
+eng package is compiled before `auth`**. A single profile-driven system-config
+stage placed before auth would force a cold-host eng compile with no cache to draw
+from. System configuration is split to avoid exactly that.
 
 **The break (normative).** System configuration MUST be split into two stages:
 
@@ -215,8 +221,9 @@ would therefore be circular.
   nix (e.g. Determinate Nix) and applies the daemon settings the build requires
   (flakes, recursive-nix, dynamic-derivations); on NixOS it applies those settings
   via a minimal `nixos-rebuild` (the host-config's base NixOS module). It MUST NOT
-  depend on `profiles[]` or any authenticated read, it MUST precede (gate) the
-  build/activate stage, and the framework MUST orchestrate the nix install rather
+  depend on `profiles[]` or any authenticated read, it MUST NOT compile any eng
+  package (it only makes nix *capable* of the later heavy build), it MUST precede
+  (gate) the heavy build, and the framework MUST orchestrate the nix install rather
   than presupposing nix already exists; and
 - a **full, post-auth, profile-driven** stage that applies the selected host
   profile's `flakeref`. It MUST run only after the authenticated profile read
@@ -233,13 +240,16 @@ individual phases within each stage are platform-conditioned (§2, §3):
    pins the bootstrap host-config; `profiles[]` names which configuration to
    *activate*.
 3. `apply-minimal-sysconfig` — produce a build-capable nix (install nix on a host
-   that lacks it), apply the minimal daemon settings, and configure the **public**
-   nix caches (§4) so the build stage substitutes; **gates** the build stage.
-4. `build-and-auth` — build the bootstrap tooling (pivy, the papi client) needed
-   to authenticate against the card; the piggy agent service is NOT required here
-   (§4).
-5. `authed-read` — authenticate (§5) and read `profiles[]` and any gated
-   `caches[]`; resolve the selected profile and configure the gated caches (§4).
+   that lacks it) and apply the minimal daemon settings. It MUST NOT compile any
+   eng package (no subject cache exists yet); it only makes nix capable of the
+   later heavy build, which it **gates**.
+4. `auth` — authenticate with the local PIV card directly (§4) using the
+   framework's **embedded** papi client + PIV ECDH (no eng package is nix-built
+   here), and bring up the gated network (the card-gated tailnet, FDR-0004) so the
+   gated cache becomes reachable for the post-auth build.
+5. `authed-read` — over the session established in stage 4, read `profiles[]` and
+   the (typically gated) `caches[]`; resolve the selected profile and **configure
+   the gated caches now** (§4) so the next stage's heavy build substitutes.
 6. `apply-host-profile` — activate the selected profile's `flakeref` (RFC-0001
    §13): on NixOS a `nixos-rebuild` of the `nixosConfiguration` (system); on
    non-NixOS a `home-manager switch` of the `homeConfiguration` (the whole host
@@ -372,7 +382,7 @@ Tests use binary injection via `bats-emo`:
 | §2, MUST | Resolved platform is exposed to phases; phase content cannot self-skip by platform. |
 | §3, MUST | A malformed manifest (duplicate `id`, unknown `stage`/`frequency`, dangling `gates`) fails the run. |
 | §4, MUST NOT | No authenticated datasource read (incl. `profiles[]`) occurs before the auth stage. |
-| §5, MUST | `apply-minimal-sysconfig` precedes and gates the build; `apply-host-profile` runs only after the authed read. |
+| §5, MUST | No eng package is nix-built before the `auth` stage; `apply-minimal-sysconfig` makes nix build-capable without building; the gated caches are configured before `apply-host-profile`'s heavy build. |
 | §6, MUST NOT | A satisfied `once`/`per-instance` phase is not re-run; gated/failed phases halt downstream execution. |
 | §7, MUST | A `requires_reboot` phase persists run state and resumes at the next phase; resume is idempotent across an unexpected reboot. |
 

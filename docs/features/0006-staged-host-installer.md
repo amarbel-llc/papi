@@ -44,14 +44,16 @@ access, and progress rendering; the per-phase work is content supplied by a
 host-config repository (eng). Observable behavior:
 
 - **Staged provisioning with live progress.** The binary runs the RFC-0003 stage
-  set — detect → land-content → apply-minimal-sysconfig → build-and-auth →
+  set — detect → land-content → apply-minimal-sysconfig → auth →
   authed-read → apply-host-profile → user-layer → final — and renders each phase's
   status (start / ok / fail) through the crap TUI. On a non-TTY it emits
   ndjson-crap records instead of an interactive display.
-- **Public→authenticated transition.** It stages a host far enough to authenticate
-  with the **local PIV card directly** (via `pivy-box`; no piggy agent service
-  required), then reads the subject's PAPI as a datasource: identity (RFC-0001
-  §12), nix caches (§11), and host profiles (§13).
+- **Self-contained through pre-auth.** Everything before authentication comes from
+  the **binary itself** — the embedded papi client, an embedded PIV ECDH for the
+  card-direct §5 auth, and bringing up the gated network (card-gated tailnet,
+  FDR-0004). **No eng package is nix-built before auth**, so a cold host never
+  compiles eng's closure with no cache to draw from. After auth it reads the
+  subject's PAPI datasource: identity (§12), nix caches (§11), host profiles (§13).
 - **Host-profile selection.** After the authenticated read, the TUI presents the
   visible `profiles[]` for the operator to choose; `--profile <id>` selects one
   non-interactively. The chosen entry's `flakeref` is activated (`nixos-rebuild`
@@ -66,11 +68,11 @@ host-config repository (eng). Observable behavior:
 - **Build-capable nix is produced, not presumed.** The apply-minimal-sysconfig
   phase installs nix (Determinate) on a host that lacks it, or applies the base
   module via a minimal `nixos-rebuild` on NixOS — and gates the build phase.
-- **Substitutes early.** The binary configures the subject's **public** nix caches
-  (RFC-0001 §11) as soon as nix is installed (apply-minimal-sysconfig), so the
-  first build pulls closures instead of compiling from source; any gated caches are
-  added after card-auth. Cache keys are honored only against a verified §10
-  document signature.
+- **One heavy build, cache-fed.** There is a single heavy build — the host profile
+  (apply-host-profile) — and it runs only *after* the subject's caches (RFC-0001
+  §11, typically gated and reachable once the tailnet is up) are configured
+  post-auth, so it substitutes instead of compiling from source. Cache keys are
+  honored only against a verified §10 document signature.
 - **Reboot-and-resume.** A phase may require a reboot; the framework persists run
   state and resumes at the next phase on the subsequent boot. On NixOS the resume
   is carried by a boot-anchored unit that exists only in the transient bootstrap
@@ -82,7 +84,7 @@ host-config repository (eng). Observable behavior:
     $ curl -fsSL https://linenisgreat.com/papi/bootstrap | sh
     # → fetches + verifies the signed installer, then a TUI stages the host:
     #   ✓ detect (nixos)   ✓ land-content   ✓ apply-minimal-sysconfig
-    #   ✓ build-and-auth   → insert card / touch to authenticate
+    #   ✓ auth   → insert card / touch to authenticate
     #   ? select host profile:  [framework-laptop]  server-headless
     #   ✓ apply-host-profile (reboot required) … resuming after reboot …
     #   ✓ user-layer   ✓ final
