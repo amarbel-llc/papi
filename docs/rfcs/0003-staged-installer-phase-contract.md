@@ -9,10 +9,10 @@ date: 2026-06-23
 
 The staged installer is a signed static binary that brings a cold host into a
 subject's configuration by running an ordered sequence of phases. This document
-specifies the contract between that **framework** binary and the **phase
+specifies the contract between that **installer** binary and the **phase
 content** it executes: a cloud-init-inspired model of ordered, idempotent,
 optionally boot-anchored stages whose ordering, platform detection, gating, and
-reboot-and-resume are owned by the framework, while the per-phase work is
+reboot-and-resume are owned by the installer, while the per-phase work is
 supplied as content. It defines the phase manifest, the platform-detection and
 datasource-read model (PAPI as the installer's datasource), the
 system-config-before-build ordering invariant and the cycle it breaks, and the
@@ -30,10 +30,10 @@ host far enough to authenticate with the local PIV card directly, then reads the
 subject's PAPI as a **datasource** (identity, RFC-0001 §12; nix caches, §11; host
 profiles, §13) to select and activate a host profile.
 
-This RFC specifies the seam between the framework and the phase content a
+This RFC specifies the seam between the installer and the phase content a
 host-config repository supplies, so that:
 
-- the **framework** (the binary) can execute any conformant phase set, and
+- the **installer** (the binary) can execute any conformant phase set, and
 - a **host-config repository** can supply conformant phase content and have its
   ordering, platform applicability, and reboot behavior honored.
 
@@ -55,9 +55,9 @@ Out of scope: the binary's build and signing (a separate concern), the
 `profiles[]` wire resource (RFC-0001 §13), and a host-config repository's
 specific phase content.
 
-> **Editorial note — §2 and §3 ownership.** Detection (§2) is framework-owned.
+> **Editorial note — §2 and §3 ownership.** Detection (§2) is installer-owned.
 > For §3, the user steer and the eng-side review converged: the **stage set and
-> ordering** (which encode the §5 correctness invariant) are **framework-owned**
+> ordering** (which encode the §5 correctness invariant) are **installer-owned**
 > and defined by this RFC, while a host-config repository supplies the **per-stage
 > content**. What remains unsettled — and SHOULD be treated as not yet stable — is
 > the manifest's exact serialization and where the host-config content lives, not
@@ -73,22 +73,22 @@ interpreted as described in RFC 2119.
 
 ### 1. Model and roles
 
-The **framework** is the installer binary. It owns: platform detection (§2),
+The **installer** is the binary. It owns: platform detection (§2),
 phase ordering and gating (§3, §5), idempotency (§6), reboot and resume (§7),
 PAPI datasource access (§4), and progress rendering (§8). **Phase content** is
 the work each phase performs, supplied by a host-config repository and invoked by
-the framework through the hook contract (§8).
+the installer through the hook contract (§8).
 
 A **run** is one end-to-end execution toward an activated host profile. A run MAY
-span multiple **boots** — the framework MUST make a run resumable across reboots
-(§7). The framework MUST execute phases in the order the manifest and stage model
+span multiple **boots** — the installer MUST make a run resumable across reboots
+(§7). The installer MUST execute phases in the order the manifest and stage model
 define (§3, §5); it MUST NOT delegate ordering decisions to phase content.
 
 ### 2. Platform detection
 
 > Provisional — see the editorial note in the Introduction.
 
-The framework MUST detect the host platform once per run, before executing any
+The installer MUST detect the host platform once per run, before executing any
 platform-conditioned phase, and MUST expose the resolved platform to every phase
 (§8). The defined platform tokens in v0 are:
 
@@ -98,7 +98,7 @@ platform-conditioned phase, and MUST expose the resolved platform to every phase
 
 Phase content MUST NOT perform its own platform detection to decide whether to
 run, and MUST NOT self-skip based on platform. A phase's applicability is decided
-by the framework from the manifest's platform conditions (§3) against the
+by the installer from the manifest's platform conditions (§3) against the
 resolved platform. This requirement exists to remove the self-skip anti-pattern
 in which a phase silently no-ops on a platform, leaving an ordering dependency
 unsequenced.
@@ -106,17 +106,17 @@ unsequenced.
 ### 3. The phase manifest
 
 > See the editorial note in the Introduction. The **stage set + ordering** (§5)
-> are framework-owned (a shared correctness invariant — piggy-is-a-build-output
+> are installer-owned (a shared correctness invariant — piggy-is-a-build-output
 > holds for every consumer, not just one host-config repo); a host-config
 > repository supplies the **per-stage content**. The manifest is carried by the
 > **bootstrap** host-config landed in stage 2 (§5) — the entry/binary pins that
 > bootstrap source, while `profiles[]` selects the later activation target. The
 > manifest's exact serialization remains to be finalized.
 
-The framework defines the canonical **stage set** and its order (§5); these are
+The installer defines the canonical **stage set** and its order (§5); these are
 not consumer-configurable, because the order encodes the §5 correctness invariant.
-A **phase manifest** binds **phase content** to those framework-defined stages: it
-declares the phases the framework runs, each assigned to a `stage`. A host-config
+A **phase manifest** binds **phase content** to those installer-defined stages: it
+declares the phases the installer runs, each assigned to a `stage`. A host-config
 repository supplies the per-stage phases and MAY declare more than one phase
 within a stage, but MUST NOT introduce, remove, or reorder stages. Each **phase
 entry** MUST contain:
@@ -125,7 +125,7 @@ entry** MUST contain:
 | ------- | ------ | -------- | ----------------------------------------------------------------------- |
 | `id`    | string | MUST     | Stable identifier, unique within the manifest.                          |
 | `stage` | string | MUST     | The ordered stage this phase belongs to (§5).                           |
-| `hook`  | string | MUST     | Reference to the phase content the framework invokes (§8).              |
+| `hook`  | string | MUST     | Reference to the phase content the installer invokes (§8).              |
 
 and MAY contain:
 
@@ -137,7 +137,7 @@ and MAY contain:
 | `requires_reboot`| boolean  | Whether the run MUST reboot after this phase and resume at the next (§7).         |
 
 Stages are ordered (§5); phases within a stage run in declared order. The
-framework MUST refuse a manifest that contains a duplicate phase `id`, a phase
+installer MUST refuse a manifest that contains a duplicate phase `id`, a phase
 whose `stage` is not a defined stage token (§5), a `gates` entry referencing an
 unknown phase `id`, or a `frequency` value it does not understand — it MUST fail
 the run with a diagnostic rather than execute a partial or reordered set.
@@ -162,7 +162,7 @@ A conformant manifest fragment (illustrative):
 
 ### 4. Datasource (PAPI) and read timing
 
-The framework consumes the subject's PAPI as the installer's **datasource**:
+The installer consumes the subject's PAPI as the installer's **datasource**:
 identity material (RFC-0001 §12), nix binary caches (§11), and host profiles
 (§13, `profiles[]`).
 
@@ -170,7 +170,7 @@ Datasource reads fall into two tiers:
 
 - **Anonymous reads** (public PAPI projection) MAY occur at any stage.
 - **Authenticated reads** (a §5 session) MUST NOT occur before the `auth` stage
-  (§5) has established a §5 session. The framework satisfies the §5
+  (§5) has established a §5 session. The installer satisfies the §5
   challenge/response by **direct access to the local PIV card** (the slot-9D ECDH
   operation), using an **embedded** implementation it carries — NOT a nix-built
   tool. It MUST NOT require the piggy **agent service** (itself a build /
@@ -180,18 +180,18 @@ Datasource reads fall into two tiers:
   precondition.
 
 `caches[]` (§11) is configured **post-auth, immediately before the single heavy
-build** (`apply-host-profile`): after the `auth` stage the framework reads the
+build** (`apply-host-profile`): after the `auth` stage the installer reads the
 projected `caches[]` and writes their substituters / `trusted_public_keys` so that
 one build substitutes from the subject's caches (typically **gated**, and reachable
 only once `auth` has brought up the gated network — e.g. the card-gated tailnet,
 FDR-0004) rather than compiling from source. There is deliberately **no eng
-compilation before `auth`** (§5): the framework binary carries the pre-auth tooling,
+compilation before `auth`** (§5): the installer binary carries the pre-auth tooling,
 and any stock dependency it stages (e.g. `tailscale`, plain nixpkgs) substitutes
 from the default public substituter — so no subject cache need be configured
-pre-auth. Before honoring a cache's `trusted_public_keys` the framework MUST verify
+pre-auth. Before honoring a cache's `trusted_public_keys` the installer MUST verify
 the document's §10 signature (§11.4).
 
-`profiles[]` (§13) is an authenticated read. The framework MUST read it only
+`profiles[]` (§13) is an authenticated read. The installer MUST read it only
 after the auth stage, select a profile (interactively via the TUI, or
 non-interactively by a pinned `#id`), and pass the resolved profile `id`,
 `flakeref`, and `home_flakeref` (when present, RFC-0001 §13) to subsequent phases
@@ -208,7 +208,7 @@ the stage that builds or activates against it.
 (the host profile) must substitute from the subject's caches (typically **gated**,
 §11) rather than compile from source — and a gated cache is reachable only
 **post-auth** (it sits behind the card-gated network, e.g. the tailnet of
-FDR-0004). Authentication is **card-direct** (§4) and the framework binary carries
+FDR-0004). Authentication is **card-direct** (§4) and the installer binary carries
 all pre-auth tooling itself (embedded papi client + an embedded PIV ECDH), so **no
 eng package is compiled before `auth`**. A single profile-driven system-config
 stage placed before auth would force a cold-host eng compile with no cache to draw
@@ -223,13 +223,13 @@ from. System configuration is split to avoid exactly that.
   via a minimal `nixos-rebuild` (the host-config's base NixOS module). It MUST NOT
   depend on `profiles[]` or any authenticated read, it MUST NOT compile any eng
   package (it only makes nix *capable* of the later heavy build), it MUST precede
-  (gate) the heavy build, and the framework MUST orchestrate the nix install rather
+  (gate) the heavy build, and the installer MUST orchestrate the nix install rather
   than presupposing nix already exists; and
 - a **full, post-auth, profile-driven** stage that applies the selected host
   profile's `flakeref`. It MUST run only after the authenticated profile read
   (§4).
 
-**Canonical stage order.** The framework MUST enforce the following stage order;
+**Canonical stage order.** The installer MUST enforce the following stage order;
 individual phases within each stage are platform-conditioned (§2, §3):
 
 1. `detect` — resolve platform and datasource (§2, §4).
@@ -244,7 +244,7 @@ individual phases within each stage are platform-conditioned (§2, §3):
    eng package (no subject cache exists yet); it only makes nix capable of the
    later heavy build, which it **gates**.
 4. `auth` — authenticate with the local PIV card directly (§4) using the
-   framework's **embedded** papi client + PIV ECDH (no eng package is nix-built
+   installer's **embedded** papi client + PIV ECDH (no eng package is nix-built
    here), and bring up the gated network (the card-gated tailnet, FDR-0004) so the
    gated cache becomes reachable for the post-auth build.
 5. `authed-read` — over the session established in stage 4, read `profiles[]` and
@@ -267,47 +267,47 @@ restart, not a reboot.
 
 ### 6. Execution and idempotency
 
-Each phase has a **frequency** governing whether the framework re-runs it:
+Each phase has a **frequency** governing whether the installer re-runs it:
 
 - `once` — run at most once per host, ever;
 - `per-instance` — run once per install instance (the default);
 - `per-boot` — run on every boot the run touches.
 
-The framework MUST persist a completion **stamp** per phase, keyed by the phase
+The installer MUST persist a completion **stamp** per phase, keyed by the phase
 `id` and its frequency, in the run-state store (§7). Before running a phase, the
-framework MUST consult the stamps and MUST NOT re-run a phase whose
+installer MUST consult the stamps and MUST NOT re-run a phase whose
 frequency and stamp indicate it is already satisfied.
 
 A phase MUST NOT start until every phase in its `gates` and every phase in
 prior stages it depends on has completed successfully. A phase that exits
-non-zero (§8) MUST halt the run — the framework MUST NOT execute downstream
+non-zero (§8) MUST halt the run — the installer MUST NOT execute downstream
 phases — unless the manifest marks the phase non-fatal (a future OPTIONAL field).
 
 ### 7. Reboot and resume contract
 
-A phase MAY set `requires_reboot`. After such a phase completes, the framework
+A phase MAY set `requires_reboot`. After such a phase completes, the installer
 MUST persist the run state — the per-phase stamps (§6), the resolved platform
 (§2), and the selected profile (§4) — then trigger a reboot, and on the
 subsequent boot **resume** at the next phase in order.
 
-Resume requires the framework binary to be re-invoked after the reboot. The
-framework defines the resume contract; the system-config content emits the
+Resume requires the installer binary to be re-invoked after the reboot. The
+installer defines the resume contract; the system-config content emits the
 mechanism that honors it:
 
-- The framework MUST persist its own binary (or be persisted) at a stable,
+- The installer MUST persist its own binary (or be persisted) at a stable,
   root-owned path, and MUST record that path and the run-state location in the
   persisted run state.
 - The re-invocation MUST be performed by a **boot-anchored unit**. On `nixos`,
   the bootstrap generation's NixOS module MUST declare a one-shot systemd unit
-  that, on next boot, re-execs the persisted framework binary in resume mode
+  that, on next boot, re-execs the persisted installer binary in resume mode
   against the recorded run state, ordered appropriately within boot.
 - **Teardown is platform-specific and MUST NOT rely on a unit deleting itself** (a
   NixOS unit is declarative and cannot self-delete). On `nixos`, the resume unit
   MUST exist only in the transient bootstrap generation: the final host
   configuration applied by `apply-host-profile` MUST NOT declare it, so it
-  disappears on the real activation. On `linux`/`darwin`, the framework MUST guard
+  disappears on the real activation. On `linux`/`darwin`, the installer MUST guard
   the unit by the run-state stamps so it no-ops once the run reaches `final`.
-- The framework owns the contract — the persisted binary path, the resume-mode
+- The installer owns the contract — the persisted binary path, the resume-mode
   invocation, and the run-state/stamp location; the host-config repository's
   system-config module emits the unit conforming to it.
 
@@ -319,7 +319,7 @@ re-running a completed `once`/`per-instance` phase.
 
 ### 8. Phase-hook invocation contract
 
-The framework invokes each phase's `hook` with the resolved run context:
+The installer invokes each phase's `hook` with the resolved run context:
 
 - the resolved platform token (§2),
 - the selected profile's `id`, `flakeref`, and `home_flakeref` when resolved (§4),
@@ -328,23 +328,23 @@ The framework invokes each phase's `hook` with the resolved run context:
 - the run-state/stamp directory (§7).
 
 These MUST be passed by a stable, documented mechanism (environment variables);
-the exact variable names are pinned by the framework's implementation and listed
+the exact variable names are pinned by the installer's implementation and listed
 in its reference documentation.
 
 A hook MUST signal success with exit code 0 and failure with a non-zero exit code
 (§6). A hook MAY emit structured progress on its standard output for the
-framework to render via the TUI; the framework MUST render per-phase status
+installer to render via the TUI; the installer MUST render per-phase status
 (start, success, failure) for every phase regardless of whether its hook emits
 progress. Hooks that emit progress MUST flush each progress record so the TUI
 reflects it promptly.
 
 ## Security Considerations
 
-**Phase content runs as root.** The framework executes phase content with the
+**Phase content runs as root.** The installer executes phase content with the
 privilege required to apply system configuration and drive the nix daemon. The
 trust anchors are that the installer binary is signed (the subject's PIV slot-9A
 key) and the host-config repository is reviewed and version-controlled. The
-framework SHOULD verify that the content it lands resolves into the reviewed
+installer SHOULD verify that the content it lands resolves into the reviewed
 host-config source (e.g. the §13 `flakeref` resolves into the expected
 repository) before invoking hooks.
 
@@ -362,13 +362,13 @@ generation omits the unit; the non-NixOS unit stamp-guards to a no-op), so it is
 not a standing re-exec foothold after the run completes.
 
 **Manifest integrity.** The manifest comes from the reviewed host-config source;
-the framework MUST refuse a malformed manifest (§3) rather than guess, so a
+the installer MUST refuse a malformed manifest (§3) rather than guess, so a
 corrupted or truncated manifest cannot silently reorder or drop a gating phase.
 
 ## Conformance Testing
 
-The framework binary implements this specification; conformance tests live in the
-framework binary's `zz-tests_bats/` directory (path finalized when the binary
+The installer binary implements this specification; conformance tests live in the
+installer binary's `zz-tests_bats/` directory (path finalized when the binary
 lands in iter-2).
 
 Tests use binary injection via `bats-emo`:
@@ -391,9 +391,9 @@ Tests use binary injection via `bats-emo`:
 This is a new interface with no prior consumers. It coexists with FDR-0003's
 `provision.sh` self-bootstrap shim: the bash path remains the live cold-host
 entrypoint until the binary path is proven (the shim is iteration 1; this
-framework is iteration 2). This document specifies the v0 phase-manifest
+installer is iteration 2). This document specifies the v0 phase-manifest
 contract. Additive changes — new `frequency` values, new stage tokens, new
-OPTIONAL phase fields — SHOULD be designed so that an older framework skips what
+OPTIONAL phase fields — SHOULD be designed so that an older installer skips what
 it does not understand rather than failing, following the skip-unknown discipline
 of RFC-0001 (§1.1, §7.1 `kind`); changes to the canonical stage order (§5) or the
 resume contract (§7) are breaking and would require a superseding revision.
@@ -412,6 +412,6 @@ resume contract (§7) are breaking and would require a superseding revision.
   datasource-driven provisioning model this contract adapts.
   <https://docs.cloud-init.io/en/latest/explanation/boot.html>
 - [FDR-0003] PAPI self-bootstrap endpoint (`GET /papi/bootstrap`) — the
-  bash-shim path this framework supersedes. `docs/features/0003-papi-self-bootstrap-endpoint.md`.
+  bash-shim path this installer supersedes. `docs/features/0003-papi-self-bootstrap-endpoint.md`.
 - [eng-0006] eng's unified, idempotent `provision.sh` (the self-re-exec'ing
-  provisioner the framework's `land-content`/staging model draws on).
+  provisioner the installer's `land-content`/staging model draws on).

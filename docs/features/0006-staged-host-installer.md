@@ -38,7 +38,7 @@ unchanged — `curl -fsSL https://<domain>/papi/bootstrap | sh` — but the serv
 body now fetches, verifies, and execs the binary (the signing and endpoint
 evolution are tracked separately; see More Information).
 
-The binary is the **framework** specified by RFC-0003: it owns platform
+The binary is the **installer** specified by RFC-0003: it owns platform
 detection, stage ordering and gating, idempotency, reboot/resume, PAPI-datasource
 access, and progress rendering; the per-phase work is content supplied by a
 host-config repository (eng). Observable behavior:
@@ -62,7 +62,7 @@ host-config repository (eng). Observable behavior:
   the `nixosConfiguration` (system) and then the entry's `home_flakeref`, the
   host's **standalone** `homeConfiguration`, via `home-manager` (not the NixOS
   module).
-- **Platform-aware, no self-skip.** The framework detects the platform (`nixos` /
+- **Platform-aware, no self-skip.** The installer detects the platform (`nixos` /
   `linux` / `darwin`) once and selects + orders phases from manifest conditions;
   phase content never self-detects or self-skips.
 - **Build-capable nix is produced, not presumed.** The apply-minimal-sysconfig
@@ -73,7 +73,7 @@ host-config repository (eng). Observable behavior:
   §11, typically gated and reachable once the tailnet is up) are configured
   post-auth, so it substitutes instead of compiling from source. Cache keys are
   honored only against a verified §10 document signature.
-- **Reboot-and-resume.** A phase may require a reboot; the framework persists run
+- **Reboot-and-resume.** A phase may require a reboot; the installer persists run
   state and resumes at the next phase on the subsequent boot. On NixOS the resume
   is carried by a boot-anchored unit that exists only in the transient bootstrap
   generation and is gone once the real host configuration activates.
@@ -99,7 +99,7 @@ host-config repository (eng). Observable behavior:
   build is gated on FDR-0003 reaching accepted (iteration 1 proves the bash
   `provision.sh` path end-to-end first), so the bash path remains the live
   cold-host entrypoint until the binary path is proven.
-- **Framework, not content.** The binary owns ordering and execution; the work
+- **Installer, not content.** The binary owns ordering and execution; the work
   each phase performs lives in eng (RFC-0003 §3). Reboot-resume on NixOS depends
   on eng's apply-host-profile module emitting the resume unit per the RFC-0003 §7
   contract.
@@ -113,6 +113,11 @@ host-config repository (eng). Observable behavior:
   currently absent/503 (papi#8), so the authed-read stage — and thus
   apply-host-profile — is gated on that backend going live. Known iteration-2
   operational dependency.
+- **Substitution assumes a warm cache.** "No compile on a weak host" holds only
+  when the subject's gated cache already holds the host-profile closures; on a
+  cache miss the host still compiles from source (slow on constrained hardware).
+  Mitigation: keep the cache warm from a capable host that writes to it. A
+  performance caveat, not a correctness issue.
 
 ## Tuning Levers
 
@@ -125,7 +130,7 @@ host-config repository (eng). Observable behavior:
 ## More Information
 
 - RFC-0003 (`docs/rfcs/0003-staged-installer-phase-contract.md`) — the normative
-  phase-manifest contract this binary implements (the framework side).
+  phase-manifest contract this binary implements (the installer side).
 - RFC-0001 §11 (`caches[]`), §12 (identity-bootstrap consumption), §13 +
   Amendment 11 (`profiles[]`) — the PAPI datasource this consumes.
 - FDR-0003 (`0003-papi-self-bootstrap-endpoint.md`) — the bash `provision.sh`
@@ -134,6 +139,6 @@ host-config repository (eng). Observable behavior:
 - papi#28 — the installer signing strategy (slot-9A binary signature + nix-closure
   Ed25519); the `/papi/bootstrap` body evolution that fetches the signed binary.
 - [cloud-init] — the boot-anchored-stages / frequencies / datasource model this
-  framework adapts.
-- eng: `bin/provision.sh` (the staging content the framework's phases wrap),
+  installer adapts.
+- eng: `bin/provision.sh` (the staging content the installer's phases wrap),
   `nixosModules`, eng#201 / eng `docs/features/0006` (the unified provisioner).
