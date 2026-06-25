@@ -98,6 +98,38 @@
           meta.mainProgram = "papi";
         };
 
+        # The papi TypeScript client (FDR-0007): a zero-dependency flake output —
+        # the js/wasm core, Go's wasm_exec.js, and the wrapper staged side by side,
+        # so a zx/Bun consumer imports `${papi-client-ts}/papi.ts` directly (papi.ts
+        # resolves papi-client.wasm + wasm_exec.js as siblings). No bun2nix
+        # lockfiles: the wrapper has no runtime deps beyond node: builtins + the
+        # wasm. Built via buildGoApplication for the gomod2nix module cache, but
+        # with a custom build/install since the artifact is a js/wasm file plus
+        # static assets, not a host binary.
+        papi-client-ts = pkgs.buildGoApplication {
+          pname = "papi-client-ts";
+          src = self;
+          pwd = ./.;
+          modules = ./gomod2nix.toml;
+          go = pkgs.go;
+          GOTOOLCHAIN = "local";
+          doCheck = false;
+          buildPhase = ''
+            runHook preBuild
+            env GOOS=js GOARCH=wasm CGO_ENABLED=0 go build -o papi-client.wasm ./cmd/papi-client-wasm
+            runHook postBuild
+          '';
+          installPhase = ''
+            runHook preInstall
+            mkdir -p $out
+            cp papi-client.wasm $out/papi-client.wasm
+            cp ${pkgs.go}/share/go/lib/wasm/wasm_exec.js $out/wasm_exec.js
+            cp clients/ts/papi.ts $out/papi.ts
+            runHook postInstall
+          '';
+          meta.description = "papi TypeScript client: js/wasm core + wasm_exec.js + wrapper (FDR-0007)";
+        };
+
         # Pure lane: eng preset + this repo's overlay -> `nix fmt` + the
         # sandboxed checks.formatting gate.
         eval = conformist.lib.evalModule pkgs {
@@ -120,6 +152,7 @@
         packages = {
           default = papi;
           papi = papi;
+          papi-client-ts = papi-client-ts;
           conformist-impure-config = impureEval.config.build.configFile;
         };
 

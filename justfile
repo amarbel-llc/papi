@@ -30,7 +30,7 @@ lint-worktree:
 
 # --- build ---
 
-build: build-gomod2nix build-go build-wasm build-wasm-client build-nix
+build: build-gomod2nix build-go build-wasm build-wasm-client build-nix build-ts
 
 # Regenerate gomod2nix.toml from go.mod/go.sum. A no-op when current; run after
 # changing deps. (conformist-justfile(7): a build-* leaf lives in the build
@@ -66,20 +66,36 @@ build-wasm-client:
 build-nix:
     nix build --no-link --print-build-logs .#papi
 
+# Build the zero-dep papi-client-ts flake output (FDR-0007): the js/wasm core +
+# wasm_exec.js + papi.ts staged into one store path. Validates the derivation in
+# the build lane; `test-ts-bundle` smokes the result.
+build-ts:
+    nix build --no-link --print-build-logs .#papi-client-ts
+
 # --- test ---
 
-test: test-go test-ts test-nix-hm-module
+test: test-go test-ts test-ts-bundle test-nix-hm-module
 
 # Hermetic Go test suite (httptest fixtures; no network, no card).
 test-go:
     nix develop --command go test ./...
 
 # Smoke-test the TypeScript client wrapper (clients/ts, FDR-0007): cross-build the
-# wasm core, then run its bun tests, which drive the wasm via node:wasi (path
-# handed in via $PAPI_CLIENT_WASM). Network-free — the fetch-based Client is not
-# exercised here.
+# js/wasm core, then run its bun tests, which drive the wasm via Go's wasm_exec.js
+# (path handed in via $PAPI_CLIENT_WASM). Network-free — the fetch-based Client is
+# not exercised here.
 test-ts: build-wasm-client
     nix develop --command env PAPI_CLIENT_WASM="$PWD/build/papi-client.wasm" bun test clients/ts
+
+# Smoke the distributed flake bundle (packages.papi-client-ts, FDR-0007): build it
+# and import its papi.ts straight from the nix store with NO $PAPI_CLIENT_WASM, so
+# papi.ts's default sibling resolution of the wasm + wasm_exec.js is exercised —
+# the real consumer path test-ts does not cover.
+test-ts-bundle:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out=$(nix build --no-link --print-out-paths .#papi-client-ts)
+    nix develop --command env PAPI_CLIENT_TS_DIR="$out" bun clients/ts/bundle-smoke.mjs
 
 # Smoke-test the `services.papi-ssh-sync` home-manager module: evaluate it
 # against synthetic configs (lib.evalModules, no home-manager input) and verify
