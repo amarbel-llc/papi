@@ -130,6 +130,24 @@
           meta.description = "papi TypeScript client: js/wasm core + wasm_exec.js + wrapper (FDR-0007)";
         };
 
+        # The staged host installer (FDR-0006): a static binary that drives an
+        # RFC-0003 phase manifest, linking the internal/0/papi client + the crap
+        # TUI. First increment — the phase engine + the runnable early phases;
+        # host/hardware-gated phases are seams and slot-9A signing is out of scope
+        # (FDR-0008), so this binary is built UNSIGNED. CGO-free static binary.
+        papi-installer = pkgs.buildGoApplication {
+          pname = "papi-installer";
+          src = self;
+          pwd = ./.;
+          modules = ./gomod2nix.toml;
+          subPackages = [ "cmd/papi-installer" ];
+          go = pkgs.go;
+          GOTOOLCHAIN = "local";
+          CGO_ENABLED = "0";
+          doCheck = false;
+          meta.mainProgram = "papi-installer";
+        };
+
         # Pure lane: eng preset + this repo's overlay -> `nix fmt` + the
         # sandboxed checks.formatting gate.
         eval = conformist.lib.evalModule pkgs {
@@ -153,6 +171,7 @@
           default = papi;
           papi = papi;
           papi-client-ts = papi-client-ts;
+          papi-installer = papi-installer;
           conformist-impure-config = impureEval.config.build.configFile;
         };
 

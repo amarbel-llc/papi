@@ -1,0 +1,23 @@
+{
+  "stages": [
+    "detect",
+    "land-content",
+    "apply-minimal-sysconfig",
+    "auth",
+    "authed-read",
+    "apply-host-profile",
+    "user-layer",
+    "final"
+  ],
+  "phases": [
+    { "id": "detect-platform", "stage": "detect", "hook": "detect", "frequency": "per-boot" },
+    { "id": "land-bootstrap", "stage": "land-content", "hook": "stub:clone the pinned bootstrap host-config" },
+    { "id": "minimal-nix", "stage": "apply-minimal-sysconfig", "hook": "apply-minimal-sysconfig" },
+    { "id": "nixos-base", "stage": "apply-minimal-sysconfig", "platforms": ["nixos"], "hook": "stub:apply the base NixOS module via minimal nixos-rebuild" },
+    { "id": "card-auth", "stage": "auth", "hook": "stub:establish a §5 session via the auto-detected auth path" },
+    { "id": "read-profiles", "stage": "authed-read", "hook": "authed-read" },
+    { "id": "host-profile", "stage": "apply-host-profile", "gates": ["read-profiles"], "requires_reboot": true, "hook": "stub:activate the selected profile flakeref" },
+    { "id": "user-wiring", "stage": "user-layer", "hook": "exec:true" },
+    { "id": "complete", "stage": "final", "hook": "stub:tear down the resume facility" }
+  ]
+}

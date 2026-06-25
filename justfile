@@ -30,7 +30,7 @@ lint-worktree:
 
 # --- build ---
 
-build: build-gomod2nix build-go build-wasm build-wasm-client build-nix build-ts
+build: build-gomod2nix build-go build-wasm build-wasm-client build-nix build-ts build-installer
 
 # Regenerate gomod2nix.toml from go.mod/go.sum. A no-op when current; run after
 # changing deps. (conformist-justfile(7): a build-* leaf lives in the build
@@ -71,6 +71,12 @@ build-nix:
 # the build lane; `test-ts-bundle` smokes the result.
 build-ts:
     nix build --no-link --print-build-logs .#papi-client-ts
+
+# Build the staged host installer binary (FDR-0006): a static, CGO-free
+# papi-installer. Validates the flake package in the build lane; the engine + the
+# headless run are covered by `test-go`.
+build-installer:
+    nix build --no-link --print-build-logs .#papi-installer
 
 # --- test ---
 

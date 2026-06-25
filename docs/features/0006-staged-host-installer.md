@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: experimental
 date: 2026-06-23
 promotion-criteria: >
   proposed → experimental: the installer binary builds from the papi flake, links
@@ -102,11 +102,20 @@ host-config repository (eng). Observable behavior:
 
 ## Limitations
 
-- **Not yet implemented.** This FDR is the design; the binary does not exist.
-  (Iteration 1 — proving the bash `provision.sh` path on a cold host first — was
-  dropped, as the only available cold host is too slow to test end to end; the
-  binary path is no longer gated on it.) The bash `provision.sh` shim remains the
-  live `/papi/bootstrap` entrypoint until the binary path lands.
+- **First increment shipped; heavy phases are seams.** `cmd/papi-installer` builds
+  from the flake (`packages.papi-installer`, static, CGO-free), links the
+  `internal/0/papi` client + the crap TUI, and drives the RFC-0003 phase engine
+  (manifest parse/validate, stage ordering + gating, frequency-stamp idempotency,
+  run-state + resume, platform detect) with live per-phase progress (crap TUI on a
+  TTY, ndjson-crap when piped). The runnable early phases — `detect` and
+  `apply-minimal-sysconfig` (nix-presence-aware, never installs) — are real;
+  `auth` / `authed-read` / `apply-host-profile` / `user-layer` / `final` are typed
+  seams that report what they would do. Still to do: real §5 card/box auth,
+  `nixos-rebuild` / `home-manager` activation, the reboot boot-anchored unit, and
+  wiring eng's real phase manifest. (Iteration 1 — proving the bash `provision.sh`
+  path on a cold host first — was dropped, so the binary path is not gated on it.)
+  The bash `provision.sh` shim remains the live `/papi/bootstrap` entrypoint until
+  the binary path is proven end to end.
 - **Installer, not content.** The binary owns ordering and execution; the work
   each phase performs lives in eng (RFC-0003 §3). Reboot-resume on NixOS depends
   on eng's apply-host-profile module emitting the resume unit per the RFC-0003 §7
