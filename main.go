@@ -26,6 +26,7 @@ import (
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
+	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
 	"github.com/itchyny/gojq"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/ssh"
@@ -73,6 +74,7 @@ func main() {
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newEnrollCmd())
 	root.AddCommand(newVerifyReceiptCmd())
+	root.AddCommand(newSignChallengeCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -1615,5 +1617,73 @@ func newVerifyReceiptCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&domain, "domain", "",
 		"the PAPI domain whose published slot-9A keys must attest the receipt (required)")
+	return cmd
+}
+
+// newSignChallengeCmd is the client half of the RFC-0001 §5.2 sign-challenge
+// scheme: it answers a server-issued challenge by signing the domain-separated
+// nonce with the caller's slot-9A key (papi#31). The signing primitive is the same
+// piggy direct-PCSC byte-signer `papi enroll` uses; this exposes it as a
+// challenge-answerer rather than net-new crypto.
+func newSignChallengeCmd() *cobra.Command {
+	var domain, guid, pin string
+	cmd := &cobra.Command{
+		Use:   "sign-challenge --domain <domain>",
+		Short: "Sign a §5.2 auth challenge with slot-9A, emitting the /papi/auth/response body",
+		Long: "Read a PAPI sign-challenge — the POST /papi/auth/challenge response JSON " +
+			"{challenge_id, nonce, expires_at} — on stdin, build the §5.2 domain-separated " +
+			"preimage papi-auth-v1\\n<domain>\\n<nonce>, sign SHA-256(preimage) with the " +
+			"caller's PIV slot-9A key (ECDSA P-256, via `piggy sign-bytes --slot 9a` — the " +
+			"card must be physically present; no agent), and print the POST " +
+			"/papi/auth/response body {challenge_id, signature} on stdout, where signature " +
+			"is a papi-auth-sig-v1@ecdsa_p256_sig markl id (raw 64-byte r‖s). --domain is " +
+			"the PAPI identity domain the signature binds to; it is never echoed by the " +
+			"challenge (cross-site relay defense), so it must be supplied here. With no " +
+			"--guid the sole provisioned card is used; --pin passes the slot-9A PIN to " +
+			"piggy. The server verifies the signature against the registered slot-9A key " +
+			"and mints a session — this command performs no network I/O itself.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if domain == "" {
+				return fmt.Errorf("--domain is required (the PAPI identity domain the §5.2 signature binds to)")
+			}
+			ctx := cmd.Context()
+			raw, err := io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return fmt.Errorf("read challenge JSON from stdin: %w", err)
+			}
+			ch, err := signchallenge.ParseChallenge(raw)
+			if err != nil {
+				return err
+			}
+			// Default to the sole provisioned card (same resolution `papi enroll`
+			// uses for its attester) — errors rather than guess among several.
+			if guid == "" {
+				cards, err := enroll.ListCards(ctx, enroll.ExecRunner)
+				if err != nil {
+					return err
+				}
+				if guid, err = enroll.ResolveTrustedGUID(cards, ""); err != nil {
+					return err
+				}
+			}
+			resp, err := signchallenge.Sign(ctx, enroll.PiggySignBytesSigner{PIN: pin}, guid, domain, ch)
+			if err != nil {
+				return err
+			}
+			body, err := json.Marshal(resp)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(body))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&domain, "domain", "",
+		"PAPI identity domain the §5.2 signature binds to (required; e.g. staging.linenisgreat.com)")
+	cmd.Flags().StringVar(&guid, "guid", "",
+		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
+	cmd.Flags().StringVar(&pin, "pin", "",
+		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
 	return cmd
 }

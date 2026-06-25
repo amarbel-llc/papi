@@ -156,7 +156,7 @@ func ecdsaP256Body(t *testing.T, encoded string) string {
 
 // TestPapiOwnedVectors validates the papi-owned conformance vectors
 // (testdata/papi-sig-vectors.json) — the purposes papi registers itself under
-// ADR-0006 (papi-doc-sig-v1, papi-proof-sig-v1, papi-enroll-att-v1). Each round-trips through
+// ADR-0006 (papi-doc-sig-v1, papi-proof-sig-v1, papi-enroll-att-v1, papi-auth-sig-v1). Each round-trips through
 // Parse/Build, and its ecdsa_p256_sig body is cross-checked against the vendored
 // RFC-0002 framework vector: the blech32 checksum binds to the format, so the
 // body is purpose-independent and must equal the framework's canonical encoding.
@@ -183,7 +183,7 @@ func TestPapiOwnedVectors(t *testing.T) {
 		t.Fatalf("parse papi vectors: %v", err)
 	}
 
-	want := map[string]bool{PurposeDocSig: false, PurposeProofSig: false, PurposeEnrollAtt: false}
+	want := map[string]bool{PurposeDocSig: false, PurposeProofSig: false, PurposeEnrollAtt: false, PurposeAuthSig: false}
 	for _, v := range pf.Vectors {
 		t.Run(v.Name, func(t *testing.T) {
 			payload, err := hex.DecodeString(v.PayloadHex)

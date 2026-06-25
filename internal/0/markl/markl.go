@@ -47,6 +47,7 @@ const (
 	PurposeDocSig    = "papi-doc-sig-v1"    // PAPI document signature (§10)
 	PurposeProofSig  = "papi-proof-sig-v1"  // PAPI identity-proof claim signature (§9.3)
 	PurposeEnrollAtt = "papi-enroll-att-v1" // PAPI enrollment-receipt attestation (FDR-0001)
+	PurposeAuthSig   = "papi-auth-sig-v1"   // PAPI sign-challenge auth signature (§5.2)
 	PurposePIVAuth   = "piggy-piv_auth-v1"  // PIV slot-9A authentication key
 )
 

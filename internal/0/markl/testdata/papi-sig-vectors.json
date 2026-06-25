@@ -1,5 +1,5 @@
 {
-  "comment": "papi-owned markl-id conformance vectors. Per ADR-0006, papi registers its OWN purposes (papi-doc-sig-v1 = RFC-0001 §10 document signature; papi-proof-sig-v1 = §9.3 proof-claim signature; papi-enroll-att-v1 = FDR-0001 enrollment-receipt attestation) and owns these vectors; piggy's go/markl provides only the framework + the ecdsa_p256_sig format. The blech32 body is the framework encoding (binds to the format, not the purpose), so all three purposes share one body for one payload — see TestPapiOwnedVectors, which cross-checks it against the vendored RFC-0002 framework vector. The cross-domain fixture-assembly format is being settled in amarbel-llc/piggy#187.",
+  "comment": "papi-owned markl-id conformance vectors. Per ADR-0006, papi registers its OWN purposes (papi-doc-sig-v1 = RFC-0001 §10 document signature; papi-proof-sig-v1 = §9.3 proof-claim signature; papi-enroll-att-v1 = FDR-0001 enrollment-receipt attestation; papi-auth-sig-v1 = §5.2 sign-challenge auth signature) and owns these vectors; piggy's go/markl provides only the framework + the ecdsa_p256_sig format. The blech32 body is the framework encoding (binds to the format, not the purpose), so all four purposes share one body for one payload — see TestPapiOwnedVectors, which cross-checks it against the vendored RFC-0002 framework vector. The cross-domain fixture-assembly format is being settled in amarbel-llc/piggy#187.",
   "vectors": [
     {
       "name": "papi-doc-sig-v1/ecdsa_p256_sig",
@@ -21,6 +21,13 @@
       "format": "ecdsa_p256_sig",
       "payload_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
       "encoded": "papi-enroll-att-v1@ecdsa_p256_sig-qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0jqgfzyvjz2f389q5j52ev95hz7vp3xgengdfkxuurjw3m8s7nu0cywvqw8"
+    },
+    {
+      "name": "papi-auth-sig-v1/ecdsa_p256_sig",
+      "purpose": "papi-auth-sig-v1",
+      "format": "ecdsa_p256_sig",
+      "payload_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "encoded": "papi-auth-sig-v1@ecdsa_p256_sig-qqqsyqcyq5rqwzqfpg9scrgwpugpzysnzs23v9ccrydpk8qarc0jqgfzyvjz2f389q5j52ev95hz7vp3xgengdfkxuurjw3m8s7nu0cywvqw8"
     }
   ]
 }

@@ -40,9 +40,10 @@ cold-host self-bootstrap shim; `query` runs a jq expression
 over the document; `enroll` emits a signed enrollment receipt for a new
 YubiKey; `verify-receipt` checks that receipt against a domain's published
 keys (FDR-0001); `verified-recipients` distils a batch of receipts into the
-verified slot-9D encryption-recipient set (FDR-0002); `gh-check` reconciles
-your GitHub SSH keys against a domain's published keys; and `gh-auth` grants gh
-the scopes those GitHub commands need.
+verified slot-9D encryption-recipient set (FDR-0002); `sign-challenge` answers a
+§5 auth challenge by signing the server's nonce with your slot-9A key; `gh-check`
+reconciles your GitHub SSH keys against a domain's published keys; and `gh-auth`
+grants gh the scopes those GitHub commands need.
 
 ### `papi validate <domain>`
 
@@ -354,6 +355,28 @@ piggy-recipient-v1@pivy_ecdh_p256_pub-qfjr3sgs…
 # enroll-receipt-bogus.json: excluded — attestation: …not published…   (stderr)
 ```
 
+### `papi sign-challenge --domain <domain>`
+
+Answer a [§5.2 sign-challenge](docs/rfcs/0001-personal-api-papi-wire-format.md)
+(the RECOMMENDED `papi/v0` auth scheme): read the server's challenge JSON
+(`{challenge_id, nonce, expires_at}`, the `POST /papi/auth/challenge` response) on
+**stdin**, build the domain-separated preimage `papi-auth-v1\n<domain>\n<nonce>`,
+sign `SHA-256(preimage)` with your PIV **slot-9A** key (ECDSA P-256, via `piggy
+sign-bytes --slot 9a` — the card must be present; no agent), and print the `POST
+/papi/auth/response` body `{challenge_id, signature}` on **stdout**, where
+`signature` is a `papi-auth-sig-v1@ecdsa_p256_sig` markl id (raw 64-byte `r‖s`).
+`--domain` is the PAPI identity domain the signature binds to — it is **never
+echoed** by the challenge (cross-site relay defense), so you supply it. With no
+`--guid` the sole provisioned card is used; `--pin` passes the slot-9A PIN. The
+command does no network I/O itself — the caller POSTs the body and the server
+verifies it against the registered slot-9A key, minting a session.
+
+```console
+$ echo '{"challenge_id":"a1b2…","nonce":"3f9c…","expires_at":1750000000}' \
+    | papi sign-challenge --domain staging.example.com --pin ******
+{"challenge_id":"a1b2…","signature":"papi-auth-sig-v1@ecdsa_p256_sig-qqqsyq…"}
+```
+
 ### `papi gh-check <domain>`
 
 Cross-check `<domain>`'s published slot-9A keys — **the domain is the source of
@@ -442,11 +465,12 @@ internal/0/papi/       HTTP client + wire-format decoders + enrollment receipt
 internal/0/markl/      markl-id (blech32) parser (RFC-0002)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
+internal/alfa/signchallenge/  the sign-challenge command: §5.2 preimage + slot-9A response
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
 cmd/papi-client-wasm/  network-free RFC-0001 decode/verify core, built to js/wasm (FDR-0007)
 clients/ts/            TypeScript client wrapper over the js/wasm core (FDR-0007)
 nix/hm, nix/nixos/     the papi-ssh-sync home-manager + NixOS modules (FDR-0005)
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, ssh-sync, bootstrap, gh-check, gh-auth, person, enroll, verify-receipt, verified-recipients)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, ssh-sync, bootstrap, gh-check, gh-auth, person, enroll, verify-receipt, verified-recipients, sign-challenge)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic
