@@ -52,15 +52,26 @@ the library method.
 ### The shim (eng-owned, self-contained `provision.sh`)
 
 The served body is eng's self-contained `bin/provision.sh` (`bin/up.sh` is a thin
-alias that execs it). It:
+alias: `exec "$(dirname "$0")/provision.sh"`). The **same script** is both the
+served shim and the in-checkout provisioner — it path-selects on `$0` (eng#201's
+unified idempotent provisioner, eng `docs/features/0006-unified-idempotent-provisioner.md`):
 
-1. `git clone`s eng over **HTTPS** from a hardcoded public URL (`ENG_GIT_URL`
-   override for tests). HTTPS, not SSH / `/papi/repos`+`jq`: on a cold host the
-   pivy / ssh-agent-mux stack and `jq` do not exist yet (home-manager installs
-   them inside `provision.sh`), and `amarbel-llc/eng` is public.
-2. stages the host (nix → tools → identity bootstrap from PAPI keyed on card GUID
-   → rcm → home-manager). The `/papi/repos`+`jq`+SSH sibling-repo cascade runs
-   **inside** `provision.sh`, after the agent and `jq` exist.
+1. **Cold bootstrap** — run via `curl … | sh`, so `$0` is not an eng checkout.
+   Preflight, then `git clone`/`pull` eng over **HTTPS** from a hardcoded public
+   URL (`ENG_GIT_URL` override for tests), then hand off to the on-disk copy:
+   `ENG_PROVISION_REEXEC=1 exec ~/eng/bin/provision.sh`. HTTPS, not SSH /
+   `/papi/repos`+`jq`: on a cold host the pivy / ssh-agent-mux stack and `jq` do
+   not exist yet (home-manager installs them inside `provision.sh`), and
+   `amarbel-llc/eng` is public.
+2. **In-checkout run** — the re-exec'd copy (or any invocation from within the eng
+   checkout) runs the provisioning Steps 0–6: nix → tools → identity bootstrap
+   from PAPI keyed on card GUID → rcm → home-manager. The `/papi/repos`+`jq`+SSH
+   sibling-repo cascade runs **here**, after the agent and `jq` exist.
+
+The `$0` path-select + `ENG_PROVISION_REEXEC` re-exec means the served shim and the
+committed provisioner are **one artifact**: the cold entrypoint is just the
+in-checkout provisioner reached via a clone-and-re-exec preamble, so there is no
+second script to drift.
 
 ## Examples
 
@@ -111,3 +122,6 @@ alias that execs it). It:
 - RFC-0001 §4.2 (the endpoint), §5 (auth handshake), §12 (identity-bootstrap
   consumption).
 - eng: `bin/provision.sh` (the `bin/up.sh` alias execs it), `bin/clone-papi-repos.bash`.
+- eng#201 / eng `docs/features/0006-unified-idempotent-provisioner.md` — the
+  unified `provision.sh` (served shim == in-checkout provisioner via `$0`
+  path-select + `ENG_PROVISION_REEXEC` re-exec) this section mirrors.

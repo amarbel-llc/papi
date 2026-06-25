@@ -112,10 +112,10 @@ host-config repository (eng). Observable behavior:
   on eng's apply-host-profile module emitting the resume unit per the RFC-0003 §7
   contract.
 - **Signing and serving are separate.** Producing, signing (slot-9A), and serving
-  the binary, and the `/papi/bootstrap` body evolution that fetches it, are
-  tracked apart from this FDR.
+  the binary, and the `/papi/bootstrap` body evolution that fetches it, are tracked
+  apart from this FDR — the signing strategy is FDR-0008.
 - **macOS is partial.** Profile activation via `home-manager` is in scope; native
-  `codesign` of the binary for macOS is a later phase (papi#28 v2).
+  `codesign` of the binary for macOS is a later phase (FDR-0008, regime A v2).
 - **Card-path auth needs a live §5 box backend.** The slot-9D card/forwarded auth
   path (§5.1) and the encrypted person decrypt ride the box backend, currently
   absent/503 on the reference server (papi#8) — so a **card-based** host's auth
@@ -146,8 +146,9 @@ host-config repository (eng). Observable behavior:
 - FDR-0003 (`0003-papi-self-bootstrap-endpoint.md`) — the bash `provision.sh`
   self-bootstrap path this is the iteration-2 evolution of (supersedes once the
   binary path is proven; not yet).
-- papi#28 — the installer signing strategy (slot-9A binary signature + nix-closure
-  Ed25519); the `/papi/bootstrap` body evolution that fetches the signed binary.
+- FDR-0008 (`0008-installer-signing-strategy.md`) — the installer signing strategy
+  (slot-9A binary detached sig + Ed25519 nix-closure cache signing; consolidates
+  papi#28), plus the `/papi/bootstrap` body evolution that fetches the signed binary.
 - [cloud-init] — the boot-anchored-stages / frequencies / datasource model this
   installer adapts.
 - eng: `bin/provision.sh` (the staging content the installer's phases wrap),
