@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-24
 promotion-criteria: >
-  proposed → experimental: a recipe produces the client-core wasip1 module
+  proposed → experimental: a recipe produces the client-core js/wasm module
   exposing the decode/verify functions, and a TS test decodes a real `/papi`
   document and verifies its §10 signature through it — no network inside the wasm.
   experimental → testing: a zx/.mjs consumer (e.g. eng's bootstrap-identity) uses
@@ -28,11 +28,14 @@ its client as a portable module JS/TS consumers link directly.
 Two layers, structured so the **network-free core (1)** is usable on its own and a
 **convenience client (2)** wraps it for ergonomics:
 
-### 1. The wasip1 client core (network-free)
+### 1. The js/wasm client core (network-free)
 
-A wasm module (sibling of `papi-verify-wasm`, FDR-0002 — same `wasip1` target and
-TUI-free import discipline, so it never links the `huh`→`os/user` subtree)
-exposing **pure, network-free** functions over the RFC-0001 wire format:
+A wasm module (sibling of `papi-verify-wasm`, FDR-0002 — same TUI-free import
+discipline, so it never links the `huh`→`os/user` subtree) exposing **pure,
+network-free** functions over the RFC-0001 wire format. It targets `js/wasm`
+(`GOOS=js GOARCH=wasm`), driven via Go's `wasm_exec.js`, **not** `wasip1`: Bun (the
+chosen runtime) cannot instantiate a Go `wasip1` module through its `node:wasi`
+(see *Decision* below). The functions:
 
 - **decode** — discovery (§4.1), the projected document (§1), and the
   `repos` / `profiles` / `caches` / `piggy-ids` / `ssh-authorized-keys` payloads
@@ -44,8 +47,9 @@ exposing **pure, network-free** functions over the RFC-0001 wire format:
   (`papi-auth-v1\n<domain>\n<nonce>`), encode/decode the `papi-auth-sig-v1` markl,
   and verify a published-key match (§5.2).
 
-It is network-free by construction (a `wasip1` module has no sockets): bytes in,
-decoded/verified results out — exactly the FDR-0002 pattern, broadened from
+It is network-free by construction (the core registers only a pure
+`papiCall(reqJSON) -> resJSON` function via `syscall/js`; it opens no sockets):
+bytes in, decoded/verified results out — the FDR-0002 pattern, broadened from
 receipt-verify to the whole read/verify surface.
 
 ### 2. The TypeScript client wrapper
@@ -78,21 +82,54 @@ import { decodeDocument, verifyDocument } from "@amarbel/papi/core"
 const doc = decodeDocument(rawBytesFromElsewhere)
 ```
 
+## Decision: js/wasm, not wasip1
+
+The original design (and FDR-0002) targeted `wasip1`, driven via Node-style
+`node:wasi`. That does **not** work under **Bun**, the chosen runtime: Bun's
+`node:wasi` cannot instantiate a Go `wasip1` module — it throws `RuntimeError: Out
+of bounds memory access` inside `start()` before the module runs. Verified
+empirically across every currently-shipping Bun (all the non-baseline avx2 build),
+on an identical 6.7 MB module:
+
+| Bun build | Result on the Go wasip1 module |
+|---|---|
+| 1.3.13 (devshell) | OOB at `node:wasi` `start()` |
+| 1.3.14 (latest stable) | OOB at `node:wasi` `start()` |
+| 1.4.0-canary.1 (newest JSC + all merged `node:wasi` work) | OOB at `node:wasi` `start()` |
+
+It is **not** the baseline-build JSC-WASM bug (oven-sh/bun#22551 — our bun is the
+non-baseline `Linux x64` build) and it is **not** fixed by any released or canary
+version. The post-1.3.14 `node:wasi` merges (`getImportObject`/`initialize`/
+`path_open`) target Rust/programmatic-WASI ergonomics, not Go startup.
+
+The canonical Go `js/wasm` path (Go's `wasm_exec.js` + `syscall/js`) runs cleanly
+under the shipped Bun 1.3.13, including `syscall/js` round-trips. So the core
+targets `js/wasm`: `export_js.go` registers a synchronous `papiCall` global and
+parks on `select{}`; `clients/ts/papi.ts` loads `wasm_exec.js`, instantiates once,
+and calls `papiCall` per request. The same source still builds as a host CLI
+(`main.go`, stdin/stdout) so `dispatch()` stays unit-testable without a wasm host.
+(FDR-0002's verify core stays `wasip1` — its host is php-wasm, whose WASI runtime
+runs Go `wasip1` fine; only Bun's `node:wasi` is the blocker here.)
+
 ## Limitations
 
-- **Core is network-free; HTTP lives in TS.** The wasm has no sockets (`wasip1`);
-  the convenience client does the fetch in Node/zx. A non-Node host wires its own
+- **Core is network-free; HTTP lives in TS.** The core opens no sockets; the
+  convenience client does the fetch in Node/zx. A non-Node host wires its own
   fetch to the bare core.
 - **Signing is not in the core.** §5 sign-challenge / cert signing needs a private
   key (the card via pivy/piggy, or a held cert key) — out of scope for a
   read/verify client. The core builds the preimage and encodes/verifies; the
   key-holder signs.
-- **Not yet implemented.** This FDR is the design; the wasm function surface and
-  the TS package are the build-out. Reuses `build-wasm`/`wasip1` and FDR-0002's
-  TUI-free import discipline.
-- **Packaging TBD.** npm vs vendored vs served-via-PAPI is an open sub-question;
-  the artifact is the `.wasm` plus a `wasm_exec`-free `wasip1` loader and the TS
-  types.
+- **Partially implemented.** The js/wasm core (`cmd/papi-client-wasm`) and the TS
+  wrapper (`clients/ts/papi.ts`) exist and are exercised by `just test-ts`:
+  `decode_{document,discovery,repos,profiles,caches}` and `verify_document` (§10)
+  are wired. Still to do: a §10 verify against a **real signed** `/papi` fixture
+  (the promotion-to-experimental bar), §9 proof verify, and the §5 sign-challenge
+  helpers.
+- **Packaging: flake output.** The artifact is `papi.ts` + the `js/wasm` module +
+  Go's `wasm_exec.js`, distributed as a Nix flake output (not npm). The exact
+  derivation (a zero-dependency bundle vs igloo's bun2nix helpers) is the open
+  sub-question; the wrapper has no runtime deps beyond `node:` builtins + the wasm.
 
 ## More Information
 

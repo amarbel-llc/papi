@@ -52,11 +52,15 @@ build-wasm:
     @ls -lh build/papi-verify.wasm
 
 # Cross-build the network-free client core (cmd/papi-client-wasm, FDR-0007) to a
-# wasip1 WASM module — the decode/verify surface a TS/zx wrapper drives. In `build`
-# so the merge pre-hook keeps the client core wasip1-able (no TUI/os.user import).
+# js/wasm module — the decode/verify surface a TS/zx wrapper drives via Go's
+# wasm_exec.js (copied beside the wasm; the loader reads it as a sibling). js/wasm
+# rather than wasip1 because Bun's node:wasi cannot instantiate a Go wasip1 module
+# (FDR-0007). In `build` so the merge pre-hook keeps the client core wasm-able (no
+# TUI/os.user import).
 build-wasm-client:
-    nix develop --command env GOOS=wasip1 GOARCH=wasm go build -o build/papi-client.wasm ./cmd/papi-client-wasm
-    @ls -lh build/papi-client.wasm
+    nix develop --command env GOOS=js GOARCH=wasm go build -o build/papi-client.wasm ./cmd/papi-client-wasm
+    @install -m 0644 "$(nix develop --command go env GOROOT)/lib/wasm/wasm_exec.js" build/wasm_exec.js
+    @ls -lh build/papi-client.wasm build/wasm_exec.js
 
 # Full nix build of the papi CLI (injects the real version/commit).
 build-nix:
@@ -64,11 +68,18 @@ build-nix:
 
 # --- test ---
 
-test: test-go test-nix-hm-module
+test: test-go test-ts test-nix-hm-module
 
 # Hermetic Go test suite (httptest fixtures; no network, no card).
 test-go:
     nix develop --command go test ./...
+
+# Smoke-test the TypeScript client wrapper (clients/ts, FDR-0007): cross-build the
+# wasm core, then run its bun tests, which drive the wasm via node:wasi (path
+# handed in via $PAPI_CLIENT_WASM). Network-free — the fetch-based Client is not
+# exercised here.
+test-ts: build-wasm-client
+    nix develop --command env PAPI_CLIENT_WASM="$PWD/build/papi-client.wasm" bun test clients/ts
 
 # Smoke-test the `services.papi-ssh-sync` home-manager module: evaluate it
 # against synthetic configs (lib.evalModules, no home-manager input) and verify

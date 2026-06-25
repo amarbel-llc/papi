@@ -145,6 +145,11 @@
             # live test) execs the same piggy the wrapped binary does — not the
             # operator's ambient PATH piggy.
             piggyPkg
+            # bun: runtime + bundler for the TypeScript client wrapper
+            # (clients/ts, FDR-0007). The bun2nix lockfile generation and the
+            # `build-ts` recipe run under it; igloo's overlay carries the
+            # buildBunBinary/buildZxScript helpers that consume the lockfiles.
+            pkgs.bun
           ];
         };
       }

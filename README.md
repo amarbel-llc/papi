@@ -443,6 +443,8 @@ internal/0/markl/      markl-id (blech32) parser (RFC-0002)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
+cmd/papi-client-wasm/  network-free RFC-0001 decode/verify core, built to js/wasm (FDR-0007)
+clients/ts/            TypeScript client wrapper over the js/wasm core (FDR-0007)
 nix/hm, nix/nixos/     the papi-ssh-sync home-manager + NixOS modules (FDR-0005)
 main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, ssh-sync, bootstrap, gh-check, gh-auth, person, enroll, verify-receipt, verified-recipients)
 ```
