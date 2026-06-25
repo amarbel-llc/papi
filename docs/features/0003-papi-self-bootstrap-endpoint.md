@@ -82,6 +82,41 @@ second script to drift.
     $ papi bootstrap linenisgreat.com | less
     $ papi bootstrap linenisgreat.com > provision.sh   # review, then: sh provision.sh
 
+## Evolution: the binary-fetching shim (iter-2)
+
+The endpoint **contract is unchanged** — `GET /papi/bootstrap` stays a public,
+unprojected `text/plain` shim run as `curl … | sh`, so there is **no RFC version
+bump**. What evolves is the **shim body**: instead of cloning eng and exec'ing
+`provision.sh` (the bash path above), the iter-2 shim fetches, **verifies**, and
+execs the signed **staged installer binary** (FDR-0006). The bash shim stays the
+live entrypoint until the binary path is proven end to end; this section pins the
+shape the served body evolves into.
+
+The evolved shim:
+
+1. fetches the installer binary and its **detached slot-9A signature** from
+   resources served adjacent to `/papi/bootstrap` (e.g. `/papi/bootstrap.bin` and
+   `/papi/bootstrap.bin.sig`);
+2. **verifies before `exec`** (never `curl | sh` of an unverified binary): the
+   detached slot-9A (P-256) signature against the domain's published slot-9A ids
+   (`/papi/piggy-ids`, the §10.1 trust anchor) **and** a **digest pin** the shim
+   itself carries — so a tampered or substituted binary is rejected (FDR-0008
+   regime A);
+3. `exec`s the verified binary, which drives the RFC-0003 phases (FDR-0006).
+
+This closes the bash path's "no fetch-time verification" gap (below): the bash
+shim's only anchor is verbatim-from-eng hosting; the binary path adds a real
+signature + digest check before execution. The binary is FDR-0006; its signing
+(slot-9A detached sig — the Ed25519 leg is for nix closures, not the binary) is
+FDR-0008. Advertising the binary as a discovery resource (RFC-0001 §4.1
+`resources`) is a possible future **additive** affordance, deferred — the
+contract here needs none.
+
+Ownership: the **binary** is papi-built (FDR-0006) and **signed** slot-9A
+(FDR-0008); **serving** the shim + binary + sig is the domain's (linenisgreat);
+the **verify-before-exec + digest-pin** shape is specified here and carried in the
+served shim.
+
 ## Trust model
 
 - The shim is fetched **publicly, no auth**. The trust anchor is that the
@@ -101,9 +136,11 @@ second script to drift.
   HTTPS→SSH origin rewrite once the agent is up, and the cold-host hardening — lives
   in eng's `provision.sh`, not papi. papi serves the bytes verbatim and has no say
   in what they do.
-- **No fetch-time verification.** A host runs whatever the domain serves; the
-  defense is the verbatim-from-eng hosting plus a public, reviewed clone target,
-  not a signature on the shim. A future signed/pinned shim is an open decision.
+- **No fetch-time verification (bash path only).** The bash shim runs whatever the
+  domain serves; its defense is verbatim-from-eng hosting plus a public, reviewed
+  clone target, not a signature. The iter-2 binary-fetching shim (above) closes
+  this — it verifies a detached slot-9A signature + a digest pin before `exec`
+  (FDR-0008). Until that path is proven, the bash shim remains the live entrypoint.
 
 ## Ownership split
 
@@ -119,6 +156,9 @@ second script to drift.
   HTTPS-cold-clone correction.
 - FDR-0001 (`0001-papi-new-yubikey-enrollment.md`) — the enrollment receipt /
   provisioned card this consumes.
+- FDR-0006 (`0006-staged-host-installer.md`) — the staged installer binary the
+  iter-2 shim fetches + execs; FDR-0008 (`0008-installer-signing-strategy.md`) —
+  the slot-9A detached signature + digest the evolved shim verifies before `exec`.
 - RFC-0001 §4.2 (the endpoint), §5 (auth handshake), §12 (identity-bootstrap
   consumption).
 - eng: `bin/provision.sh` (the `bin/up.sh` alias execs it), `bin/clone-papi-repos.bash`.
