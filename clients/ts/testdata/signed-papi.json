@@ -1,0 +1,23 @@
+{
+  "data": {
+    "person": {
+      "handle": "fixture",
+      "name": "PAPI Fixture"
+    },
+    "piggy": {
+      "ssh_authorized_keys": []
+    },
+    "signatures": [
+      {
+        "key": "piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-qvjrxz6pzxpuas3kkzk7vwxetw4wz3wdsqfwxn7mzttzpl0j30sckr79hfx",
+        "sig": "papi-doc-sig-v1@ecdsa_p256_sig-y0hcagp8xp0mkullsuedpl86rtufshywzj7v8jg5nk205r3j5xus92n7ffjxv7v2n8a9h7qxdlrpme3yg3nyy2pdpa24n9se073r5jcz50jgx"
+      }
+    ],
+    "version": "papi/v0"
+  },
+  "meta": {
+    "type": "papi",
+    "version": "papi/v0",
+    "visibility": "public"
+  }
+}

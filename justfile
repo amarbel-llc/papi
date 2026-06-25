@@ -126,6 +126,13 @@ test-nix-hm-module:
 debug-sample-receipt:
     PAPI_GEN_SAMPLE=1 nix develop --command go test ./internal/alfa/enroll/ -run TestGenerateSampleReceipt -v
 
+# Regenerate the committed §10-signed /papi fixture (clients/ts/testdata/
+# signed-papi.json + signed-papi.pubid.txt) the bun §10-verify test consumes
+# (FDR-0007). Deterministic (fixed-seed key+sig); normal `test-go` skips it.
+[group("debug")]
+debug-signed-doc:
+    PAPI_GEN_SIGNED_DOC=1 nix develop --command go test ./internal/alfa/inspect/ -run TestGenerateSignedDocFixture -v
+
 # Inspect attached PIV cards (read-only, PIN-free) to verify provisioning state
 # before a live `papi enroll` run — which card is provisioned (slot 9D+9A) vs
 # blank. Runs via the PINNED piggy (the flake input papi uses), so blank cards
