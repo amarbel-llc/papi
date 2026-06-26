@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-06-25
-amendments: 16
+amended: 2026-06-26
+amendments: 17
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -215,10 +215,10 @@ unauthenticated request, the registered principal for an authenticated one.
 - `handle` — the subject handle,
 - `resources` — an object whose values are **absolute** URLs to `/papi`,
   `/papi/piggy-ids`, `/papi/ssh-authorized-keys`, `/papi/forges`, `/papi/repos`,
-  `/papi/organizations`, `/papi/sitemap`, (when the document advertises
-  templates, §7) `/papi/templates`, (when the document advertises proofs,
-  §9) `/papi/proofs`, (when the document advertises caches, §11)
-  `/papi/caches`, (when the document advertises host profiles, §13)
+  `/papi/organizations`, `/papi/sitemap`, (when its public projection is
+  non-empty, §7) `/papi/templates`, (when its public projection is non-empty,
+  §9) `/papi/proofs`, (when its public projection is non-empty, §11)
+  `/papi/caches`, (when its public projection is non-empty, §13)
   `/papi/profiles`, (when the document serves a self-bootstrap shim, §4.2)
   `/papi/bootstrap`, and
 - `auth` — `{scheme, challenge, response, present_session_as}`, where
@@ -234,6 +234,17 @@ array, so a client can verify document authorship (§10.3) from the always-publi
 discovery response without first fetching `/papi`.
 
 The discovery document MUST always be public (it is not projected).
+
+Because discovery is always public, a resource link for a **projectable** section
+— `templates` (§7), `proofs` (§9), `caches` (§11), `profiles` (§13), and
+`co_location` (§9.6) where a server serves it — MUST be listed in `resources` only
+when that section's **public projection** (the anonymous principal's view, §4.2) is
+non-empty. A section all of whose entries are gated MUST NOT be advertised, and its
+empty public projection SHOULD be omitted from the anonymous `GET /papi` rather than
+served as an empty array, so the always-public discovery surface never reveals the
+existence of a section the projection hides. The `signatures` member (§10) is
+exempt: it binds the public document and a §10.3 verifier reads it from the
+discovery response, so it is exposed whenever the document carries it.
 
 #### 4.2. Response envelope
 
@@ -522,8 +533,9 @@ the projected `templates[]` in the JSON envelope (§4.2):
 `meta.count` MUST be the number of entries in `data` after projection;
 `meta.visibility` follows §4.2. A server whose projected `templates[]` is empty
 MUST return a `200` with an empty `data` array (`count: 0`), not a `404`. The
-discovery document (§4.1) MUST list `templates` in `resources` with an absolute
-URL to `/papi/templates`.
+discovery document (§4.1) MUST list `templates` in `resources` (absolute URL to
+`/papi/templates`) only when the public projection of `templates[]` is non-empty;
+an all-gated `templates[]` MUST NOT be advertised (§4.1).
 
 ### 8. Template Resolution and Bootstrap
 
@@ -994,8 +1006,9 @@ projected `caches[]` in the JSON envelope (§4.2):
 `meta.count` MUST be the number of entries in `data` after projection;
 `meta.visibility` follows §4.2. A server whose projected `caches[]` is empty MUST
 return a `200` with an empty `data` array (`count: 0`), not a `404`. The discovery
-document (§4.1) MUST list `caches` in `resources` with an absolute URL to
-`/papi/caches`.
+document (§4.1) MUST list `caches` in `resources` (absolute URL to
+`/papi/caches`) only when the public projection of `caches[]` is non-empty; an
+all-private `caches[]` MUST NOT be advertised (§4.1).
 
 #### 11.4. Client consumption and bootstrap
 
@@ -1169,8 +1182,9 @@ projected `profiles[]` in the JSON envelope (§4.2):
 `meta.count` MUST be the number of entries in `data` after projection;
 `meta.visibility` follows §4.2. A server whose projected `profiles[]` is empty
 MUST return a `200` with an empty `data` array (`count: 0`), not a `404`. The
-discovery document (§4.1) MUST list `profiles` in `resources` with an absolute
-URL to `/papi/profiles`.
+discovery document (§4.1) MUST list `profiles` in `resources` (absolute URL to
+`/papi/profiles`) only when the public projection of `profiles[]` is non-empty;
+an all-gated `profiles[]` MUST NOT be advertised (§4.1).
 
 ## Security Considerations
 
@@ -1608,3 +1622,18 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   trust anchor are RESERVED pending implementation (Level C gated on the piggy
   attestation-export primitive, piggy#209). Updated the §1 member table and the §9
   intro (two proof families). Additive and OPTIONAL — no version bump.
+- **2026-06-26, Amendment 17 — Discovery advertises only non-empty public
+  projections (§4.1).** Closed a low-severity information leak: §4.1 (and
+  §7.3/§11.3/§13.3) required the always-public discovery document to list a
+  section's resource link whenever the document merely *carried* that section — so
+  an anonymous caller learned a gated-only section existed (e.g. an all-private
+  `caches[]` ⇒ private infra), though never its contents. Tightened the rule: a
+  resource link for a projectable section (`templates`, `proofs`, `caches`,
+  `profiles`, and `co_location` where served) MUST be listed only when that
+  section's **public projection** (the anonymous principal's view, §4.2) is
+  non-empty; an all-gated section MUST NOT be advertised, and its empty public
+  projection SHOULD be omitted from anonymous `GET /papi` rather than served as an
+  empty array. `signatures` (§10) stays exempt — public-by-construction, read from
+  discovery by a §10.3 verifier. Captured from a reference-server pentest fix
+  (friedenberg/linenisgreat#49, merged + live); realigns the spec with the
+  corrected server. Additive clarification of an OPTIONAL surface — no version bump.
