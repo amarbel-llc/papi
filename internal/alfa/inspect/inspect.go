@@ -68,6 +68,7 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 			"skipped; pass --recipient <id> [--decrypt-cmd <cmd>] to validate the authenticated tier"))
 	}
 	pts = append(pts, proofsChecks(ctx, c)...)
+	pts = append(pts, coLocationChecks(ctx, c)...)
 	pts = append(pts, signaturePoints(ctx, c)...)
 
 	emit(rep, pts)

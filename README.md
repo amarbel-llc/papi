@@ -50,8 +50,9 @@ grants gh the scopes those GitHub commands need.
 Fetch `<domain>`'s PAPI, report what it publishes, and check it against the
 RFC-0001 conformance contract — discovery, the `{data, meta}` envelope and
 `meta.visibility`, ACL-strip, projection, the `text/plain` endpoints, the auth
-error codes, identity-ownership proofs (§9), the detached document signature
-(§10), and the nix binary cache entry schema (§11). Output is an
+error codes, identity-ownership proofs (§9), key co-location proofs (§9.6), the
+detached document signature (§10), and the nix binary cache entry schema (§11).
+Output is an
 [ndjson-crap](https://github.com/amarbel-llc/crap) stream
 (pipe it to `crap-present` to render); the process exits non-zero on any MUST
 violation.

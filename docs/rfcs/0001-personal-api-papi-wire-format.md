@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-06-23
-amendments: 15
+amended: 2026-06-25
+amendments: 16
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -86,6 +86,7 @@ The document MAY contain these top-level members; all are OPTIONAL:
 | `sitemap`         | object | A domain → entries map.                                                   |
 | `templates[]`     | array  | Advertised nix flake templates for repo bootstrap (see §7).               |
 | `proofs[]`        | array  | Bidirectional identity-ownership proofs (see §9).                          |
+| `co_location[]`   | array  | Proofs binding a published slot-9A key to a published slot-9D recipient (see §9.6). |
 | `signatures[]`    | array  | Detached signatures binding the document to published keys (see §10).      |
 | `caches[]`        | array  | Advertised nix binary caches for substituter bootstrap (see §11).          |
 | `profiles[]`      | array  | Advertised host profiles (flakerefs) a staged installer activates (see §13). |
@@ -589,6 +590,12 @@ A proof therefore survives a change of host or domain: it is verifiable from the
 key side as well as the document side, which is the portability property a
 domain-bound assertion lacks.
 
+§9.1–§9.5 specify the **external-identity** proof family (`proofs[]`): binding the
+document's keys to *outside* accounts. §9.6 adds a second, distinct family — **key
+co-location** (`co_location[]`) — binding the document's *own* slot-9A
+authentication key to its *own* slot-9D encryption recipient, so a §5 caller
+authenticated by slot-9A can be trusted to act as the slot-9D identity.
+
 #### 9.1. `proofs[]`
 
 The OPTIONAL top-level `proofs[]` member is an array of **proof entries**. Each
@@ -693,6 +700,113 @@ serves the **claims**, not verdicts: a PAPI server MUST NOT itself fetch
 `proof_uri` or annotate entries with a verification outcome, because doing so would
 make the server an oracle for its own claims and defeat the third-party-verifier
 property of §9.4. Verification is the client/validator's job.
+
+#### 9.6. Key co-location proofs (`co_location[]`)
+
+PAPI auth proves control of a **slot-9A** key (§5 sign-challenge), but identity and
+encryption are anchored on **slot-9D**. For "authenticated as 9A ⇒ acts as the 9D
+identity" to be trustworthy, the document SHOULD carry a verifiable proof that the
+9A auth key and the 9D encryption key belong to the same identity. The OPTIONAL
+top-level `co_location[]` member is an array of such proofs.
+
+The proof is **asymmetric** by construction: slot 9D is ECDH-only and cannot sign,
+so there is no symmetric "each key signs the other". Every level is anchored on a
+slot-9A signature and/or hardware attestation. `co_location[]` is OPTIONAL and
+additive within `papi/v0`; a pre-§9.6 client ignores it. It MUST be projected exactly
+as every other node (§9.2): a `"private"` entry is dropped for principals its `acl`
+does not admit, and `acl` MUST be stripped from every serialized entry. A server MAY
+additionally serve the projected array at `GET /papi/co-location` in the §4.2
+envelope; the document member is authoritative.
+
+##### 9.6.1. Entry shape
+
+| Member      | Type   | Required | Meaning                                                                                   |
+| ----------- | ------ | -------- | ----------------------------------------------------------------------------------------- |
+| `id`        | string | MUST     | Stable identifier, unique within `co_location[]`.                                          |
+| `recipient` | string | MUST     | The published slot-9D recipient id (§5.1 grammar) being bound.                             |
+| `key`       | string | MUST     | The published slot-9A auth-key markl-id (`piggy-piv_auth-v1@…`) being bound.               |
+| `level`     | string | MUST     | Assurance achieved: `"soft"` (Level A), `"co-control"` (Level B), or `"attested"` (Level C). |
+| `claim`     | string | MUST     | The exact domain-separated statement the proof covers (§9.6.2).                            |
+| `sig`       | string | MUST     | A `papi-proof-sig-v1@ecdsa_p256_sig-…` markl-id: the slot-9A signature over `claim`.        |
+| `evidence`  | object | per-level | Additional Level B/C evidence; MUST be absent for Level A.                                 |
+
+`id` MUST be non-empty and unique; a verifier MUST refuse to evaluate a duplicated
+`id`. `recipient` MUST satisfy the §5.1 recipient grammar and SHOULD appear in
+`piggy.encryption_recipients[]`; `key` MUST be a **published** slot-9A key (the §10.1
+union: an `ssh_authorized_keys[]` point-match or a `/papi/piggy-ids`
+`piggy-piv_auth-v1@…` string-equality). A verifier MUST treat an entry whose
+`recipient` or `key` is not published as **unverifiable** (§9.6.3) — a proof MAY only
+bind keys the document itself publishes.
+
+##### 9.6.2. Levels
+
+`level` records the strength achieved. A producer SHOULD emit the **strongest level
+it can** for the card and record it; a verifier evaluates whatever level is present
+and MUST NOT report a weaker level's evidence as a stronger level.
+
+**Level A — soft binding (`"soft"`).** The published slot-9A key signs a
+domain-separated statement naming both keys. The `claim` MUST be exactly the literal
+
+      papi-key-co-location-v1 binds <recipient> to <key>
+
+— the prefix `papi-key-co-location-v1 binds `, the entry's `recipient`, the literal
+` to `, and the entry's `key`, with no surrounding whitespace. The `sig` MUST be a
+`papi-proof-sig-v1@ecdsa_p256_sig-…` markl-id (madder [RFC-0002]): a slot-9A ECDSA
+P-256 signature (raw 64-byte `r‖s`) over `SHA-256(claim)`, verifiable against `key`.
+Level A proves **co-control of slot-9A plus a claim of slot-9D**: the signer holds the
+9A key and asserts the 9D recipient is its sibling. It does **not** prove control of
+the 9D private key. `evidence` MUST be absent. (This is the published form of the
+FDR-0001 enrollment-receipt `self_proof`; the distinct `papi-key-co-location-v1`
+prefix domain-separates the two so neither signature can be replayed as the other,
+and both differ structurally from a §9.3 external-identity `claim`.)
+
+**Level B — mutual co-control (`"co-control"`).** Level A plus a one-time
+proof-of-control of the slot-9D private key: a nonce is encrypted to `recipient` (a
+piggy ebox), decrypted by the slot-9D key, and the recovered nonce is signed over by
+slot-9A — proving the **same actor holds both private keys**. This is an
+**enrollment-time** construction only and MUST NOT appear in the per-request §5 auth
+path. The evidence is carried in `evidence`; its exact wire encoding is **RESERVED**,
+to be pinned when Level B is implemented (papi#30). A verifier that does not
+understand a `"co-control"` entry's `evidence` MUST fall back to evaluating it as
+Level A (its `claim`/`sig` MUST still be a valid Level-A binding) rather than reject
+it outright.
+
+**Level C — hardware co-location (`"attested"`).** YubiKey PIV **attestation**
+certificates for both slots: each slot's key is attested by the on-device F9
+attestation key, both certificates chain to the **Yubico PIV attestation root CA**
+(the verifier's trust anchor), and both carry the **same device serial** in the
+Yubico extension (OID `1.3.6.1.4.1.41482.3.7`) — proving both keys were generated on,
+and reside on, **one physical token**. This level is **publisher-independent**:
+verifiable without trusting the document's author. The certificates are carried in
+`evidence`; its exact wire encoding and the pinned trust anchor are **RESERVED**, to
+be pinned when Level C is implemented — gated on a piggy attestation-export primitive
+(piggy#209). Same-silicon is the strongest assurance but **not** a requirement of the
+trust model: Levels A/B suffice for a self-published personal API; Level C is
+preferred where available because it removes the publisher from the trust path.
+
+##### 9.6.3. Verification
+
+A verifier evaluates each `co_location[]` entry to exactly one of three outcomes,
+mirroring §9.4:
+
+1. **verified** — the entry is well-formed; `recipient` and `key` are both published
+   (§9.6.1); and the evidence for its stated `level` checks out. For `"soft"`, the
+   `claim` MUST equal the §9.6.2 Level-A construction for this `recipient`/`key` and
+   `sig` MUST verify over `SHA-256(claim)` against `key`. The verifier reports the
+   keys as co-located **at the stated level**.
+2. **unverified** — the entry is well-formed but the signature fails, the `claim` does
+   not match the canonical construction, or the level's evidence is absent or invalid.
+   The binding is **not** proven; a verifier MUST NOT report it as proven.
+3. **unverifiable** — the entry is malformed: missing/duplicate `id`, a `recipient` or
+   `key` outside the published set, or an unrecognized `level`. The verifier reports
+   the defect and moves on.
+
+The check is **stateless and reproducible** from public inputs (the document and its
+published recipient/key sets), so any third party reaches the same verdict — the §9.4
+property. A verifier MUST NOT report a `level` stronger than the evidence proves: an
+`"attested"` entry whose attestation chain fails is **unverified**, even if its
+`claim`/`sig` would pass as Level A — though a verifier MAY separately report it as
+`"soft"`-verified.
 
 ### 10. Document Signature
 
@@ -1476,3 +1590,21 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   Security Considerations "Authorization header transport" note accordingly. From
   the reference server defaulting to header-only sessions (site-linenisgreat).
   Clarification of an existing OPTIONAL transport — no version bump.
+- **2026-06-25, Amendment 16 — Key co-location proofs (§9.6).** Added the OPTIONAL
+  top-level `co_location[]` member and §9.6: a second §9 proof family binding the
+  document's own published **slot-9A** auth key to its **slot-9D** encryption
+  recipient — the binding that makes "authenticated as 9A ⇒ acts as the 9D identity"
+  trustworthy — at three recorded strength levels. **A `"soft"`**: 9A signs the
+  domain-separated claim `papi-key-co-location-v1 binds <recipient> to <key>` under
+  `papi-proof-sig-v1` (the published form of the FDR-0001 receipt `self_proof`).
+  **B `"co-control"`**: a one-time slot-9D ECDH decrypt-proof signed over by 9A
+  (enrollment-time only, never in the §5 auth path). **C `"attested"`**: YubiKey PIV
+  attestation certs for both slots chaining to the Yubico PIV root and sharing a
+  device serial (publisher-independent). The proof is asymmetric — slot 9D is
+  ECDH-only and cannot sign. Verification follows the §9.4 three-outcome model
+  (verified / unverified / unverifiable) and reports the achieved level, never a
+  weaker level's evidence as a stronger one. Level A is normatively pinned and
+  implemented (papi#30); the B/C `evidence` wire encodings and the Level-C Yubico
+  trust anchor are RESERVED pending implementation (Level C gated on the piggy
+  attestation-export primitive, piggy#209). Updated the §1 member table and the §9
+  intro (two proof families). Additive and OPTIONAL — no version bump.

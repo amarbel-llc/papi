@@ -279,6 +279,7 @@ type Document struct {
 	Sitemap       map[string]json.RawMessage `json:"sitemap"`
 	Templates     []Template                 `json:"templates"`
 	Proofs        []Proof                    `json:"proofs"`
+	CoLocation    []CoLocation               `json:"co_location"`
 	Caches        []Cache                    `json:"caches"`
 	Profiles      []Profile                  `json:"profiles"`
 	Signatures    []Signature                `json:"signatures"`
@@ -293,6 +294,19 @@ type Proof struct {
 	ProofURI  string `json:"proof_uri"`
 	Service   string `json:"service"`
 	Fmt       string `json:"fmt"`
+}
+
+// CoLocation is a key-co-location proof entry (RFC-0001 §9.6): it binds a
+// published slot-9D recipient to a published slot-9A key at a recorded assurance
+// Level ("soft", "co-control", or "attested"). Claim is the exact signed statement
+// and Sig is the slot-9A signature (a papi-proof-sig-v1 markl-id) over it.
+type CoLocation struct {
+	ID        string `json:"id"`
+	Recipient string `json:"recipient"`
+	Key       string `json:"key"`
+	Level     string `json:"level"`
+	Claim     string `json:"claim"`
+	Sig       string `json:"sig"`
 }
 
 // Signature is a detached document signature entry (RFC-0001 §10.1). It serves
