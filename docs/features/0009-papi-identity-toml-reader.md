@@ -1,5 +1,5 @@
 ---
-status: experimental
+status: testing
 date: 2026-06-29
 promotion-criteria: >
   exploring → proposed: this document. proposed → experimental: `papi identity
@@ -128,28 +128,31 @@ Rationale:
 empty-domain footgun (an absent key → sshd points at
 `~/.config/papi/ssh-sync/.keys`) is resolved **consumer-side**. Two ways exist —
 pass `--default <domain>` to `papi identity get papi.domain`, or guarantee the key
-is always materialized — and eng has chosen the latter: `bin/bootstrap-identity.mjs`
-already holds the domain as its irreducible bootstrap **seed** (it is the script
-that *writes* identity.toml and so cannot read the domain out of the file it
-creates), and will write `[papi] domain` from that seed; existing hosts are
-backfilled once. No `--default` literal therefore reappears at any call site, which
-is why `papi identity domain` stays default-less. eng's de-duplication net: the
-three duplicated literals (`bootstrap-identity.mjs`, `home/papi-ssh-sync.nix`,
-`bin/bootstrap-sshd-papi-keys.bash`) collapse to that one pre-existing seed.
+is always materialized — and eng has chosen the latter (now landed): eng
+centralizes the domain in a single **seed**, `lib/papi-domain.json`, read natively
+by nix `fromJSON` (the `home.identity.papi.domain` schema default) and by
+`bin/bootstrap-identity.mjs`, which materializes `[papi] domain` into identity.toml
+when it writes the file. No `--default` literal therefore reappears at any call
+site, which is why `papi identity domain` stays default-less. eng's de-duplication
+net: the three duplicated literals (`bootstrap-identity.mjs`, `home/papi-ssh-sync.nix`,
+`bin/bootstrap-sshd-papi-keys.bash`) collapse to that one seed. Backfilling
+already-provisioned hosts is a tracked, deferred eng followup — the schema default
+plus a fragment-glob fallback already cover them, so it does not block adoption.
 
 papi returning empty for an absent key is correct mechanism behavior, not a defect
 to paper over with a baked literal.
 
 ## Consumer adoption (eng-side — informational, not papi's to implement)
 
-eng's shared `eng_identity_field` will **prefer `papi` when it is on `PATH`, else
-fall back to the existing nix-eval read.** papi installs via home-manager
-(present from `provision.sh` step 6 onward); call sites that run earlier —
-`bin/bootstrap-nix-daemon.bash` (step 2) and, on Darwin,
-`bin/bootstrap-builder-papi-keys.bash` (step 5, before `darwin-rebuild`) — run
-before papi is on `PATH` and use the nix fallback. nix is guaranteed at all those
-sites; papi is not. **This CLI does not solve cold-host bootstrap — eng's fallback
-shim does.**
+Landed on eng master. eng's shared `eng_identity_field` (generalized to any
+dotted path) **prefers `papi identity get <path> --default <d> --file <toml>` when
+`papi` is on `PATH`, else falls back to a nix-eval `fromTOML` read.** papi is on
+`PATH` from `provision.sh` step 1 (it ships in eng's default package set /
+`result/bin`), so the nix-eval fallback covers **version skew** — a papi too old
+to carry the `identity` command — rather than papi *absence*. nix is the
+guaranteed floor everywhere. **This CLI does not need to solve cold-host bootstrap;
+eng's fallback shim handles the skew case.** (`--file` is fed from eng's
+`ENG_IDENTITY_TOML` bats hook.)
 
 ## Examples
 
