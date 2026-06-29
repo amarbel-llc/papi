@@ -29,6 +29,7 @@ import (
 	"github.com/amarbel-llc/crap/go-crap/v2/viewport"
 	"github.com/amarbel-llc/papi/internal/0/identity"
 	"github.com/amarbel-llc/papi/internal/0/papi"
+	"github.com/amarbel-llc/papi/internal/alfa/authproxy"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
 	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
@@ -82,6 +83,7 @@ func main() {
 	root.AddCommand(newSignChallengeCmd())
 	root.AddCommand(newIdentityCmd())
 	root.AddCommand(newSignChallengeServeCmd())
+	root.AddCommand(newAuthVerifierCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -1907,19 +1909,7 @@ func newSignChallengeServeCmd() *cobra.Command {
 				WriteTimeout:      60 * time.Second,
 				IdleTimeout:       120 * time.Second,
 			}
-			serveErr := make(chan error, 1)
-			go func() { serveErr <- srv.Serve(ln) }()
-			select {
-			case err := <-serveErr:
-				if err != nil && !errors.Is(err, http.ErrServerClosed) {
-					return err
-				}
-				return nil
-			case <-ctx.Done():
-				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				return srv.Shutdown(shutdownCtx)
-			}
+			return serveHTTP(ctx, srv, ln)
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:0",
@@ -1956,4 +1946,115 @@ func newServeLogger(format string) (*slog.Logger, error) {
 		return nil, fmt.Errorf("--log-format must be text or json (got %q)", format)
 	}
 	return slog.New(h), nil
+}
+
+// serveHTTP runs srv on ln until ctx is cancelled (SIGINT), then drains in-flight
+// requests with a bounded deadline. Shared by the oracle and verifier commands.
+func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener) error {
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+	select {
+	case err := <-serveErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			return err
+		}
+		return nil
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return srv.Shutdown(shutdownCtx)
+	}
+}
+
+// newAuthVerifierCmd runs the FDR-0014 PAPI-session forward-auth verifier: the nginx
+// `auth_request` target (/auth/verify) plus the card-login flow (/auth/login →
+// /auth/callback) that mints a signed __papi_session cookie from an oracle
+// attestation (validate-at-mint). It holds the verifier-only cookie HMAC key and the
+// oracle's Ed25519 PUBLIC key — so it verifies a card login but can never forge one.
+func newAuthVerifierCmd() *cobra.Command {
+	var addr, cookieKeyFile, oraclePubFile, oracleLogin, externalURL, cookieDomain, logFormat string
+	var allowPrincipals, allowGroups []string
+	var cookieSecure bool
+	cmd := &cobra.Command{
+		Use:   "auth-verifier --cookie-key-file <f> --oracle-pubkey-file <f> --oracle-login <url> --external-url <url>",
+		Short: "Run the FDR-0014 PAPI-session forward-auth verifier (nginx auth_request)",
+		Long: "Serve the forward-auth verifier behind nginx `auth_request` (circus FDR-0014). " +
+			"/auth/verify validates the signed __papi_session cookie + the principal/groups " +
+			"allowlist → 200 with Remote-User/Remote-Groups (nginx maps Remote-User → " +
+			"X-WEBAUTH-USER for Forgejo) or 401. /auth/login → /auth/callback run a card login via " +
+			"the oracle and mint the cookie ONCE (validate-at-mint; no per-request PAPI call). The " +
+			"verifier holds only the oracle's Ed25519 PUBLIC key (--oracle-pubkey-file) and its own " +
+			"cookie HMAC key (--cookie-key-file), so it can verify a login but never forge one.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			for _, req := range []struct{ name, val string }{
+				{"cookie-key-file", cookieKeyFile}, {"oracle-pubkey-file", oraclePubFile},
+				{"oracle-login", oracleLogin}, {"external-url", externalURL},
+			} {
+				if req.val == "" {
+					return fmt.Errorf("--%s is required", req.name)
+				}
+			}
+			cookieKey, err := authproxy.LoadCookieKey(cookieKeyFile)
+			if err != nil {
+				return err
+			}
+			oraclePub, err := authproxy.LoadOraclePub(oraclePubFile)
+			if err != nil {
+				return err
+			}
+			logger, err := newServeLogger(logFormat)
+			if err != nil {
+				return err
+			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer stop()
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return fmt.Errorf("listen on %s: %w", addr, err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"papi auth-verifier: forward-auth on http://%s (/auth/verify, /auth/login, /auth/callback; external %s; oracle %s)\n",
+				ln.Addr(), externalURL, oracleLogin)
+			srv := &http.Server{
+				Handler: authproxy.VerifierHandler(authproxy.VerifierConfig{
+					CookieKey:       cookieKey,
+					OraclePub:       oraclePub,
+					OracleLogin:     oracleLogin,
+					ExternalURL:     externalURL,
+					AllowPrincipals: authproxy.Set(allowPrincipals),
+					AllowGroups:     authproxy.Set(allowGroups),
+					CookieSecure:    cookieSecure,
+					CookieDomain:    cookieDomain,
+					Logger:          logger,
+				}),
+				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       15 * time.Second,
+				WriteTimeout:      30 * time.Second,
+				IdleTimeout:       120 * time.Second,
+			}
+			return serveHTTP(ctx, srv, ln)
+		},
+	}
+	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:0",
+		"address to listen on (ephemeral port if :0)")
+	cmd.Flags().StringVar(&cookieKeyFile, "cookie-key-file", "",
+		"file with the verifier-only HMAC cookie key (>= 32 bytes; required)")
+	cmd.Flags().StringVar(&oraclePubFile, "oracle-pubkey-file", "",
+		"file with the oracle's Ed25519 public key, base64 (required)")
+	cmd.Flags().StringVar(&oracleLogin, "oracle-login", "",
+		"the oracle's /authorize URL the login flow redirects to (required)")
+	cmd.Flags().StringVar(&externalURL, "external-url", "",
+		"the verifier's external base URL, scheme://host (required; the attestation audience)")
+	cmd.Flags().StringSliceVar(&allowPrincipals, "allow-principal", nil,
+		"allowed principal (repeatable; empty allowlist = any authenticated card login)")
+	cmd.Flags().StringSliceVar(&allowGroups, "allow-group", nil,
+		"allowed group (repeatable)")
+	cmd.Flags().BoolVar(&cookieSecure, "cookie-secure", true,
+		"set Secure on the session cookie (requires HTTPS; set false only for plain-HTTP tailnet)")
+	cmd.Flags().StringVar(&cookieDomain, "cookie-domain", "",
+		"session cookie Domain (default: host-only)")
+	cmd.Flags().StringVar(&logFormat, "log-format", "text",
+		"log output format: text or json")
+	return cmd
 }
