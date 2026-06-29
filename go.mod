@@ -3,6 +3,7 @@ module github.com/amarbel-llc/papi
 go 1.26
 
 require (
+	github.com/BurntSushi/toml v1.6.0
 	github.com/amarbel-llc/crap/go-crap/v2 v2.2.2
 	github.com/charmbracelet/huh v1.0.0
 	github.com/gowebpki/jcs v1.0.1

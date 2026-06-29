@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: experimental
 date: 2026-06-29
 promotion-criteria: >
   exploring → proposed: this document. proposed → experimental: `papi identity

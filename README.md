@@ -42,8 +42,10 @@ YubiKey; `verify-receipt` checks that receipt against a domain's published
 keys (FDR-0001); `verified-recipients` distils a batch of receipts into the
 verified slot-9D encryption-recipient set (FDR-0002); `sign-challenge` answers a
 §5 auth challenge by signing the server's nonce with your slot-9A key; `gh-check`
-reconciles your GitHub SSH keys against a domain's published keys; and `gh-auth`
-grants gh the scopes those GitHub commands need.
+reconciles your GitHub SSH keys against a domain's published keys; `gh-auth`
+grants gh the scopes those GitHub commands need; and `identity get` / `identity
+domain` read scalar fields from the local `identity.toml` (the one command family
+that reads local config rather than a remote domain — FDR-0009).
 
 ### `papi validate <domain>`
 
@@ -413,6 +415,39 @@ browser/device flow). `--hostname` overrides the default `github.com`.
 $ papi gh-auth
 ```
 
+### `papi identity get <dotted.path>` / `papi identity domain`
+
+Read a scalar field from the local `identity.toml` — the canonical reader eng
+consumers use instead of hand-rolling `nix eval`/`grep` over the file
+([FDR-0009](docs/features/0009-papi-identity-toml-reader.md)). This is the one
+command family that reads **local config** rather than a remote domain. papi owns
+only the read *mechanism* (TOML parse, dotted-path lookup, default-on-absent, XDG
+resolution); it attaches no meaning to any field — the schema is the consumer's.
+
+`papi identity get <dotted.path>` prints the scalar at the path (e.g.
+`host.privilege-escalation`, `papi.domain`) with a trailing newline. The file is
+`$XDG_CONFIG_HOME/identity.toml`, falling back to `~/.config/identity.toml`;
+`--file` overrides it. When the file or the key is **absent**, it prints
+`--default` (empty if unset) and exits 0 — mirroring a shell `… or "<default>"`
+read, so it is safe under `set -e`. A present empty string is printed as-is (the
+default does not fire). A path resolving to a **table or array**, or a
+malformed/unreadable file, exits non-zero — a wrong path is a caller bug, not an
+absence.
+
+`papi identity domain` is sugar over `papi identity get papi.domain` — the one
+papi-semantic field, the host's PAPI identity domain (`[papi] domain`). It
+deliberately has **no built-in default and no `--default`**: papi stays
+domain-agnostic, so the domain's single source of truth is `identity.toml`, not
+papi's binary. An absent key prints empty and exits 0; for a fallback use the
+generic `papi identity get papi.domain --default <d>`.
+
+```console
+$ papi identity get host.privilege-escalation --default auto
+auto
+$ papi identity domain
+linenisgreat.com
+```
+
 ## Install
 
 The CLI is distributed as a Nix flake package — there is no non-Nix install
@@ -464,6 +499,7 @@ Run `just --list` for the full recipe set. Dependency changes go through
 docs/rfcs/             the PAPI wire-format spec (RFC-0001)
 internal/0/papi/       HTTP client + wire-format decoders + enrollment receipt
 internal/0/markl/      markl-id (blech32) parser (RFC-0002)
+internal/0/identity/   local identity.toml scalar reader (FDR-0009)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
 internal/alfa/signchallenge/  the sign-challenge command: §5.2 preimage + slot-9A response
@@ -473,7 +509,7 @@ cmd/papi-installer/    staged host installer: RFC-0003 phase engine + crap TUI (
 clients/ts/            TypeScript client wrapper over the js/wasm core (FDR-0007)
 internal/0/installer/  the RFC-0003 phase engine the installer drives (FDR-0006)
 nix/hm, nix/nixos/     the papi-ssh-sync home-manager + NixOS modules (FDR-0005)
-main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, ssh-sync, bootstrap, gh-check, gh-auth, person, enroll, verify-receipt, verified-recipients, sign-challenge)
+main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, ssh-sync, bootstrap, gh-check, gh-auth, person, enroll, verify-receipt, verified-recipients, sign-challenge, identity)
 ```
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic

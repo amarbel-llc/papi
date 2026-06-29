@@ -1158,3 +1158,114 @@ func TestQueryBadExpr(t *testing.T) {
 		t.Fatal("malformed jq expr should error")
 	}
 }
+
+// --- identity (FDR-0009) ---
+
+// identityFixture is a representative identity.toml for the CLI tests.
+const identityFixture = `[host]
+privilege-escalation = "sudo"
+empty = ""
+
+[papi]
+domain = "linenisgreat.com"
+`
+
+// writeIdentityFixture writes content to a temp identity.toml and returns its path.
+func writeIdentityFixture(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "identity.toml")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// runIdentity builds the identity command, runs it against args, and returns its
+// stdout and error (cobra dispatches to the get/domain subcommand named first).
+func runIdentity(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newIdentityCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+func TestIdentityGetScalar(t *testing.T) {
+	path := writeIdentityFixture(t, identityFixture)
+	out, err := runIdentity(t, "get", "host.privilege-escalation", "--file", path)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if strings.TrimSpace(out) != "sudo" {
+		t.Errorf("got %q, want sudo", out)
+	}
+}
+
+func TestIdentityGetAbsentKeyUsesDefault(t *testing.T) {
+	path := writeIdentityFixture(t, identityFixture)
+	out, err := runIdentity(t, "get", "host.does-not-exist", "--default", "auto", "--file", path)
+	if err != nil {
+		t.Fatalf("absent key with --default must exit 0: %v", err)
+	}
+	if strings.TrimSpace(out) != "auto" {
+		t.Errorf("got %q, want auto", out)
+	}
+}
+
+func TestIdentityGetAbsentKeyNoDefaultIsEmpty(t *testing.T) {
+	path := writeIdentityFixture(t, identityFixture)
+	out, err := runIdentity(t, "get", "host.does-not-exist", "--file", path)
+	if err != nil {
+		t.Fatalf("absent key without --default must exit 0: %v", err)
+	}
+	if out != "\n" {
+		t.Errorf("got %q, want a single empty line", out)
+	}
+}
+
+func TestIdentityGetAbsentFileUsesDefault(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "nope.toml")
+	out, err := runIdentity(t, "get", "papi.domain", "--default", "fallback.example", "--file", missing)
+	if err != nil {
+		t.Fatalf("absent file with --default must exit 0: %v", err)
+	}
+	if strings.TrimSpace(out) != "fallback.example" {
+		t.Errorf("got %q, want fallback.example", out)
+	}
+}
+
+func TestIdentityGetNonScalarErrors(t *testing.T) {
+	path := writeIdentityFixture(t, identityFixture)
+	// "host" is a table; per the contract this is a caller bug → non-zero exit,
+	// and the default must NOT rescue it.
+	if _, err := runIdentity(t, "get", "host", "--default", "x", "--file", path); err == nil {
+		t.Fatal("a path resolving to a table must error even with --default")
+	}
+}
+
+func TestIdentityDomain(t *testing.T) {
+	path := writeIdentityFixture(t, identityFixture)
+	out, err := runIdentity(t, "domain", "--file", path)
+	if err != nil {
+		t.Fatalf("domain: %v", err)
+	}
+	if strings.TrimSpace(out) != "linenisgreat.com" {
+		t.Errorf("got %q, want linenisgreat.com", out)
+	}
+}
+
+func TestIdentityDomainAbsentIsEmpty(t *testing.T) {
+	// A file with no [papi] domain: the default-less accessor prints empty, exit 0.
+	path := writeIdentityFixture(t, "[host]\nprivilege-escalation = \"sudo\"\n")
+	out, err := runIdentity(t, "domain", "--file", path)
+	if err != nil {
+		t.Fatalf("absent domain must exit 0: %v", err)
+	}
+	if out != "\n" {
+		t.Errorf("got %q, want a single empty line", out)
+	}
+}

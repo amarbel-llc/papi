@@ -23,6 +23,7 @@ import (
 
 	"github.com/amarbel-llc/crap/go-crap/v2/crap"
 	"github.com/amarbel-llc/crap/go-crap/v2/viewport"
+	"github.com/amarbel-llc/papi/internal/0/identity"
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
@@ -75,6 +76,7 @@ func main() {
 	root.AddCommand(newEnrollCmd())
 	root.AddCommand(newVerifyReceiptCmd())
 	root.AddCommand(newSignChallengeCmd())
+	root.AddCommand(newIdentityCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -97,6 +99,102 @@ func newVersionCmd() *cobra.Command {
 			fmt.Fprintln(cmd.OutOrStdout(), selfID())
 		},
 	}
+}
+
+// newIdentityCmd is the parent of the local identity.toml readers (`get` and
+// `domain`). papi owns the read MECHANISM only — TOML parse, dotted-path lookup,
+// default-on-absent, XDG resolution — and attaches no meaning to any field (the
+// schema is the consumer's, e.g. eng's host.*). See FDR-0009.
+func newIdentityCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "identity",
+		Short: "Read fields from the local identity.toml",
+		Long: "Read scalar fields from the person's local identity.toml " +
+			"($XDG_CONFIG_HOME/identity.toml, else ~/.config/identity.toml). papi owns the " +
+			"read mechanism only — TOML parse, dotted-path lookup, default-on-absent, XDG " +
+			"resolution — and attaches no meaning to any field; the schema is the consumer's. " +
+			"See FDR-0009.",
+	}
+	cmd.AddCommand(newIdentityGetCmd())
+	cmd.AddCommand(newIdentityDomainCmd())
+	return cmd
+}
+
+// identityFilePath resolves which identity.toml to read: the --file override
+// when set, else the XDG default.
+func identityFilePath(file string) (string, error) {
+	if file != "" {
+		return file, nil
+	}
+	return identity.DefaultPath()
+}
+
+func newIdentityGetCmd() *cobra.Command {
+	var def, file string
+	cmd := &cobra.Command{
+		Use:   "get <dotted.path>",
+		Short: "Print the scalar at a dotted identity.toml path",
+		Long: "Read identity.toml and print the scalar at <dotted.path> (e.g. " +
+			"host.privilege-escalation, papi.domain), with a trailing newline. When the file " +
+			"or the key is absent, print --default (empty if unset) and exit 0 — mirroring a " +
+			"nix `... or \"<default>\"` read, so it is safe under set -e. A present empty " +
+			"string is printed as-is (the default does NOT fire). A path resolving to a " +
+			"table/array, or a malformed/unreadable file, exits non-zero.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path, err := identityFilePath(file)
+			if err != nil {
+				return err
+			}
+			value, found, err := identity.Lookup(path, args[0])
+			if err != nil {
+				return err
+			}
+			if !found {
+				value = def // empty string when --default is unset
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), value)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&def, "default", "",
+		"value to print when the file or key is absent (exit 0)")
+	cmd.Flags().StringVar(&file, "file", "",
+		"identity.toml path to read (default: $XDG_CONFIG_HOME/identity.toml, else ~/.config/identity.toml)")
+	return cmd
+}
+
+func newIdentityDomainCmd() *cobra.Command {
+	var file string
+	cmd := &cobra.Command{
+		Use:   "domain",
+		Short: "Print this host's PAPI identity domain from identity.toml",
+		Long: "Print the canonical PAPI identity domain — identity.toml's [papi] domain " +
+			"(dotted path papi.domain). Sugar over `papi identity get papi.domain`. papi " +
+			"carries NO built-in domain default and this accessor has no --default: an absent " +
+			"key prints empty and exits 0 (the value's single source of truth is " +
+			"identity.toml, not papi's binary — FDR-0009). For a fallback, use " +
+			"`papi identity get papi.domain --default <d>`.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			path, err := identityFilePath(file)
+			if err != nil {
+				return err
+			}
+			// found is intentionally ignored: an absent key yields the empty value,
+			// which is printed (empty line, exit 0). Only a non-scalar/parse error
+			// returns non-nil err.
+			value, _, err := identity.Lookup(path, "papi.domain")
+			if err != nil {
+				return err
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), value)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&file, "file", "",
+		"identity.toml path to read (default: $XDG_CONFIG_HOME/identity.toml, else ~/.config/identity.toml)")
+	return cmd
 }
 
 func newValidateCmd() *cobra.Command {
