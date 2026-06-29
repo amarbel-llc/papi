@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -11,9 +12,12 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
+	"time"
 
 	"github.com/amarbel-llc/papi/internal/0/markl"
+	"github.com/amarbel-llc/papi/internal/alfa/authproxy"
 )
 
 // TestPreimageBytes pins the §5.2 framing byte-for-byte: prefix, two single-LF
@@ -328,5 +332,116 @@ func TestLoginBrokerRunsHandshake(t *testing.T) {
 	}
 	if sess["session"] != "sess-1" {
 		t.Errorf("session = %v, want the broker to pass through sess-1", sess["session"])
+	}
+}
+
+// TestAuthorizeEmitsAttestation drives the /authorize browser flow end to end against
+// a fake PAPI server: it runs the §5 card login and redirects to the verifier
+// callback with an Ed25519 attestation that verifies under the oracle's public key
+// and carries the login nonce, the callback's origin as audience, and the
+// PiggySession's principal/groups/expires_at. Cardless (injected fakeSigner).
+func TestAuthorizeEmitsAttestation(t *testing.T) {
+	cardPriv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attPub, attPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const domain = "staging.linenisgreat.com"
+	const nonce = "0011223344556677"
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/papi", func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"auth": map[string]any{
+			"scheme": "piggy-sign-challenge", "challenge": base + "/papi/auth/challenge", "response": base + "/papi/auth/response",
+		}}})
+	})
+	mux.HandleFunc("/papi/auth/challenge", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"challenge_id": "c1", "nonce": nonce, "expires_at": 0}})
+	})
+	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
+		var body Response
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		id, err := markl.Parse(body.Signature)
+		if err != nil {
+			http.Error(w, "bad signature", http.StatusBadRequest)
+			return
+		}
+		r2 := new(big.Int).SetBytes(id.Payload[:32])
+		s2 := new(big.Int).SetBytes(id.Payload[32:])
+		digest := sha256.Sum256(Preimage(domain, nonce))
+		if !ecdsa.Verify(&cardPriv.PublicKey, digest[:], r2, s2) {
+			http.Error(w, "verify failed", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+			"session": "sess-1", "principal": "self", "groups": []string{"owner"}, "expires_at": int64(1782740000),
+		}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	const callback = "https://krone.example/auth/callback"
+	h := Handler(ServeConfig{
+		Signer: fakeSigner{cardPriv}, GUID: "G", Domain: domain, Target: srv.URL,
+		AttestKey: attPriv, AuthKeyID: "piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-x", AllowCallbacks: []string{callback},
+	})
+	target := "/authorize?callback=" + url.QueryEscape(callback) + "&state=ST&nonce=LOGINNONCE"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("/authorize = %d, want 302; body %s", rec.Code, rec.Body.String())
+	}
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loc.Scheme+"://"+loc.Host+loc.Path != callback {
+		t.Errorf("redirect = %s, want %s", loc, callback)
+	}
+	q := loc.Query()
+	if q.Get("state") != "ST" {
+		t.Errorf("state = %q, want ST (passed through)", q.Get("state"))
+	}
+	ac, err := authproxy.ParseAttest(attPub, q.Get("att"), time.Now())
+	if err != nil {
+		t.Fatalf("ParseAttest: %v", err)
+	}
+	if ac.Principal != "self" || ac.Nonce != "LOGINNONCE" || ac.Aud != "https://krone.example" {
+		t.Errorf("attest = %+v", ac)
+	}
+	if len(ac.Groups) != 1 || ac.Groups[0] != "owner" || ac.SessionExp != 1782740000 {
+		t.Errorf("attest groups/session_exp = %v / %d", ac.Groups, ac.SessionExp)
+	}
+}
+
+// TestAuthorizeRejectsBadCallback: a callback outside the allowlist is refused
+// BEFORE any card sign (403), and missing params are a 400 — the oracle never
+// attests to an audience it wasn't configured for.
+func TestAuthorizeRejectsBadCallback(t *testing.T) {
+	_, attPriv, _ := ed25519.GenerateKey(rand.Reader)
+	cardPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	h := Handler(ServeConfig{
+		Signer: fakeSigner{cardPriv}, GUID: "G", Domain: "d", Target: "http://unused.example",
+		AttestKey: attPriv, AuthKeyID: "x", AllowCallbacks: []string{"https://krone.example/auth/callback"},
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/authorize?callback="+url.QueryEscape("https://evil.example/cb")+"&state=S&nonce=N", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("evil callback = %d, want 403", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/authorize?callback="+url.QueryEscape("https://krone.example/auth/callback"), nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("missing params = %d, want 400", rec.Code)
 	}
 }

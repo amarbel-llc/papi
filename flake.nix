@@ -216,5 +216,10 @@
       # services.openssh.authorizedKeysFiles. See docs/features/0005.
       homeManagerModules.papi-ssh-sync = import ./nix/hm/papi-ssh-sync.nix self;
       nixosModules.papi-ssh-sync = import ./nix/nixos/papi-ssh-sync.nix self;
+
+      # The FDR-0014 forward-auth verifier as a systemd service. Curried with `self`
+      # so `package` defaults to self.packages.${system}.papi. A consumer (circus)
+      # imports it and fronts it with nginx auth_request.
+      nixosModules.papi-auth-verifier = import ./nix/nixos/papi-auth-verifier.nix self;
     };
 }

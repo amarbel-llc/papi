@@ -42,6 +42,23 @@ func LoadOraclePub(path string) (ed25519.PublicKey, error) {
 	return ed25519.PublicKey(dec), nil
 }
 
+// LoadOraclePriv reads the oracle's Ed25519 PRIVATE key from a file (standard-base64
+// of the 64 raw key bytes). It lives ONLY on the card machine (the oracle).
+func LoadOraclePriv(path string) (ed25519.PrivateKey, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read oracle private key %s: %w", path, err)
+	}
+	dec, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(b)))
+	if err != nil {
+		return nil, fmt.Errorf("decode oracle private key %s: %w", path, err)
+	}
+	if len(dec) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("oracle private key %s: %d bytes, want %d", path, len(dec), ed25519.PrivateKeySize)
+	}
+	return ed25519.PrivateKey(dec), nil
+}
+
 // set builds a lookup set from a slice (e.g. repeated --allow-principal flags).
 func set(items []string) map[string]bool {
 	if len(items) == 0 {

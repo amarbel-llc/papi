@@ -9,6 +9,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -84,6 +87,7 @@ func main() {
 	root.AddCommand(newIdentityCmd())
 	root.AddCommand(newSignChallengeServeCmd())
 	root.AddCommand(newAuthVerifierCmd())
+	root.AddCommand(newAuthAttestKeygenCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -1835,7 +1839,8 @@ func newSignChallengeCmd() *cobra.Command {
 // browser). It is the first production HTTP server in the papi binary, deliberately
 // minimal and loopback-only.
 func newSignChallengeServeCmd() *cobra.Command {
-	var addr, domain, origin, target, guid, pin, signerMode, configPath, logFormat string
+	var addr, domain, origin, target, guid, pin, signerMode, configPath, logFormat, attestKeyFile, authKeyID string
+	var allowCallbacks []string
 	cmd := &cobra.Command{
 		Use:   "sign-challenge-serve --domain <domain> --origin <spa-origin>",
 		Short: "Run a §5.2 card oracle (/sign + /login broker) for a browser SPA (papi#36)",
@@ -1893,9 +1898,21 @@ func newSignChallengeServeCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("listen on %s: %w", addr, err)
 			}
+			var attestKey ed25519.PrivateKey
+			if attestKeyFile != "" {
+				if target == "" || authKeyID == "" {
+					return fmt.Errorf("--attest-key-file requires --target and --auth-key-id")
+				}
+				if attestKey, err = authproxy.LoadOraclePriv(attestKeyFile); err != nil {
+					return err
+				}
+			}
 			routes := "/sign"
 			if target != "" {
 				routes = "/sign, /login"
+			}
+			if attestKey != nil {
+				routes += ", /authorize"
 			}
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"papi sign-challenge-serve: card oracle for %q on http://%s (%s; CORS origin %s; target %q)\n",
@@ -1903,6 +1920,7 @@ func newSignChallengeServeCmd() *cobra.Command {
 			srv := &http.Server{
 				Handler: signchallenge.Handler(signchallenge.ServeConfig{
 					Signer: signer, GUID: signGUID, Domain: domain, Origin: origin, Target: target, Logger: logger,
+					AttestKey: attestKey, AuthKeyID: authKeyID, AllowCallbacks: allowCallbacks,
 				}),
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       15 * time.Second,
@@ -1930,6 +1948,12 @@ func newSignChallengeServeCmd() *cobra.Command {
 		"optional TOML config file (addr/domain/origin/target/guid/signer/log_format); explicit flags override it")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text",
 		"log output format: text or json")
+	cmd.Flags().StringVar(&attestKeyFile, "attest-key-file", "",
+		"oracle Ed25519 private key file enabling /authorize (requires --target + --auth-key-id)")
+	cmd.Flags().StringVar(&authKeyID, "auth-key-id", "",
+		"this card's published slot-9A id, the §5 challenge subject for /authorize")
+	cmd.Flags().StringSliceVar(&allowCallbacks, "allow-callback", nil,
+		"exact verifier callback URL /authorize may attest to (repeatable)")
 	return cmd
 }
 
@@ -2056,5 +2080,37 @@ func newAuthVerifierCmd() *cobra.Command {
 		"session cookie Domain (default: host-only)")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text",
 		"log output format: text or json")
+	return cmd
+}
+
+// newAuthAttestKeygenCmd generates the oracle's Ed25519 attestation keypair: it
+// writes the PRIVATE key (base64) to --out (0600, card-machine only) and prints the
+// PUBLIC key (base64) to stdout — the value committed in-repo for the verifier.
+func newAuthAttestKeygenCmd() *cobra.Command {
+	var out string
+	cmd := &cobra.Command{
+		Use:   "auth-attest-keygen --out <private-key-file>",
+		Short: "Generate the oracle's Ed25519 attestation keypair (FDR-0014)",
+		Long: "Generate the Ed25519 keypair the /authorize oracle signs attestations with. The " +
+			"private key is written base64 to --out (0600; keep it on the card machine only); the " +
+			"public key is printed base64 to stdout — give that to the verifier as --oracle-pubkey-file " +
+			"(safe to commit in-repo). Run once on the oracle host.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if out == "" {
+				return fmt.Errorf("--out is required (where to write the private key)")
+			}
+			pub, priv, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(out, []byte(base64.StdEncoding.EncodeToString(priv)), 0o600); err != nil {
+				return fmt.Errorf("write private key %s: %w", out, err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), base64.StdEncoding.EncodeToString(pub))
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&out, "out", "", "file to write the Ed25519 private key (base64, 0600; required)")
 	return cmd
 }
