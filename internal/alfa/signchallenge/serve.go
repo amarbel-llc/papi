@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -32,6 +33,8 @@ type ServeConfig struct {
 	Target string
 	// HTTPClient is used for the broker's PAPI calls; defaults to a 20s client.
 	HTTPClient *http.Client
+	// Logger receives per-request and error logs; defaults to slog.Default().
+	Logger *slog.Logger
 }
 
 // Handler is the card oracle for the RFC-0001 §5.2 sign-challenge handshake
@@ -56,12 +59,53 @@ type ServeConfig struct {
 // for cardholders-only personal use, but state it; production hardening is out of
 // scope for this spike.
 func Handler(cfg ServeConfig) http.Handler {
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sign", signHandler(cfg))
+	mux.HandleFunc("/sign", withLogging(logger, "/sign", signHandler(cfg)))
 	if cfg.Target != "" {
-		mux.HandleFunc("/login", loginHandler(cfg))
+		mux.HandleFunc("/login", withLogging(logger, "/login", loginHandler(cfg, logger)))
 	}
 	return mux
+}
+
+// statusRecorder captures the response status so the logging middleware can report
+// it (net/http exposes no read-back of the written code).
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// withLogging logs one line per request — route, method, status, duration, remote —
+// at a level keyed to the status class (Info <400, Warn 4xx, Error 5xx). The broker
+// additionally logs which upstream leg failed.
+func withLogging(logger *slog.Logger, route string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		h(rec, r)
+		level := slog.LevelInfo
+		switch {
+		case rec.status >= 500:
+			level = slog.LevelError
+		case rec.status >= 400:
+			level = slog.LevelWarn
+		}
+		logger.LogAttrs(r.Context(), level, "request",
+			slog.String("route", route),
+			slog.String("method", r.Method),
+			slog.Int("status", rec.status),
+			slog.Duration("dur", time.Since(start)),
+			slog.String("remote", r.RemoteAddr),
+		)
+	}
 }
 
 // signHandler is the POST /sign signing oracle: §5.1 challenge JSON in → §5.2
@@ -100,7 +144,7 @@ func signHandler(cfg ServeConfig) http.HandlerFunc {
 
 // loginHandler is the POST /login broker: {auth_key_id} in → the minted session
 // out, running the whole §5 handshake against cfg.Target server-side.
-func loginHandler(cfg ServeConfig) http.HandlerFunc {
+func loginHandler(cfg ServeConfig, logger *slog.Logger) http.HandlerFunc {
 	httpc := cfg.HTTPClient
 	if httpc == nil {
 		httpc = &http.Client{Timeout: 20 * time.Second}
@@ -117,6 +161,12 @@ func loginHandler(cfg ServeConfig) http.HandlerFunc {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
+		// fail logs which upstream leg broke and returns the same "{leg}: {err}" body.
+		fail := func(leg string, err error, code int) {
+			logger.LogAttrs(r.Context(), slog.LevelError, "login leg failed",
+				slog.String("leg", leg), slog.Int("status", code), slog.String("err", err.Error()))
+			http.Error(w, leg+": "+err.Error(), code)
+		}
 		var req struct {
 			AuthKeyID string `json:"auth_key_id"`
 		}
@@ -131,27 +181,27 @@ func loginHandler(cfg ServeConfig) http.HandlerFunc {
 		ctx := r.Context()
 		auth, err := fetchDiscoveryAuth(ctx, httpc, base)
 		if err != nil {
-			http.Error(w, "discovery: "+err.Error(), http.StatusBadGateway)
+			fail("discovery", err, http.StatusBadGateway)
 			return
 		}
 		chRaw, err := postJSON(ctx, httpc, auth.Challenge, map[string]string{"auth_key_id": req.AuthKeyID})
 		if err != nil {
-			http.Error(w, "challenge: "+err.Error(), http.StatusBadGateway)
+			fail("challenge", err, http.StatusBadGateway)
 			return
 		}
 		ch, err := ParseChallenge(unwrapData(chRaw))
 		if err != nil {
-			http.Error(w, "challenge: "+err.Error(), http.StatusBadGateway)
+			fail("challenge", err, http.StatusBadGateway)
 			return
 		}
 		resp, err := Sign(ctx, cfg.Signer, cfg.GUID, cfg.Domain, ch)
 		if err != nil {
-			http.Error(w, "sign: "+err.Error(), http.StatusBadGateway)
+			fail("sign", err, http.StatusBadGateway)
 			return
 		}
 		sessRaw, err := postJSON(ctx, httpc, auth.Response, resp)
 		if err != nil {
-			http.Error(w, "response: "+err.Error(), http.StatusBadGateway)
+			fail("response", err, http.StatusBadGateway)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

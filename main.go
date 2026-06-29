@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -1832,28 +1833,53 @@ func newSignChallengeCmd() *cobra.Command {
 // browser). It is the first production HTTP server in the papi binary, deliberately
 // minimal and loopback-only.
 func newSignChallengeServeCmd() *cobra.Command {
-	var addr, domain, origin, target, guid, pin, signerMode string
+	var addr, domain, origin, target, guid, pin, signerMode, configPath, logFormat string
 	cmd := &cobra.Command{
 		Use:   "sign-challenge-serve --domain <domain> --origin <spa-origin>",
-		Short: "Run a loopback §5.2 signing oracle for a browser SPA (papi#36)",
-		Long: "Serve the §5.2 sign-challenge producing side over loopback HTTP so a browser " +
-			"SPA can obtain a slot-9A signature it cannot produce itself (no PCSC in a page). " +
-			"POST the POST /papi/auth/challenge response JSON {challenge_id, nonce, expires_at} " +
-			"to /sign and receive the POST /papi/auth/response body {challenge_id, signature} — " +
-			"signed via `piggy sign-bytes --slot 9a` (the card must be present; no agent). " +
+		Short: "Run a §5.2 card oracle (/sign + /login broker) for a browser SPA (papi#36)",
+		Long: "Serve the §5.2 sign-challenge producing side over HTTP so a browser SPA can obtain " +
+			"a slot-9A signature it cannot produce itself (no PCSC in a page). Two routes:\n\n" +
+			"  /sign  — POST a /papi/auth/challenge response {challenge_id, nonce, expires_at}; " +
+			"get back the /papi/auth/response body {challenge_id, signature}. The caller runs the " +
+			"network handshake; this signs only (the backend/plugin seam).\n" +
+			"  /login — (enabled by --target) POST {auth_key_id}; the oracle runs discovery → " +
+			"challenge → sign → response against --target server-side and returns the minted " +
+			"session, so a browser with no backend never calls the PAPI server cross-origin.\n\n" +
+			"Signing uses the --signer chooser: auto picks the forwarded SSH agent ($SSH_AUTH_SOCK) " +
+			"when set, else `piggy sign-bytes --slot 9a` (local PCSC); agent/pcsc force one. " +
 			"--domain is the PAPI identity domain the signature binds to (fixed here, never read " +
-			"from the request — the challenge never echoes it, cross-site relay defense). " +
-			"--origin pins CORS to the SPA. With no --guid the sole provisioned card is used; " +
-			"--pin passes the slot-9A PIN to piggy (else piggy prompts via askpass). The server " +
-			"verifies the signature and mints a session — this command performs no network I/O " +
-			"of its own beyond serving /sign.",
+			"from the request — relay defense). --origin pins CORS. Bind --addr beyond loopback " +
+			"(e.g. 0.0.0.0) only on a trusted network: /login is then a card-gated session-minting " +
+			"endpoint, gated only by the card's PIN/touch policy. --config loads a TOML file " +
+			"(flags override); --log-format sets text|json request logging on stderr.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			var fc signchallenge.FileConfig
+			if configPath != "" {
+				var err error
+				if fc, err = signchallenge.LoadFileConfig(configPath); err != nil {
+					return err
+				}
+			}
+			// Precedence: an explicitly-set flag wins, else the config file, else the
+			// flag default (which the flag var already holds when unset).
+			addr = signchallenge.Resolve(cmd.Flags().Changed("addr"), addr, fc.Addr)
+			domain = signchallenge.Resolve(cmd.Flags().Changed("domain"), domain, fc.Domain)
+			origin = signchallenge.Resolve(cmd.Flags().Changed("origin"), origin, fc.Origin)
+			target = signchallenge.Resolve(cmd.Flags().Changed("target"), target, fc.Target)
+			guid = signchallenge.Resolve(cmd.Flags().Changed("guid"), guid, fc.GUID)
+			signerMode = signchallenge.Resolve(cmd.Flags().Changed("signer"), signerMode, fc.Signer)
+			logFormat = signchallenge.Resolve(cmd.Flags().Changed("log-format"), logFormat, fc.LogFormat)
+
 			if domain == "" {
 				return fmt.Errorf("--domain is required (the PAPI identity domain the §5.2 signature binds to)")
 			}
 			if origin == "" {
 				return fmt.Errorf("--origin is required (the SPA origin CORS is pinned to; e.g. http://localhost:3000)")
+			}
+			logger, err := newServeLogger(logFormat)
+			if err != nil {
+				return err
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
@@ -1874,18 +1900,26 @@ func newSignChallengeServeCmd() *cobra.Command {
 				domain, ln.Addr(), routes, origin, target)
 			srv := &http.Server{
 				Handler: signchallenge.Handler(signchallenge.ServeConfig{
-					Signer: signer, GUID: signGUID, Domain: domain, Origin: origin, Target: target,
+					Signer: signer, GUID: signGUID, Domain: domain, Origin: origin, Target: target, Logger: logger,
 				}),
 				ReadHeaderTimeout: 5 * time.Second,
+				ReadTimeout:       15 * time.Second,
+				WriteTimeout:      60 * time.Second,
+				IdleTimeout:       120 * time.Second,
 			}
-			go func() {
-				<-ctx.Done()
-				_ = srv.Close()
-			}()
-			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				return err
+			serveErr := make(chan error, 1)
+			go func() { serveErr <- srv.Serve(ln) }()
+			select {
+			case err := <-serveErr:
+				if err != nil && !errors.Is(err, http.ErrServerClosed) {
+					return err
+				}
+				return nil
+			case <-ctx.Done():
+				shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				return srv.Shutdown(shutdownCtx)
 			}
-			return nil
 		},
 	}
 	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:0",
@@ -1902,5 +1936,24 @@ func newSignChallengeServeCmd() *cobra.Command {
 		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; else piggy prompts via askpass)")
 	cmd.Flags().StringVar(&signerMode, "signer", "auto",
 		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
+	cmd.Flags().StringVar(&configPath, "config", "",
+		"optional TOML config file (addr/domain/origin/target/guid/signer/log_format); explicit flags override it")
+	cmd.Flags().StringVar(&logFormat, "log-format", "text",
+		"log output format: text or json")
 	return cmd
+}
+
+// newServeLogger builds the oracle's slog.Logger from the --log-format value (logs
+// to stderr so request logs don't pollute the stdout startup line).
+func newServeLogger(format string) (*slog.Logger, error) {
+	var h slog.Handler
+	switch format {
+	case "", "text":
+		h = slog.NewTextHandler(os.Stderr, nil)
+	case "json":
+		h = slog.NewJSONHandler(os.Stderr, nil)
+	default:
+		return nil, fmt.Errorf("--log-format must be text or json (got %q)", format)
+	}
+	return slog.New(h), nil
 }
