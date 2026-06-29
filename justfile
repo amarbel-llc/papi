@@ -173,6 +173,38 @@ debug-pivy *ARGS:
 debug-piggy-signcheck:
     nix develop --command piggy sign-bytes --help
 
+# Smoke-test the §5.2 slot-9A signer with the REAL card (papi#36): pipe a dummy
+# challenge to `papi sign-challenge` and confirm it emits a papi-auth-sig-v1
+# signature. Proves the signer + r‖s reframe without a browser or server (the dummy
+# nonce won't authenticate — this checks signing, not the round-trip). signer=agent
+# uses the forwarded $SSH_AUTH_SOCK (this host); signer=auto/pcsc for a local card.
+# Operator-in-the-loop: may prompt the card for PIN/touch. e.g.
+#   just debug-sign-challenge-smoke api.linenisgreat.com
+[group("debug")]
+debug-sign-challenge-smoke domain="api.linenisgreat.com" signer="agent":
+    echo '{"challenge_id":"smoke","nonce":"deadbeefdeadbeef","expires_at":0}' | nix develop --command go run . sign-challenge --domain "{{domain}}" --signer "{{signer}}"
+
+# Run the §5 card oracle for the browser demo (papi#36). Its /login broker runs the
+# whole handshake against --target server-side (no PAPI-server CORS needed) and signs
+# with the card; the browser talks only to this oracle. Set --origin to the page's
+# exact origin and --addr so the browser host can reach it (0.0.0.0 for a remote /
+# tailnet browser). auto signer → the forwarded agent on this host. Operator-in-the-
+# loop (card PIN/touch). domain = the server's §5.2 binding domain (must match its
+# PAPI_AUTH_DOMAIN). e.g.
+#   just debug-sign-challenge-serve linenisgreat.com https://api.linenisgreat.com http://<your-host>.ts.net:8080
+[group("debug")]
+debug-sign-challenge-serve domain target origin addr="0.0.0.0:8088":
+    nix develop --command go run . sign-challenge-serve --domain "{{domain}}" --target "{{target}}" --origin "{{origin}}" --addr "{{addr}}"
+
+# Serve the sign-challenge demo page (clients/ts/examples/) over http://localhost so
+# the browser sees a real http origin (file:// gives Origin "null"). Pulls python3
+# from nixpkgs on demand — no devShell dep. Pair with debug-sign-challenge-serve. e.g.
+#   just debug-sign-challenge-demo 8080
+# then open http://localhost:8080/sign-challenge-demo.html
+[group("debug")]
+debug-sign-challenge-demo port="8080":
+    nix run nixpkgs#python3 -- -m http.server {{port}} --directory clients/ts/examples
+
 # Smoke-test `papi enroll` end-to-end against a real card + a live domain by
 # enrolling a provisioned card INTO ITSELF (degenerate: new==trusted) — exercises
 # the full chain (read-back → slot-9A signing ×2 → receipt → verify against the

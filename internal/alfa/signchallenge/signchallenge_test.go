@@ -9,6 +9,8 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/amarbel-llc/papi/internal/0/markl"
@@ -152,3 +154,179 @@ var errCard = &signErr{}
 type signErr struct{}
 
 func (*signErr) Error() string { return "errSigner: no card" }
+
+// TestHandlerSignsPostedChallenge is the cardless proof of the signing oracle
+// (papi#36): POST a §5.1 challenge to /sign and the returned body MUST be the same
+// verifiable {challenge_id, signature} Sign produces, with the CORS origin pinned.
+// It uses the injected fakeSigner, so it needs no card — it proves the HTTP
+// transport + framing, not the card leg.
+func TestHandlerSignsPostedChallenge(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const domain = "staging.linenisgreat.com"
+	const origin = "http://localhost:3000"
+	const nonce = "0011223344556677"
+	h := Handler(ServeConfig{Signer: fakeSigner{priv}, GUID: "GUID", Domain: domain, Origin: origin})
+
+	chJSON := []byte(`{"challenge_id":"chal-1","nonce":"` + nonce + `","expires_at":1750000000}`)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sign", bytes.NewReader(chJSON)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /sign = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+
+	var resp Response
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode /sign response: %v", err)
+	}
+	if resp.ChallengeID != "chal-1" {
+		t.Errorf("challenge_id = %q, want chal-1 (echoed verbatim)", resp.ChallengeID)
+	}
+	id, err := markl.Parse(resp.Signature)
+	if err != nil {
+		t.Fatalf("parse signature markl %q: %v", resp.Signature, err)
+	}
+	if id.Purpose != markl.PurposeAuthSig || id.Format != markl.FormatEcdsaP256Sig || len(id.Payload) != 64 {
+		t.Fatalf("signature markl = %q/%q len %d, want %q/%q len 64",
+			id.Purpose, id.Format, len(id.Payload), markl.PurposeAuthSig, markl.FormatEcdsaP256Sig)
+	}
+	r := new(big.Int).SetBytes(id.Payload[:32])
+	s := new(big.Int).SetBytes(id.Payload[32:])
+	digest := sha256.Sum256(Preimage(domain, nonce))
+	if !ecdsa.Verify(&priv.PublicKey, digest[:], r, s) {
+		t.Error("handler signature does not verify over SHA-256(preimage) with the signing key")
+	}
+}
+
+// TestHandlerOPTIONSPreflight checks the CORS preflight the browser sends before the
+// cross-origin (and Private-Network) POST: 204 with the pinned origin and the
+// Access-Control-Allow-Private-Network header that lets an HTTPS SPA reach this
+// http://127.0.0.1 oracle.
+func TestHandlerOPTIONSPreflight(t *testing.T) {
+	const origin = "http://localhost:3000"
+	h := Handler(ServeConfig{Signer: errSigner{}, GUID: "G", Domain: "d", Origin: origin})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodOptions, "/sign", nil))
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("OPTIONS /sign = %d, want 204", rec.Code)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("preflight Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Errorf("preflight Access-Control-Allow-Private-Network = %q, want true", got)
+	}
+}
+
+// TestHandlerRejectsBadChallenge: a malformed challenge body is the browser's fault
+// (400), distinct from a card/signer failure (502).
+func TestHandlerRejectsBadChallenge(t *testing.T) {
+	h := Handler(ServeConfig{Signer: errSigner{}, GUID: "G", Domain: "d", Origin: "http://localhost:3000"})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sign", bytes.NewReader([]byte("not json"))))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST /sign with bad body = %d, want 400", rec.Code)
+	}
+}
+
+// TestHandlerSignerFailureIsBadGateway: when the card/signer leg fails on a
+// well-formed challenge, the oracle reports 502 (a gateway failure), not 400.
+func TestHandlerSignerFailureIsBadGateway(t *testing.T) {
+	h := Handler(ServeConfig{Signer: errSigner{}, GUID: "G", Domain: "staging.linenisgreat.com", Origin: "http://localhost:3000"})
+	chJSON := []byte(`{"challenge_id":"c","nonce":"00ff","expires_at":1}`)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sign", bytes.NewReader(chJSON)))
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("POST /sign with a failing signer = %d, want 502", rec.Code)
+	}
+}
+
+// TestLoginBrokerRunsHandshake proves the /login broker: a browser posts only
+// {auth_key_id} to the oracle, and the oracle runs discovery → challenge → sign →
+// response against the PAPI server server-side, returning the minted session. The
+// fake PAPI server verifies the signature the broker produced over SHA-256(preimage)
+// before issuing the session, so a green test means the whole relayed handshake is
+// byte-correct. Cardless (injected fakeSigner).
+func TestLoginBrokerRunsHandshake(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const domain = "staging.linenisgreat.com"
+	const nonce = "0011223344556677"
+	var verified bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/papi", func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"auth": map[string]any{
+			"scheme":    "piggy-sign-challenge",
+			"challenge": base + "/papi/auth/challenge",
+			"response":  base + "/papi/auth/response",
+		}}})
+	})
+	mux.HandleFunc("/papi/auth/challenge", func(w http.ResponseWriter, _ *http.Request) {
+		// Enveloped {data, meta}, matching the reference server.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"challenge_id": "c1", "nonce": nonce, "expires_at": 0},
+			"meta": map[string]any{"type": "papi-auth-challenge"},
+		})
+	})
+	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
+		var body Response
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		id, err := markl.Parse(body.Signature)
+		if err != nil {
+			http.Error(w, "bad signature markl", http.StatusBadRequest)
+			return
+		}
+		r2 := new(big.Int).SetBytes(id.Payload[:32])
+		s2 := new(big.Int).SetBytes(id.Payload[32:])
+		digest := sha256.Sum256(Preimage(domain, nonce))
+		if !ecdsa.Verify(&priv.PublicKey, digest[:], r2, s2) {
+			http.Error(w, "signature verify failed", http.StatusUnauthorized)
+			return
+		}
+		verified = true
+		// Enveloped {data, meta}, matching the reference server — the broker must
+		// unwrap it before handing the session to the browser.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"session": "sess-1", "principal": "p", "groups": []string{}, "expires_at": 0},
+			"meta": map[string]any{"type": "papi-auth-session"},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	h := Handler(ServeConfig{
+		Signer: fakeSigner{priv}, GUID: "GUID", Domain: domain,
+		Origin: "http://demo.example:8080", Target: srv.URL,
+	})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/login",
+		bytes.NewReader([]byte(`{"auth_key_id":"piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-x"}`))))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /login = %d, want 200; body %s", rec.Code, rec.Body.String())
+	}
+	if !verified {
+		t.Error("the PAPI server never received a verifiable signature from the broker")
+	}
+	var sess map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &sess); err != nil {
+		t.Fatalf("decode session: %v", err)
+	}
+	if sess["session"] != "sess-1" {
+		t.Errorf("session = %v, want the broker to pass through sess-1", sess["session"])
+	}
+}

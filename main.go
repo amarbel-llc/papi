@@ -13,8 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -77,6 +80,7 @@ func main() {
 	root.AddCommand(newVerifyReceiptCmd())
 	root.AddCommand(newSignChallengeCmd())
 	root.AddCommand(newIdentityCmd())
+	root.AddCommand(newSignChallengeServeCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -1724,8 +1728,43 @@ func newVerifyReceiptCmd() *cobra.Command {
 // nonce with the caller's slot-9A key (papi#31). The signing primitive is the same
 // piggy direct-PCSC byte-signer `papi enroll` uses; this exposes it as a
 // challenge-answerer rather than net-new crypto.
+// signChallengeSigner builds the slot-9A signer for the sign-challenge commands,
+// choosing between the forwarded SSH agent and direct-PCSC `piggy sign-bytes`. mode
+// is "auto" (agent when $SSH_AUTH_SOCK is set, else PCSC), "agent", or "pcsc". It
+// returns the signer and the guid to sign with: in PCSC mode an empty guid is
+// resolved to the sole provisioned card via `piggy list`; in agent mode the guid is
+// passed through (the agent selects the slot-9A key, disambiguating by guid only
+// when several cards are present) and PCSC is never touched — the path for hosts
+// that reach the card over a forwarded agent rather than a local pcscd.
+func signChallengeSigner(ctx context.Context, mode, guid, pin string) (signchallenge.Signer, string, error) {
+	useAgent := false
+	switch mode {
+	case "agent":
+		useAgent = true
+	case "pcsc":
+		useAgent = false
+	case "", "auto":
+		useAgent = os.Getenv("SSH_AUTH_SOCK") != ""
+	default:
+		return nil, "", fmt.Errorf("--signer must be auto, agent, or pcsc (got %q)", mode)
+	}
+	if useAgent {
+		return enroll.AgentSignBytesSigner{}, guid, nil
+	}
+	if guid == "" {
+		cards, err := enroll.ListCards(ctx, enroll.ExecRunner)
+		if err != nil {
+			return nil, "", err
+		}
+		if guid, err = enroll.ResolveTrustedGUID(cards, ""); err != nil {
+			return nil, "", err
+		}
+	}
+	return enroll.PiggySignBytesSigner{PIN: pin}, guid, nil
+}
+
 func newSignChallengeCmd() *cobra.Command {
-	var domain, guid, pin string
+	var domain, guid, pin, signerMode string
 	cmd := &cobra.Command{
 		Use:   "sign-challenge --domain <domain>",
 		Short: "Sign a §5.2 auth challenge with slot-9A, emitting the /papi/auth/response body",
@@ -1755,18 +1794,11 @@ func newSignChallengeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Default to the sole provisioned card (same resolution `papi enroll`
-			// uses for its attester) — errors rather than guess among several.
-			if guid == "" {
-				cards, err := enroll.ListCards(ctx, enroll.ExecRunner)
-				if err != nil {
-					return err
-				}
-				if guid, err = enroll.ResolveTrustedGUID(cards, ""); err != nil {
-					return err
-				}
+			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin)
+			if err != nil {
+				return err
 			}
-			resp, err := signchallenge.Sign(ctx, enroll.PiggySignBytesSigner{PIN: pin}, guid, domain, ch)
+			resp, err := signchallenge.Sign(ctx, signer, signGUID, domain, ch)
 			if err != nil {
 				return err
 			}
@@ -1784,5 +1816,91 @@ func newSignChallengeCmd() *cobra.Command {
 		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
 	cmd.Flags().StringVar(&pin, "pin", "",
 		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
+	cmd.Flags().StringVar(&signerMode, "signer", "auto",
+		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
+	return cmd
+}
+
+// newSignChallengeServeCmd runs the §5.2 sign-challenge logic as a loopback HTTP
+// "signing oracle" so a browser SPA — which holds no card access of its own — can
+// obtain a slot-9A signature (papi#36, the gating spike for circus FDR-0013). It is
+// the same producing side as `sign-challenge` (signchallenge.Sign +
+// enroll.PiggySignBytesSigner), wrapped in an HTTP transport instead of stdin/stdout:
+// the browser POSTs the challenge JSON to /sign and gets the {challenge_id,
+// signature} response body back. The browser still runs the network handshake
+// itself; this serves only the one card-bound step a page cannot do (no PCSC in a
+// browser). It is the first production HTTP server in the papi binary, deliberately
+// minimal and loopback-only.
+func newSignChallengeServeCmd() *cobra.Command {
+	var addr, domain, origin, target, guid, pin, signerMode string
+	cmd := &cobra.Command{
+		Use:   "sign-challenge-serve --domain <domain> --origin <spa-origin>",
+		Short: "Run a loopback §5.2 signing oracle for a browser SPA (papi#36)",
+		Long: "Serve the §5.2 sign-challenge producing side over loopback HTTP so a browser " +
+			"SPA can obtain a slot-9A signature it cannot produce itself (no PCSC in a page). " +
+			"POST the POST /papi/auth/challenge response JSON {challenge_id, nonce, expires_at} " +
+			"to /sign and receive the POST /papi/auth/response body {challenge_id, signature} — " +
+			"signed via `piggy sign-bytes --slot 9a` (the card must be present; no agent). " +
+			"--domain is the PAPI identity domain the signature binds to (fixed here, never read " +
+			"from the request — the challenge never echoes it, cross-site relay defense). " +
+			"--origin pins CORS to the SPA. With no --guid the sole provisioned card is used; " +
+			"--pin passes the slot-9A PIN to piggy (else piggy prompts via askpass). The server " +
+			"verifies the signature and mints a session — this command performs no network I/O " +
+			"of its own beyond serving /sign.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if domain == "" {
+				return fmt.Errorf("--domain is required (the PAPI identity domain the §5.2 signature binds to)")
+			}
+			if origin == "" {
+				return fmt.Errorf("--origin is required (the SPA origin CORS is pinned to; e.g. http://localhost:3000)")
+			}
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
+			defer stop()
+			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin)
+			if err != nil {
+				return err
+			}
+			ln, err := net.Listen("tcp", addr)
+			if err != nil {
+				return fmt.Errorf("listen on %s: %w", addr, err)
+			}
+			routes := "/sign"
+			if target != "" {
+				routes = "/sign, /login"
+			}
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"papi sign-challenge-serve: card oracle for %q on http://%s (%s; CORS origin %s; target %q)\n",
+				domain, ln.Addr(), routes, origin, target)
+			srv := &http.Server{
+				Handler: signchallenge.Handler(signchallenge.ServeConfig{
+					Signer: signer, GUID: signGUID, Domain: domain, Origin: origin, Target: target,
+				}),
+				ReadHeaderTimeout: 5 * time.Second,
+			}
+			go func() {
+				<-ctx.Done()
+				_ = srv.Close()
+			}()
+			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return err
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&addr, "addr", "127.0.0.1:0",
+		"loopback address to listen on (default 127.0.0.1:0 → an ephemeral port, printed at startup)")
+	cmd.Flags().StringVar(&domain, "domain", "",
+		"PAPI identity domain the §5.2 signature binds to (required; e.g. staging.linenisgreat.com)")
+	cmd.Flags().StringVar(&origin, "origin", "",
+		"SPA origin CORS is pinned to (required; e.g. http://localhost:3000)")
+	cmd.Flags().StringVar(&target, "target", "",
+		"PAPI base URL the /login broker calls server-side (e.g. https://api.linenisgreat.com); empty serves only /sign")
+	cmd.Flags().StringVar(&guid, "guid", "",
+		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
+	cmd.Flags().StringVar(&pin, "pin", "",
+		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; else piggy prompts via askpass)")
+	cmd.Flags().StringVar(&signerMode, "signer", "auto",
+		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
 	return cmd
 }
