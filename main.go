@@ -9,9 +9,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -87,7 +84,6 @@ func main() {
 	root.AddCommand(newIdentityCmd())
 	root.AddCommand(newSignChallengeServeCmd())
 	root.AddCommand(newAuthVerifierCmd())
-	root.AddCommand(newAuthAttestKeygenCmd())
 	root.AddCommand(newVersionCmd())
 
 	if err := root.Execute(); err != nil {
@@ -1839,7 +1835,7 @@ func newSignChallengeCmd() *cobra.Command {
 // browser). It is the first production HTTP server in the papi binary, deliberately
 // minimal and loopback-only.
 func newSignChallengeServeCmd() *cobra.Command {
-	var addr, domain, origin, target, guid, pin, signerMode, configPath, logFormat, attestKeyFile, authKeyID string
+	var addr, domain, origin, target, guid, pin, signerMode, configPath, logFormat string
 	var allowCallbacks []string
 	cmd := &cobra.Command{
 		Use:   "sign-challenge-serve --domain <domain> --origin <spa-origin>",
@@ -1898,20 +1894,11 @@ func newSignChallengeServeCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("listen on %s: %w", addr, err)
 			}
-			var attestKey ed25519.PrivateKey
-			if attestKeyFile != "" {
-				if target == "" || authKeyID == "" {
-					return fmt.Errorf("--attest-key-file requires --target and --auth-key-id")
-				}
-				if attestKey, err = authproxy.LoadOraclePriv(attestKeyFile); err != nil {
-					return err
-				}
-			}
 			routes := "/sign"
 			if target != "" {
 				routes = "/sign, /login"
 			}
-			if attestKey != nil {
+			if len(allowCallbacks) > 0 {
 				routes += ", /authorize"
 			}
 			fmt.Fprintf(cmd.OutOrStdout(),
@@ -1920,7 +1907,7 @@ func newSignChallengeServeCmd() *cobra.Command {
 			srv := &http.Server{
 				Handler: signchallenge.Handler(signchallenge.ServeConfig{
 					Signer: signer, GUID: signGUID, Domain: domain, Origin: origin, Target: target, Logger: logger,
-					AttestKey: attestKey, AuthKeyID: authKeyID, AllowCallbacks: allowCallbacks,
+					AllowCallbacks: allowCallbacks,
 				}),
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       15 * time.Second,
@@ -1948,12 +1935,8 @@ func newSignChallengeServeCmd() *cobra.Command {
 		"optional TOML config file (addr/domain/origin/target/guid/signer/log_format); explicit flags override it")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text",
 		"log output format: text or json")
-	cmd.Flags().StringVar(&attestKeyFile, "attest-key-file", "",
-		"oracle Ed25519 private key file enabling /authorize (requires --target + --auth-key-id)")
-	cmd.Flags().StringVar(&authKeyID, "auth-key-id", "",
-		"this card's published slot-9A id, the §5 challenge subject for /authorize")
 	cmd.Flags().StringSliceVar(&allowCallbacks, "allow-callback", nil,
-		"exact verifier callback URL /authorize may attest to (repeatable)")
+		"exact verifier callback URL the /authorize card-sign may sign for (repeatable; enables /authorize)")
 	return cmd
 }
 
@@ -1992,27 +1975,31 @@ func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener) error {
 
 // newAuthVerifierCmd runs the FDR-0014 PAPI-session forward-auth verifier: the nginx
 // `auth_request` target (/auth/verify) plus the card-login flow (/auth/login →
-// /auth/callback) that mints a signed __papi_session cookie from an oracle
-// attestation (validate-at-mint). It holds the verifier-only cookie HMAC key and the
-// oracle's Ed25519 PUBLIC key — so it verifies a card login but can never forge one.
+// /auth/callback) that mints a signed __papi_session cookie. The login is card-direct
+// (RFC-0001 §5.2): the oracle card-signs the verifier's nonce, and the verifier
+// ECDSA-verifies that signature against the registered slot-9A keys it loads from
+// --authorized-keys-file (the papi-ssh-sync fragment). No software signing key exists
+// anywhere — only the YubiKey signs, and ANY registered card may authenticate.
 func newAuthVerifierCmd() *cobra.Command {
-	var addr, cookieKeyFile, oraclePubFile, oracleLogin, externalURL, cookieDomain, logFormat string
+	var addr, cookieKeyFile, authorizedKeysFile, oracleLogin, externalURL, cookieDomain, logFormat string
 	var allowPrincipals, allowGroups []string
 	var cookieSecure bool
 	cmd := &cobra.Command{
-		Use:   "auth-verifier --cookie-key-file <f> --oracle-pubkey-file <f> --oracle-login <url> --external-url <url>",
+		Use:   "auth-verifier --cookie-key-file <f> --authorized-keys-file <f> --oracle-login <url> --external-url <url>",
 		Short: "Run the FDR-0014 PAPI-session forward-auth verifier (nginx auth_request)",
 		Long: "Serve the forward-auth verifier behind nginx `auth_request` (circus FDR-0014). " +
 			"/auth/verify validates the signed __papi_session cookie + the principal/groups " +
 			"allowlist → 200 with Remote-User/Remote-Groups (nginx maps Remote-User → " +
-			"X-WEBAUTH-USER for Forgejo) or 401. /auth/login → /auth/callback run a card login via " +
-			"the oracle and mint the cookie ONCE (validate-at-mint; no per-request PAPI call). The " +
-			"verifier holds only the oracle's Ed25519 PUBLIC key (--oracle-pubkey-file) and its own " +
-			"cookie HMAC key (--cookie-key-file), so it can verify a login but never forge one.",
+			"X-WEBAUTH-USER for Forgejo) or 401. /auth/login → /auth/callback run a card-direct " +
+			"login (RFC-0001 §5.2): the oracle card-signs the verifier nonce and the verifier " +
+			"ECDSA-verifies it against the registered slot-9A keys in --authorized-keys-file (the " +
+			"papi-ssh-sync fragment), then mints the cookie ONCE (validate-at-mint; no per-request " +
+			"PAPI call). No software signing key exists — only the card signs, and any registered " +
+			"card may authenticate.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			for _, req := range []struct{ name, val string }{
-				{"cookie-key-file", cookieKeyFile}, {"oracle-pubkey-file", oraclePubFile},
+				{"cookie-key-file", cookieKeyFile}, {"authorized-keys-file", authorizedKeysFile},
 				{"oracle-login", oracleLogin}, {"external-url", externalURL},
 			} {
 				if req.val == "" {
@@ -2023,7 +2010,7 @@ func newAuthVerifierCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			oraclePub, err := authproxy.LoadOraclePub(oraclePubFile)
+			registry, err := authproxy.LoadRegistry(authorizedKeysFile)
 			if err != nil {
 				return err
 			}
@@ -2038,12 +2025,12 @@ func newAuthVerifierCmd() *cobra.Command {
 				return fmt.Errorf("listen on %s: %w", addr, err)
 			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"papi auth-verifier: forward-auth on http://%s (/auth/verify, /auth/login, /auth/callback; external %s; oracle %s)\n",
-				ln.Addr(), externalURL, oracleLogin)
+				"papi auth-verifier: forward-auth on http://%s (/auth/verify, /auth/login, /auth/callback; external %s; oracle %s; %d registered cards)\n",
+				ln.Addr(), externalURL, oracleLogin, registry.Len())
 			srv := &http.Server{
 				Handler: authproxy.VerifierHandler(authproxy.VerifierConfig{
 					CookieKey:       cookieKey,
-					OraclePub:       oraclePub,
+					Registry:        registry,
 					OracleLogin:     oracleLogin,
 					ExternalURL:     externalURL,
 					AllowPrincipals: authproxy.Set(allowPrincipals),
@@ -2064,14 +2051,14 @@ func newAuthVerifierCmd() *cobra.Command {
 		"address to listen on (ephemeral port if :0)")
 	cmd.Flags().StringVar(&cookieKeyFile, "cookie-key-file", "",
 		"file with the verifier-only HMAC cookie key (>= 32 bytes; required)")
-	cmd.Flags().StringVar(&oraclePubFile, "oracle-pubkey-file", "",
-		"file with the oracle's Ed25519 public key, base64 (required)")
+	cmd.Flags().StringVar(&authorizedKeysFile, "authorized-keys-file", "",
+		"papi-ssh-sync authorized_keys fragment whose slot=9A lines are the registered cards (required)")
 	cmd.Flags().StringVar(&oracleLogin, "oracle-login", "",
 		"the oracle's /authorize URL the login flow redirects to (required)")
 	cmd.Flags().StringVar(&externalURL, "external-url", "",
-		"the verifier's external base URL, scheme://host (required; the attestation audience)")
+		"the verifier's external base URL, scheme://host (required; the §5.2 signature domain)")
 	cmd.Flags().StringSliceVar(&allowPrincipals, "allow-principal", nil,
-		"allowed principal (repeatable; empty allowlist = any authenticated card login)")
+		"allowed principal (repeatable; empty allowlist = any registered card)")
 	cmd.Flags().StringSliceVar(&allowGroups, "allow-group", nil,
 		"allowed group (repeatable)")
 	cmd.Flags().BoolVar(&cookieSecure, "cookie-secure", true,
@@ -2080,37 +2067,5 @@ func newAuthVerifierCmd() *cobra.Command {
 		"session cookie Domain (default: host-only)")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text",
 		"log output format: text or json")
-	return cmd
-}
-
-// newAuthAttestKeygenCmd generates the oracle's Ed25519 attestation keypair: it
-// writes the PRIVATE key (base64) to --out (0600, card-machine only) and prints the
-// PUBLIC key (base64) to stdout — the value committed in-repo for the verifier.
-func newAuthAttestKeygenCmd() *cobra.Command {
-	var out string
-	cmd := &cobra.Command{
-		Use:   "auth-attest-keygen --out <private-key-file>",
-		Short: "Generate the oracle's Ed25519 attestation keypair (FDR-0014)",
-		Long: "Generate the Ed25519 keypair the /authorize oracle signs attestations with. The " +
-			"private key is written base64 to --out (0600; keep it on the card machine only); the " +
-			"public key is printed base64 to stdout — give that to the verifier as --oracle-pubkey-file " +
-			"(safe to commit in-repo). Run once on the oracle host.",
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			if out == "" {
-				return fmt.Errorf("--out is required (where to write the private key)")
-			}
-			pub, priv, err := ed25519.GenerateKey(rand.Reader)
-			if err != nil {
-				return err
-			}
-			if err := os.WriteFile(out, []byte(base64.StdEncoding.EncodeToString(priv)), 0o600); err != nil {
-				return fmt.Errorf("write private key %s: %w", out, err)
-			}
-			fmt.Fprintln(cmd.OutOrStdout(), base64.StdEncoding.EncodeToString(pub))
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&out, "out", "", "file to write the Ed25519 private key (base64, 0600; required)")
 	return cmd
 }

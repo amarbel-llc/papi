@@ -3,7 +3,6 @@ package signchallenge
 import (
 	"bytes"
 	"context"
-	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,8 +11,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-
-	"github.com/amarbel-llc/papi/internal/alfa/authproxy"
 )
 
 // maxBody caps a request/response body the oracle reads. Challenges and sessions
@@ -27,33 +24,25 @@ type ServeConfig struct {
 	Signer Signer
 	// GUID selects the card; empty lets the signer pick when only one is present.
 	GUID string
-	// Domain is the PAPI identity domain the §5.2 signature binds to — fixed here,
-	// never read from the request (the challenge never echoes it; relay defense).
+	// Domain is the PAPI identity domain the §5.2 signature binds to for /sign and
+	// /login — fixed here, never read from the request (relay defense).
 	Domain string
 	// Origin is the single browser origin CORS is pinned to (for /sign and /login).
 	Origin string
-	// Target is the PAPI base URL (e.g. https://api.linenisgreat.com) the /login and
-	// /authorize flows call server-side. When empty, only /sign is served.
+	// Target is the PAPI base URL the /login broker calls server-side. When empty,
+	// /login is not served.
 	Target string
 	// HTTPClient is used for the broker's PAPI calls; defaults to a 20s client.
 	HTTPClient *http.Client
 	// Logger receives per-request and error logs; defaults to slog.Default().
 	Logger *slog.Logger
 
-	// --- Attestation (the /authorize browser flow → the FDR-0014 auth-proxy
-	// verifier). When AttestKey is set (plus Target + AuthKeyID), /authorize is
-	// served: a browser navigation runs the §5 card login with THIS host's card and
-	// redirects to a verifier callback with an Ed25519-signed attestation. ---
-
-	// AttestKey is the oracle's Ed25519 PRIVATE key; it signs attestations. Held only
-	// on the card machine.
-	AttestKey ed25519.PrivateKey
-	// AuthKeyID is this card's published slot-9A id, used as the §5 challenge subject
-	// in the /authorize flow (the browser supplies none).
-	AuthKeyID string
-	// AllowCallbacks is the exact set of verifier callback URLs /authorize may attest
-	// to — the guard that stops a malicious page from coaxing a card attestation for
-	// an attacker's audience.
+	// AllowCallbacks is the exact set of forward-auth verifier callback URLs the
+	// /authorize flow may sign for. When non-empty, /authorize is served: a browser
+	// navigation card-signs the §5.2 preimage bound to the callback's host and the
+	// verifier's nonce, then 302s to the callback. The allowlist (and binding the
+	// signature to the callback's host) stops a malicious page from coaxing a card
+	// signature for someone else's verifier.
 	AllowCallbacks []string
 }
 
@@ -64,14 +53,14 @@ type ServeConfig struct {
 //     {challenge_id, signature} body out (the backend/plugin seam).
 //   - POST /login — handshake broker (when Target is set): {auth_key_id} in → the
 //     minted session out, running discovery→challenge→sign→response server-side.
-//   - GET  /authorize — attest flow (when AttestKey+Target+AuthKeyID are set): a
-//     browser navigation runs the §5 card login with this host's card and 302s to a
-//     verifier callback with an Ed25519 attestation (FDR-0014, client-side signing).
+//   - GET  /authorize — forward-auth login (when AllowCallbacks is set): a browser
+//     navigation card-signs Preimage(<callback host>, nonce) and 302s to the
+//     verifier callback with the signature. The verifier (FDR-0014) checks it
+//     against the registered slot-9A keys. No PAPI-server call; the card is the
+//     only thing that signs.
 //
-// Security envelope: card + PIN gate every signature. /sign and /login pin CORS to
-// Origin. /authorize is a top-level navigation (no CORS) but only attests to an
-// allowlisted callback. When bound beyond loopback, treat the host as the card
-// machine on a trusted network.
+// /sign and /login pin CORS to Origin. /authorize is a top-level navigation (no
+// CORS) that only signs for an allowlisted callback.
 func Handler(cfg ServeConfig) http.Handler {
 	logger := cfg.Logger
 	if logger == nil {
@@ -82,7 +71,7 @@ func Handler(cfg ServeConfig) http.Handler {
 	if cfg.Target != "" {
 		mux.HandleFunc("/login", withLogging(logger, "/login", loginHandler(cfg, logger)))
 	}
-	if cfg.AttestKey != nil && cfg.Target != "" && cfg.AuthKeyID != "" {
+	if len(cfg.AllowCallbacks) > 0 {
 		mux.HandleFunc("/authorize", withLogging(logger, "/authorize", authorizeHandler(cfg, logger)))
 	}
 	return mux
@@ -196,21 +185,20 @@ func loginHandler(cfg ServeConfig, logger *slog.Logger) http.HandlerFunc {
 	}
 }
 
-// authorizeHandler is the GET /authorize attest flow: validate the verifier callback
-// (allowlist), run the §5 card login with this host's card, and 302 to the callback
-// with an Ed25519 attestation the verifier can check against the oracle's public key.
+// authorizeHandler is the GET /authorize forward-auth login: validate the verifier
+// callback (allowlist), card-sign the §5.2 preimage bound to the callback's host and
+// the verifier's nonce, and 302 to the callback with the signature. The card is the
+// only signer; no PAPI-server call.
 func authorizeHandler(cfg ServeConfig, logger *slog.Logger) http.HandlerFunc {
-	httpc := brokerClient(cfg)
-	base := strings.TrimRight(cfg.Target, "/")
 	allowed := make(map[string]bool, len(cfg.AllowCallbacks))
 	for _, c := range cfg.AllowCallbacks {
 		allowed[c] = true
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		callback, state, nonce := q.Get("callback"), q.Get("state"), q.Get("nonce")
-		if callback == "" || state == "" || nonce == "" {
-			http.Error(w, "callback, state, and nonce are required", http.StatusBadRequest)
+		callback, nonce, state := q.Get("callback"), q.Get("nonce"), q.Get("state")
+		if callback == "" || nonce == "" || state == "" {
+			http.Error(w, "callback, nonce, and state are required", http.StatusBadRequest)
 			return
 		}
 		if !allowed[callback] {
@@ -218,52 +206,31 @@ func authorizeHandler(cfg ServeConfig, logger *slog.Logger) http.HandlerFunc {
 			http.Error(w, "callback not allowed", http.StatusForbidden)
 			return
 		}
-		aud, err := originOf(callback)
+		domain, err := hostOf(callback)
 		if err != nil {
 			http.Error(w, "bad callback: "+err.Error(), http.StatusBadRequest)
 			return
 		}
-		raw, leg, err := runHandshake(r.Context(), httpc, base, cfg, cfg.AuthKeyID)
+		// Card-sign the §5.2 preimage bound to the verifier's host + nonce. The
+		// ChallengeID field is unused by the verifier (it has the nonce in its state).
+		resp, err := Sign(r.Context(), cfg.Signer, cfg.GUID, domain, Challenge{ChallengeID: nonce, Nonce: nonce})
 		if err != nil {
-			logger.LogAttrs(r.Context(), slog.LevelError, "authorize leg failed",
-				slog.String("leg", leg), slog.String("err", err.Error()))
-			http.Error(w, leg+": "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		var sess struct {
-			Principal string   `json:"principal"`
-			Groups    []string `json:"groups"`
-			ExpiresAt int64    `json:"expires_at"`
-		}
-		if err := json.Unmarshal(raw, &sess); err != nil {
-			http.Error(w, "session decode: "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		att, err := authproxy.MintAttest(cfg.AttestKey, authproxy.AttestClaims{
-			Principal:  sess.Principal,
-			Groups:     sess.Groups,
-			Nonce:      nonce,
-			Aud:        aud,
-			SessionExp: sess.ExpiresAt,
-			Exp:        time.Now().Add(2 * time.Minute).Unix(),
-		})
-		if err != nil {
-			http.Error(w, "attest: "+err.Error(), http.StatusInternalServerError)
+			logger.LogAttrs(r.Context(), slog.LevelError, "authorize card-sign failed", slog.String("err", err.Error()))
+			http.Error(w, "sign: "+err.Error(), http.StatusBadGateway)
 			return
 		}
 		u, _ := url.Parse(callback)
 		cq := u.Query()
-		cq.Set("att", att)
+		cq.Set("sig", resp.Signature)
 		cq.Set("state", state)
 		u.RawQuery = cq.Encode()
-		logger.Info("authorize: attested", "principal", sess.Principal, "aud", aud)
+		logger.Info("authorize: card-signed", "domain", domain)
 		http.Redirect(w, r, u.String(), http.StatusFound)
 	}
 }
 
 // runHandshake runs the §5 broker login (discovery → challenge → sign → response)
-// for authKeyID and returns the unwrapped session JSON. On failure it names the leg
-// (discovery/challenge/sign/response) so callers can report/log it.
+// for authKeyID and returns the unwrapped session JSON. On failure it names the leg.
 func runHandshake(ctx context.Context, httpc *http.Client, base string, cfg ServeConfig, authKeyID string) (session []byte, leg string, err error) {
 	auth, err := fetchDiscoveryAuth(ctx, httpc, base)
 	if err != nil {
@@ -295,13 +262,14 @@ func brokerClient(cfg ServeConfig) *http.Client {
 	return &http.Client{Timeout: 20 * time.Second}
 }
 
-// originOf returns the scheme://host of a URL (the attestation audience).
-func originOf(raw string) (string, error) {
+// hostOf returns the host[:port] of a URL — the §5.2 domain the /authorize signature
+// binds to (the verifier's host).
+func hostOf(raw string) (string, error) {
 	u, err := url.Parse(raw)
-	if err != nil || u.Scheme == "" || u.Host == "" {
+	if err != nil || u.Host == "" {
 		return "", fmt.Errorf("not an absolute URL: %q", raw)
 	}
-	return u.Scheme + "://" + u.Host, nil
+	return u.Host, nil
 }
 
 // discoveryAuth is the §4.1 discovery doc's auth block — the challenge/response URLs
@@ -377,8 +345,7 @@ func postJSON(ctx context.Context, httpc *http.Client, url string, body any) ([]
 }
 
 // unwrapData returns the inner object of a {"data": …, "meta": …} envelope — the
-// reference server's response shape for /papi/auth/challenge and /papi/auth/response
-// (and discovery) — or the body unchanged when there is no such envelope.
+// reference server's response shape — or the body unchanged when there is none.
 func unwrapData(raw []byte) []byte {
 	var env struct {
 		Data json.RawMessage `json:"data"`
@@ -390,8 +357,7 @@ func unwrapData(raw []byte) []byte {
 }
 
 // setCORS pins the response to the configured origin and advertises the methods and
-// headers the §5 calls use. Access-Control-Allow-Private-Network answers Chrome's
-// PNA preflight for an HTTPS/remote page reaching this oracle.
+// headers the §5 calls use.
 func setCORS(w http.ResponseWriter, origin string) {
 	h := w.Header()
 	h.Set("Access-Control-Allow-Origin", origin)

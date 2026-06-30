@@ -1,7 +1,6 @@
 package authproxy
 
 import (
-	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"log/slog"
@@ -14,41 +13,53 @@ import (
 // DefaultCookieName is the verifier's session cookie name.
 const DefaultCookieName = "__papi_session"
 
-// VerifierConfig configures the forward-auth verifier (FDR-0014). It holds the
-// verifier-only cookie HMAC key, the oracle's Ed25519 PUBLIC key (verify-only — the
-// verifier cannot forge a login), the oracle's login URL, and the principal/groups
-// allowlist.
+// VerifierConfig configures the FDR-0014 forward-auth verifier. It is a §5.2
+// sign-challenge verifier: it holds the verifier-only cookie HMAC key and the
+// registry of accepted slot-9A keys (the papi-ssh-sync fragment). No signing key —
+// only the YubiKey signs; the verifier checks the card signature.
 type VerifierConfig struct {
 	// CookieKey is the verifier-only HMAC key for the session cookie + login state.
 	CookieKey []byte
-	// OraclePub verifies oracle attestations (the verifier holds only the public key).
-	OraclePub ed25519.PublicKey
-	// OracleLogin is the oracle's /authorize URL the login flow redirects to.
+	// Registry is the set of registered slot-9A keys (any of which may auth).
+	Registry *Registry
+	// OracleLogin is the card-machine oracle's /authorize URL the login redirects to.
 	OracleLogin string
-	// ExternalURL is the verifier's own externally-reachable base (scheme://host),
-	// used to build the callback and as the attestation audience.
+	// ExternalURL is the verifier's externally-reachable base (scheme://host). Its
+	// host is the §5.2 domain the card signature must bind to (relay defense).
 	ExternalURL string
-	// AllowPrincipals / AllowGroups are the authz allowlist. When BOTH are empty, any
-	// authenticated principal is allowed (a card login is already required).
+	// AllowPrincipals optionally narrows which registered identities may auth (by the
+	// cn=/guid= principal). Empty AllowPrincipals AND empty AllowGroups → any registered
+	// card (the operator's "any registered YubiKey").
 	AllowPrincipals map[string]bool
-	AllowGroups     map[string]bool
+	// AllowGroups is reserved: the slot-9A registry carries no group membership yet, so
+	// no login is ever assigned groups and a non-empty AllowGroups currently matches
+	// nothing. Setting it WITHOUT AllowPrincipals denies every login. Sourcing groups
+	// (a registry annotation or a principal→groups map) is tracked as a follow-up.
+	AllowGroups map[string]bool
 	// CookieName defaults to DefaultCookieName. CookieSecure/CookieDomain set the
-	// cookie attributes (Secure requires HTTPS; set false only for plain-HTTP tailnet).
+	// cookie attributes.
 	CookieName   string
 	CookieSecure bool
 	CookieDomain string
+	// SessionTTL is how long a minted cookie lasts before a re-card (default 12h).
+	SessionTTL time.Duration
 	// StateTTL bounds the login round-trip (default 5m).
 	StateTTL time.Duration
 	Logger   *slog.Logger
-	now      func() time.Time // overridable in tests
+
+	domain string           // host of ExternalURL; the §5.2 binding domain
+	now    func() time.Time // overridable in tests
 }
 
-// VerifierHandler serves the forward-auth endpoints: /auth/verify (the nginx
-// auth_request target), /auth/login (start a card login), /auth/callback (consume
-// the oracle attestation → mint the cookie).
+// VerifierHandler serves /auth/verify (the nginx auth_request target), /auth/login
+// (start a card login), and /auth/callback (verify the card §5.2 signature → mint
+// the cookie).
 func VerifierHandler(cfg VerifierConfig) http.Handler {
 	if cfg.CookieName == "" {
 		cfg.CookieName = DefaultCookieName
+	}
+	if cfg.SessionTTL == 0 {
+		cfg.SessionTTL = 12 * time.Hour
 	}
 	if cfg.StateTTL == 0 {
 		cfg.StateTTL = 5 * time.Minute
@@ -59,6 +70,9 @@ func VerifierHandler(cfg VerifierConfig) http.Handler {
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
+	if u, err := url.Parse(cfg.ExternalURL); err == nil {
+		cfg.domain = u.Host
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth/verify", cfg.handleVerify)
 	mux.HandleFunc("/auth/login", cfg.handleLogin)
@@ -68,7 +82,7 @@ func VerifierHandler(cfg VerifierConfig) http.Handler {
 
 // handleVerify is the auth_request target: a valid, allowlisted session cookie → 200
 // + identity headers (nginx maps Remote-User → X-WEBAUTH-USER for Forgejo); anything
-// else → 401 (nginx then redirects to /auth/login). No PAPI call (validate-at-mint).
+// else → 401. No PAPI call (validate-at-mint).
 func (cfg VerifierConfig) handleVerify(w http.ResponseWriter, r *http.Request) {
 	ck, err := r.Cookie(cfg.CookieName)
 	if err != nil {
@@ -108,15 +122,14 @@ func (cfg VerifierConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	q := u.Query()
 	q.Set("callback", cfg.ExternalURL+"/auth/callback")
-	q.Set("aud", cfg.ExternalURL)
-	q.Set("state", state)
 	q.Set("nonce", nonce)
+	q.Set("state", state)
 	u.RawQuery = q.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
-// handleCallback consumes the oracle's attestation (Ed25519) + the login state,
-// checks nonce/audience/allowlist, mints the session cookie, and redirects back.
+// handleCallback verifies the card §5.2 signature against the registry over the login
+// nonce, then mints the session cookie as the matched principal.
 func (cfg VerifierConfig) handleCallback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	st, err := ParseState(cfg.CookieKey, q.Get("state"), cfg.now())
@@ -124,28 +137,19 @@ func (cfg VerifierConfig) handleCallback(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid login state", http.StatusBadRequest)
 		return
 	}
-	att, err := ParseAttest(cfg.OraclePub, q.Get("att"), cfg.now())
+	entry, err := cfg.Registry.VerifyLogin(cfg.domain, st.Nonce, q.Get("sig"))
 	if err != nil {
-		cfg.Logger.Warn("authproxy: attestation rejected", "err", err)
-		http.Error(w, "invalid attestation", http.StatusUnauthorized)
+		cfg.Logger.Warn("authproxy: login signature rejected", "err", err)
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
 		return
 	}
-	if att.Nonce != st.Nonce {
-		http.Error(w, "attestation nonce mismatch", http.StatusUnauthorized)
-		return
-	}
-	if att.Aud != cfg.ExternalURL {
-		http.Error(w, "attestation audience mismatch", http.StatusUnauthorized)
-		return
-	}
-	if !cfg.allowed(att.Principal, att.Groups) {
-		cfg.Logger.Warn("authproxy: principal not allowed", "principal", att.Principal, "groups", att.Groups)
+	if !cfg.allowed(entry.Principal, nil) {
+		cfg.Logger.Warn("authproxy: principal not allowed", "principal", entry.Principal)
 		http.Error(w, "not allowed", http.StatusForbidden)
 		return
 	}
-	cookie, err := MintSession(cfg.CookieKey, SessionClaims{
-		Principal: att.Principal, Groups: att.Groups, Exp: att.SessionExp,
-	})
+	exp := cfg.now().Add(cfg.SessionTTL).Unix()
+	cookie, err := MintSession(cfg.CookieKey, SessionClaims{Principal: entry.Principal, Exp: exp})
 	if err != nil {
 		http.Error(w, "cookie mint failed", http.StatusInternalServerError)
 		return
@@ -155,7 +159,7 @@ func (cfg VerifierConfig) handleCallback(w http.ResponseWriter, r *http.Request)
 		Value:    cookie,
 		Path:     "/",
 		Domain:   cfg.CookieDomain,
-		Expires:  time.Unix(att.SessionExp, 0),
+		Expires:  time.Unix(exp, 0),
 		HttpOnly: true,
 		Secure:   cfg.CookieSecure,
 		SameSite: http.SameSiteLaxMode,
@@ -164,12 +168,12 @@ func (cfg VerifierConfig) handleCallback(w http.ResponseWriter, r *http.Request)
 	if !safeRedirect(rd) {
 		rd = "/"
 	}
-	cfg.Logger.Info("authproxy: login", "principal", att.Principal, "groups", att.Groups)
+	cfg.Logger.Info("authproxy: login", "principal", entry.Principal)
 	http.Redirect(w, r, rd, http.StatusFound)
 }
 
-// allowed applies the authz allowlist. Empty allowlist (no principals AND no groups)
-// → any authenticated principal passes (a card login was already required).
+// allowed applies the optional authz allowlist. Empty allowlist (no principals AND no
+// groups) → any registered card passes.
 func (cfg VerifierConfig) allowed(principal string, groups []string) bool {
 	if len(cfg.AllowPrincipals) == 0 && len(cfg.AllowGroups) == 0 {
 		return true
@@ -185,8 +189,8 @@ func (cfg VerifierConfig) allowed(principal string, groups []string) bool {
 	return false
 }
 
-// safeRedirect guards against open redirects: only a site-relative path (starts with
-// a single "/", not "//" which is protocol-relative to another host).
+// safeRedirect guards against open redirects: only a site-relative path (single "/",
+// not "//" which is protocol-relative to another host).
 func safeRedirect(rd string) bool {
 	return strings.HasPrefix(rd, "/") && !strings.HasPrefix(rd, "//")
 }

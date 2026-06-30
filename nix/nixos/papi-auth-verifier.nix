@@ -7,7 +7,7 @@
 #     externalUrl = "https://forge.example.com";
 #     oracleLogin = "http://localhost:9098/authorize";   # the card-machine oracle
 #     cookieKeyFile = "/run/secrets/papi-cookie-key";    # decrypted 9D ebox (secret)
-#     oraclePubkeyFile = ./oracle-attest.pub;            # base64 Ed25519 (public)
+#     authorizedKeysFile = "/var/lib/papi/registry";     # papi-ssh-sync fragment (public)
 #     allowGroups = [ "owner" ];
 #   };
 #
@@ -49,9 +49,13 @@ in
       '';
     };
 
-    oraclePubkeyFile = lib.mkOption {
+    authorizedKeysFile = lib.mkOption {
       type = lib.types.path;
-      description = "File with the oracle's Ed25519 public key (base64). Public — safe to commit.";
+      description = ''
+        The papi-ssh-sync authorized_keys fragment whose `slot=9A` lines are the
+        registered cards. The verifier ECDSA-verifies each card-direct login against
+        these keys (RFC-0001 §5.2). Public — only public keys, safe to expose.
+      '';
     };
 
     oracleLogin = lib.mkOption {
@@ -67,13 +71,13 @@ in
     externalUrl = lib.mkOption {
       type = lib.types.str;
       example = "https://forge.example.com";
-      description = "The verifier's external base URL (scheme://host) — the callback base and attestation audience.";
+      description = "The verifier's external base URL (scheme://host) — the callback base and §5.2 signature domain.";
     };
 
     allowPrincipals = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
-      description = "Allowed principals. Empty principals AND empty groups → any authenticated card login.";
+      description = "Allowed principals. Empty principals AND empty groups → any registered card.";
     };
 
     allowGroups = lib.mkOption {
@@ -132,8 +136,8 @@ in
                 cfg.addr
                 "--cookie-key-file"
                 (toString cfg.cookieKeyFile)
-                "--oracle-pubkey-file"
-                (toString cfg.oraclePubkeyFile)
+                "--authorized-keys-file"
+                (toString cfg.authorizedKeysFile)
                 "--oracle-login"
                 cfg.oracleLogin
                 "--external-url"

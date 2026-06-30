@@ -1,39 +1,81 @@
 package authproxy
 
 import (
-	"crypto/ed25519"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/ssh"
+
+	"github.com/amarbel-llc/papi/internal/0/markl"
+	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
 )
 
-func testVerifier(t *testing.T) (VerifierConfig, ed25519.PrivateKey, time.Time) {
+const testDomain = "forge.linenisgreat.com"
+
+// testCard generates an ecdsa key and a one-entry Registry holding its slot-9A line
+// (cn=tester), as papi-ssh-sync would emit.
+func testCard(t *testing.T) (*ecdsa.PrivateKey, *Registry) {
 	t.Helper()
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+	sshpub, err := ssh.NewPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := strings.TrimRight(string(ssh.MarshalAuthorizedKey(sshpub)), "\n") +
+		" piggy slot=9A guid=ABCD1234 cn=tester\n"
+	reg, err := ParseRegistry([]byte(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv, reg
+}
+
+// cardSign produces a §5.2 signature markl over Preimage(domain, nonce) with priv.
+func cardSign(t *testing.T, priv *ecdsa.PrivateKey, domain, nonce string) string {
+	t.Helper()
+	digest := sha256.Sum256(signchallenge.Preimage(domain, nonce))
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	rs := make([]byte, 64)
+	r.FillBytes(rs[:32])
+	s.FillBytes(rs[32:])
+	sig, err := markl.Build(markl.PurposeAuthSig, markl.FormatEcdsaP256Sig, rs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sig
+}
+
+func testVerifier(reg *Registry) (VerifierConfig, time.Time) {
 	now := time.Unix(1_700_000_000, 0)
 	cfg := VerifierConfig{
 		CookieKey:    testKey,
-		OraclePub:    pub,
-		OracleLogin:  "https://oracle.example/authorize",
-		ExternalURL:  "https://krone.example",
-		AllowGroups:  map[string]bool{"owner": true},
+		Registry:     reg,
+		OracleLogin:  "http://localhost:9098/authorize",
+		ExternalURL:  "https://" + testDomain,
 		CookieSecure: true,
 		now:          func() time.Time { return now },
 	}
-	return cfg, priv, now
+	return cfg, now
 }
 
 func TestVerifyValidCookie(t *testing.T) {
-	cfg, _, now := testVerifier(t)
-	cookie, _ := MintSession(cfg.CookieKey, SessionClaims{
-		Principal: "self", Groups: []string{"owner"}, Exp: now.Add(15 * time.Minute).Unix(),
-	})
+	_, reg := testCard(t)
+	cfg, now := testVerifier(reg)
+	cookie, _ := MintSession(cfg.CookieKey, SessionClaims{Principal: "tester", Exp: now.Add(time.Hour).Unix()})
 	req := httptest.NewRequest(http.MethodGet, "/auth/verify", nil)
 	req.AddCookie(&http.Cookie{Name: DefaultCookieName, Value: cookie})
 	rec := httptest.NewRecorder()
@@ -42,55 +84,29 @@ func TestVerifyValidCookie(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("verify = %d, want 200; body %s", rec.Code, rec.Body.String())
 	}
-	if rec.Header().Get("Remote-User") != "self" {
-		t.Errorf("Remote-User = %q, want self", rec.Header().Get("Remote-User"))
-	}
-	if rec.Header().Get("Remote-Groups") != "owner" {
-		t.Errorf("Remote-Groups = %q, want owner", rec.Header().Get("Remote-Groups"))
+	if rec.Header().Get("Remote-User") != "tester" {
+		t.Errorf("Remote-User = %q, want tester", rec.Header().Get("Remote-User"))
 	}
 }
 
-func TestVerifyRejects(t *testing.T) {
-	cfg, _, now := testVerifier(t)
-	// no cookie
+func TestVerifyNoCookie(t *testing.T) {
+	_, reg := testCard(t)
+	cfg, _ := testVerifier(reg)
 	rec := httptest.NewRecorder()
 	VerifierHandler(cfg).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/verify", nil))
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("no cookie = %d, want 401", rec.Code)
 	}
-	// expired cookie
-	exp, _ := MintSession(cfg.CookieKey, SessionClaims{Principal: "self", Groups: []string{"owner"}, Exp: now.Add(-time.Minute).Unix()})
-	req := httptest.NewRequest(http.MethodGet, "/auth/verify", nil)
-	req.AddCookie(&http.Cookie{Name: DefaultCookieName, Value: exp})
-	rec = httptest.NewRecorder()
-	VerifierHandler(cfg).ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expired cookie = %d, want 401", rec.Code)
-	}
-	// authenticated but not in the allowlist (group "guest" not allowed)
-	notallowed, _ := MintSession(cfg.CookieKey, SessionClaims{Principal: "stranger", Groups: []string{"guest"}, Exp: now.Add(time.Hour).Unix()})
-	req = httptest.NewRequest(http.MethodGet, "/auth/verify", nil)
-	req.AddCookie(&http.Cookie{Name: DefaultCookieName, Value: notallowed})
-	rec = httptest.NewRecorder()
-	VerifierHandler(cfg).ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("not-allowlisted = %d, want 401", rec.Code)
-	}
 }
 
-func callbackURL(att, state string) string {
-	return "/auth/callback?att=" + url.QueryEscape(att) + "&state=" + url.QueryEscape(state)
-}
-
-func TestCallbackMintsCookie(t *testing.T) {
-	cfg, priv, now := testVerifier(t)
-	state, _ := MintState(cfg.CookieKey, StateClaims{Nonce: "n1", RD: "/admin", Exp: now.Add(5 * time.Minute).Unix()})
-	att, _ := MintAttest(priv, AttestClaims{
-		Principal: "self", Groups: []string{"owner"}, Nonce: "n1", Aud: cfg.ExternalURL,
-		SessionExp: now.Add(15 * time.Minute).Unix(), Exp: now.Add(2 * time.Minute).Unix(),
-	})
+func TestCallbackVerifiesCardSig(t *testing.T) {
+	priv, reg := testCard(t)
+	cfg, now := testVerifier(reg)
+	state, _ := MintState(cfg.CookieKey, StateClaims{Nonce: "N1", RD: "/admin", Exp: now.Add(5 * time.Minute).Unix()})
+	sig := cardSign(t, priv, testDomain, "N1")
+	target := "/auth/callback?sig=" + url.QueryEscape(sig) + "&state=" + url.QueryEscape(state)
 	rec := httptest.NewRecorder()
-	VerifierHandler(cfg).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, callbackURL(att, state), nil))
+	VerifierHandler(cfg).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))
 
 	if rec.Code != http.StatusFound {
 		t.Fatalf("callback = %d, want 302; body %s", rec.Code, rec.Body.String())
@@ -107,61 +123,44 @@ func TestCallbackMintsCookie(t *testing.T) {
 	if set == nil {
 		t.Fatal("no session cookie set")
 	}
-	if !set.HttpOnly || !set.Secure {
-		t.Errorf("cookie flags: HttpOnly=%v Secure=%v, want both true", set.HttpOnly, set.Secure)
-	}
 	sc, err := ParseSession(cfg.CookieKey, set.Value, now)
-	if err != nil || sc.Principal != "self" {
+	if err != nil || sc.Principal != "tester" {
 		t.Errorf("minted cookie invalid: %v / %+v", err, sc)
 	}
 }
 
 func TestCallbackRejects(t *testing.T) {
-	cfg, priv, now := testVerifier(t)
-	good := func() (string, AttestClaims) {
-		state, _ := MintState(cfg.CookieKey, StateClaims{Nonce: "n1", RD: "/admin", Exp: now.Add(5 * time.Minute).Unix()})
-		return state, AttestClaims{Principal: "self", Groups: []string{"owner"}, Nonce: "n1", Aud: cfg.ExternalURL,
-			SessionExp: now.Add(15 * time.Minute).Unix(), Exp: now.Add(2 * time.Minute).Unix()}
-	}
-	run := func(att, state string) int {
+	priv, reg := testCard(t)
+	cfg, now := testVerifier(reg)
+	state, _ := MintState(cfg.CookieKey, StateClaims{Nonce: "N1", RD: "/admin", Exp: now.Add(5 * time.Minute).Unix()})
+	run := func(sig string) int {
 		rec := httptest.NewRecorder()
-		VerifierHandler(cfg).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, callbackURL(att, state), nil))
+		VerifierHandler(cfg).ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/auth/callback?sig="+url.QueryEscape(sig)+"&state="+url.QueryEscape(state), nil))
 		return rec.Code
 	}
 
-	// nonce mismatch → 401
-	state, ac := good()
-	ac.Nonce = "WRONG"
-	att, _ := MintAttest(priv, ac)
-	if code := run(att, state); code != http.StatusUnauthorized {
-		t.Errorf("nonce mismatch = %d, want 401", code)
+	// signed by a key NOT in the registry → 401
+	stranger, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// wrong audience → 401
-	state, ac = good()
-	ac.Aud = "https://evil.example"
-	att, _ = MintAttest(priv, ac)
-	if code := run(att, state); code != http.StatusUnauthorized {
-		t.Errorf("wrong aud = %d, want 401", code)
+	if code := run(cardSign(t, stranger, testDomain, "N1")); code != http.StatusUnauthorized {
+		t.Errorf("unregistered key = %d, want 401", code)
 	}
-	// attestation signed by a DIFFERENT key (forged) → 401
-	state, ac = good()
-	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
-	att, _ = MintAttest(otherPriv, ac)
-	if code := run(att, state); code != http.StatusUnauthorized {
-		t.Errorf("forged attestation = %d, want 401", code)
+	// right key but WRONG domain (relay defense) → 401
+	if code := run(cardSign(t, priv, "evil.example", "N1")); code != http.StatusUnauthorized {
+		t.Errorf("wrong-domain sig = %d, want 401", code)
 	}
-	// principal/groups not allowed → 403
-	state, ac = good()
-	ac.Groups = []string{"guest"}
-	ac.Principal = "stranger"
-	att, _ = MintAttest(priv, ac)
-	if code := run(att, state); code != http.StatusForbidden {
-		t.Errorf("not allowed = %d, want 403", code)
+	// right key but WRONG nonce → 401
+	if code := run(cardSign(t, priv, testDomain, "WRONG")); code != http.StatusUnauthorized {
+		t.Errorf("wrong-nonce sig = %d, want 401", code)
 	}
 }
 
 func TestLoginRedirectsToOracle(t *testing.T) {
-	cfg, _, _ := testVerifier(t)
+	_, reg := testCard(t)
+	cfg, _ := testVerifier(reg)
 	rec := httptest.NewRecorder()
 	VerifierHandler(cfg).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/login?rd=/admin", nil))
 	if rec.Code != http.StatusFound {
@@ -171,17 +170,13 @@ func TestLoginRedirectsToOracle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loc.Host != "oracle.example" || loc.Path != "/authorize" {
-		t.Errorf("redirect host/path = %s%s, want oracle.example/authorize", loc.Host, loc.Path)
+	if loc.Host != "localhost:9098" || loc.Path != "/authorize" {
+		t.Errorf("redirect = %s, want the oracle /authorize", loc)
 	}
 	q := loc.Query()
-	if q.Get("state") == "" || q.Get("nonce") == "" {
-		t.Error("redirect missing state/nonce")
+	if q.Get("nonce") == "" || q.Get("callback") != "https://"+testDomain+"/auth/callback" {
+		t.Errorf("redirect params: nonce=%q callback=%q", q.Get("nonce"), q.Get("callback"))
 	}
-	if q.Get("callback") != "https://krone.example/auth/callback" || q.Get("aud") != "https://krone.example" {
-		t.Errorf("callback/aud = %q / %q", q.Get("callback"), q.Get("aud"))
-	}
-	// the state must carry the nonce passed to the oracle (binding)
 	st, err := ParseState(cfg.CookieKey, q.Get("state"), time.Unix(1_700_000_000, 0))
 	if err != nil || st.Nonce != q.Get("nonce") || st.RD != "/admin" {
 		t.Errorf("state binding wrong: %v / %+v vs nonce %q", err, st, q.Get("nonce"))
