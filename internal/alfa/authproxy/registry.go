@@ -35,8 +35,13 @@ func LoadRegistry(path string) (*Registry, error) {
 	return ParseRegistry(data)
 }
 
-// ParseRegistry collects every slot-9A ecdsa-sha2-nistp256 key (with its cn=/guid=
-// principal) from authorized_keys bytes. Non-9A / non-ecdsa lines are skipped.
+// ParseRegistry collects every ecdsa-sha2-nistp256 key (with its cn=/guid=
+// principal) from authorized_keys bytes — the published slot-9A auth keys, since a
+// PAPI domain's §5 auth keys are exactly its P-256 slot-9A keys. The ECDSA-P256 key
+// type IS the slot-9A discriminator, so this consumes the canonical
+// /papi/ssh-authorized-keys body (RFC-0001 §4.2: guid=/cn= annotations, no slot=)
+// AND a `piggy list --format=ssh` style line (which adds slot=9A). Lines that carry a
+// `slot=` annotation naming a slot OTHER than 9A, and non-ecdsa lines, are skipped.
 func ParseRegistry(data []byte) (*Registry, error) {
 	var reg Registry
 	rest := data
@@ -50,8 +55,8 @@ func ParseRegistry(data []byte) (*Registry, error) {
 			continue
 		}
 		ann := parseAnnotations(comment)
-		if !strings.EqualFold(ann["slot"], "9A") {
-			continue
+		if slot, ok := ann["slot"]; ok && !strings.EqualFold(slot, "9A") {
+			continue // an explicit non-9A slot; canonical lines carry no slot= at all
 		}
 		ck, ok := pub.(ssh.CryptoPublicKey)
 		if !ok {
@@ -68,7 +73,7 @@ func ParseRegistry(data []byte) (*Registry, error) {
 		reg.entries = append(reg.entries, RegistryEntry{Principal: principal, PubKey: ecpub})
 	}
 	if len(reg.entries) == 0 {
-		return nil, fmt.Errorf("registry has no slot-9A ecdsa keys")
+		return nil, fmt.Errorf("registry has no ecdsa-sha2-nistp256 (slot-9A auth) keys")
 	}
 	return &reg, nil
 }

@@ -2052,7 +2052,7 @@ func newAuthVerifierCmd() *cobra.Command {
 	cmd.Flags().StringVar(&cookieKeyFile, "cookie-key-file", "",
 		"file with the verifier-only HMAC cookie key (>= 32 bytes; required)")
 	cmd.Flags().StringVar(&authorizedKeysFile, "authorized-keys-file", "",
-		"papi-ssh-sync authorized_keys fragment whose slot=9A lines are the registered cards (required)")
+		"registered cards: a papi-ssh-sync fragment or a /papi/ssh-authorized-keys body — its ecdsa-sha2-nistp256 (slot-9A auth) lines (required)")
 	cmd.Flags().StringVar(&oracleLogin, "oracle-login", "",
 		"the oracle's /authorize URL the login flow redirects to (required)")
 	cmd.Flags().StringVar(&externalURL, "external-url", "",

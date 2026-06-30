@@ -52,9 +52,11 @@ in
     authorizedKeysFile = lib.mkOption {
       type = lib.types.path;
       description = ''
-        The papi-ssh-sync authorized_keys fragment whose `slot=9A` lines are the
-        registered cards. The verifier ECDSA-verifies each card-direct login against
-        these keys (RFC-0001 §5.2). Public — only public keys, safe to expose.
+        The registered cards, as authorized_keys lines: a papi-ssh-sync fragment, or
+        a saved `/papi/ssh-authorized-keys` body (RFC-0001 §4.2). The verifier reads
+        the ecdsa-sha2-nistp256 (slot-9A auth) lines and ECDSA-verifies each
+        card-direct login against them (§5.2). Public — only public keys, safe to
+        expose.
       '';
     };
 
