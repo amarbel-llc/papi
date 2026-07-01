@@ -55,8 +55,9 @@ in
         The registered cards, as authorized_keys lines: a papi-ssh-sync fragment, or
         a saved `/papi/ssh-authorized-keys` body (RFC-0001 §4.2). The verifier reads
         the ecdsa-sha2-nistp256 (slot-9A auth) lines and ECDSA-verifies each
-        card-direct login against them (§5.2). Public — only public keys, safe to
-        expose.
+        card-direct login against them (§5.2). It hot-reloads this file when its mtime
+        changes, so a sync refresh (a card added or revoked) takes effect on the next
+        login without restarting the service. Public — only public keys, safe to expose.
       '';
     };
 
