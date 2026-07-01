@@ -217,6 +217,12 @@
       homeManagerModules.papi-ssh-sync = import ./nix/hm/papi-ssh-sync.nix self;
       nixosModules.papi-ssh-sync = import ./nix/nixos/papi-ssh-sync.nix self;
 
+      # The client-side sibling to nixosModules.papi-auth-verifier: runs the §5.2
+      # card oracle (`papi sign-challenge-serve`) in authorize-only mode as a per-user
+      # service, so a card login's /authorize redirect resolves on the user's own
+      # machine. FDR-0014 client side; see papi#44.
+      homeManagerModules.papi-oracle = import ./nix/hm/papi-oracle.nix self;
+
       # The FDR-0014 forward-auth verifier as a systemd service. Curried with `self`
       # so `package` defaults to self.packages.${system}.papi. A consumer (circus)
       # imports it and fronts it with nginx auth_request.

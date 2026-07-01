@@ -49,27 +49,35 @@ type ServeConfig struct {
 // Handler is the card oracle for the RFC-0001 §5.2 sign-challenge handshake
 // (papi#36). Routes:
 //
-//   - POST /sign  — signing oracle: a §5.1 challenge JSON in → the §5.2
-//     {challenge_id, signature} body out (the backend/plugin seam).
-//   - POST /login — handshake broker (when Target is set): {auth_key_id} in → the
-//     minted session out, running discovery→challenge→sign→response server-side.
+//   - POST /sign  — signing oracle (when Domain is set): a §5.1 challenge JSON in →
+//     the §5.2 {challenge_id, signature} body out (the backend/plugin seam).
+//   - POST /login — handshake broker (when Target AND Domain are set): {auth_key_id}
+//     in → the minted session out, running discovery→challenge→sign→response
+//     server-side.
 //   - GET  /authorize — forward-auth login (when AllowCallbacks is set): a browser
 //     navigation card-signs Preimage(<callback host>, nonce) and 302s to the
 //     verifier callback with the signature. The verifier (FDR-0014) checks it
 //     against the registered slot-9A keys. No PAPI-server call; the card is the
 //     only thing that signs.
 //
-// /sign and /login pin CORS to Origin. /authorize is a top-level navigation (no
-// CORS) that only signs for an allowlisted callback.
+// /sign and /login pin CORS to Origin and bind to the fixed Domain, so they mount
+// only when Domain is set. /authorize is a top-level navigation (no CORS) that derives
+// its domain from the callback host and only signs for an allowlisted callback — with
+// only AllowCallbacks set (no Domain), Handler is an authorize-only oracle.
 func Handler(cfg ServeConfig) http.Handler {
 	logger := cfg.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sign", withLogging(logger, "/sign", signHandler(cfg)))
-	if cfg.Target != "" {
-		mux.HandleFunc("/login", withLogging(logger, "/login", loginHandler(cfg, logger)))
+	// /sign and /login sign against a fixed Domain, so they mount only when Domain is
+	// set. /authorize derives its domain from the callback host, so it needs no Domain —
+	// with only AllowCallbacks set, this is an authorize-only oracle.
+	if cfg.Domain != "" {
+		mux.HandleFunc("/sign", withLogging(logger, "/sign", signHandler(cfg)))
+		if cfg.Target != "" {
+			mux.HandleFunc("/login", withLogging(logger, "/login", loginHandler(cfg, logger)))
+		}
 	}
 	if len(cfg.AllowCallbacks) > 0 {
 		mux.HandleFunc("/authorize", withLogging(logger, "/authorize", authorizeHandler(cfg, logger)))

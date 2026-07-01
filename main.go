@@ -1739,7 +1739,7 @@ func newVerifyReceiptCmd() *cobra.Command {
 // passed through (the agent selects the slot-9A key, disambiguating by guid only
 // when several cards are present) and PCSC is never touched — the path for hosts
 // that reach the card over a forwarded agent rather than a local pcscd.
-func signChallengeSigner(ctx context.Context, mode, guid, pin string) (signchallenge.Signer, string, error) {
+func signChallengeSigner(ctx context.Context, mode, guid, pin, agentSocket string) (signchallenge.Signer, string, error) {
 	useAgent := false
 	switch mode {
 	case "agent":
@@ -1747,12 +1747,15 @@ func signChallengeSigner(ctx context.Context, mode, guid, pin string) (signchall
 	case "pcsc":
 		useAgent = false
 	case "", "auto":
-		useAgent = os.Getenv("SSH_AUTH_SOCK") != ""
+		useAgent = agentSocket != "" || os.Getenv("SSH_AUTH_SOCK") != ""
 	default:
 		return nil, "", fmt.Errorf("--signer must be auto, agent, or pcsc (got %q)", mode)
 	}
 	if useAgent {
-		return enroll.AgentSignBytesSigner{}, guid, nil
+		// agentSocket empty → AgentSignBytesSigner falls back to $SSH_AUTH_SOCK. The
+		// socket is dialed lazily at sign time, so this never touches the card at
+		// startup — the oracle daemon runs whether or not a card is present.
+		return enroll.AgentSignBytesSigner{SocketPath: agentSocket}, guid, nil
 	}
 	if guid == "" {
 		cards, err := enroll.ListCards(ctx, enroll.ExecRunner)
@@ -1797,7 +1800,7 @@ func newSignChallengeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin)
+			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin, "")
 			if err != nil {
 				return err
 			}
@@ -1835,11 +1838,11 @@ func newSignChallengeCmd() *cobra.Command {
 // browser). It is the first production HTTP server in the papi binary, deliberately
 // minimal and loopback-only.
 func newSignChallengeServeCmd() *cobra.Command {
-	var addr, domain, origin, target, guid, pin, signerMode, configPath, logFormat string
+	var addr, domain, origin, target, guid, pin, signerMode, agentSocket, configPath, logFormat string
 	var allowCallbacks []string
 	cmd := &cobra.Command{
-		Use:   "sign-challenge-serve --domain <domain> --origin <spa-origin>",
-		Short: "Run a §5.2 card oracle (/sign + /login broker) for a browser SPA (papi#36)",
+		Use:   "sign-challenge-serve [--domain <d> --origin <o>] [--allow-callback <url>]",
+		Short: "Run a §5.2 card oracle: /sign + /login for a browser SPA, and/or /authorize for FDR-0014 forward-auth",
 		Long: "Serve the §5.2 sign-challenge producing side over HTTP so a browser SPA can obtain " +
 			"a slot-9A signature it cannot produce itself (no PCSC in a page). Two routes:\n\n" +
 			"  /sign  — POST a /papi/auth/challenge response {challenge_id, nonce, expires_at}; " +
@@ -1854,7 +1857,12 @@ func newSignChallengeServeCmd() *cobra.Command {
 			"from the request — relay defense). --origin pins CORS. Bind --addr beyond loopback " +
 			"(e.g. 0.0.0.0) only on a trusted network: /login is then a card-gated session-minting " +
 			"endpoint, gated only by the card's PIN/touch policy. --config loads a TOML file " +
-			"(flags override); --log-format sets text|json request logging on stderr.",
+			"(flags override); --log-format sets text|json request logging on stderr.\n\n" +
+			"Authorize-only mode: pass only --allow-callback (no --domain/--origin) to serve just " +
+			"/authorize — the forward-auth card-login the FDR-0014 verifier drives. /sign and /login " +
+			"are not mounted. This is the mode homeManagerModules.papi-oracle runs. Use --agent-socket " +
+			"to point the agent signer at a fixed socket (e.g. the ssh-agent-mux socket) so a user " +
+			"service need not inherit $SSH_AUTH_SOCK.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var fc signchallenge.FileConfig
@@ -1874,11 +1882,14 @@ func newSignChallengeServeCmd() *cobra.Command {
 			signerMode = signchallenge.Resolve(cmd.Flags().Changed("signer"), signerMode, fc.Signer)
 			logFormat = signchallenge.Resolve(cmd.Flags().Changed("log-format"), logFormat, fc.LogFormat)
 
-			if domain == "" {
-				return fmt.Errorf("--domain is required (the PAPI identity domain the §5.2 signature binds to)")
+			if domain == "" && len(allowCallbacks) == 0 {
+				return fmt.Errorf("nothing to serve: set --domain (for /sign, plus /login with --target) or --allow-callback (for /authorize)")
 			}
-			if origin == "" {
-				return fmt.Errorf("--origin is required (the SPA origin CORS is pinned to; e.g. http://localhost:3000)")
+			if domain != "" && origin == "" {
+				return fmt.Errorf("--origin is required with --domain (the SPA origin CORS is pinned to; e.g. http://localhost:3000)")
+			}
+			if target != "" && domain == "" {
+				return fmt.Errorf("--target requires --domain (the /login broker binds the §5.2 signature to it)")
 			}
 			logger, err := newServeLogger(logFormat)
 			if err != nil {
@@ -1886,7 +1897,7 @@ func newSignChallengeServeCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
-			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin)
+			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin, agentSocket)
 			if err != nil {
 				return err
 			}
@@ -1901,9 +1912,14 @@ func newSignChallengeServeCmd() *cobra.Command {
 			if len(allowCallbacks) > 0 {
 				routes += ", /authorize"
 			}
-			fmt.Fprintf(cmd.OutOrStdout(),
-				"papi sign-challenge-serve: card oracle for %q on http://%s (%s; CORS origin %s; target %q)\n",
-				domain, ln.Addr(), routes, origin, target)
+			if domain == "" {
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"papi sign-challenge-serve: authorize-only oracle on http://%s (%s)\n", ln.Addr(), routes)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(),
+					"papi sign-challenge-serve: card oracle for %q on http://%s (%s; CORS origin %s; target %q)\n",
+					domain, ln.Addr(), routes, origin, target)
+			}
 			srv := &http.Server{
 				Handler: signchallenge.Handler(signchallenge.ServeConfig{
 					Signer: signer, GUID: signGUID, Domain: domain, Origin: origin, Target: target, Logger: logger,
@@ -1931,6 +1947,8 @@ func newSignChallengeServeCmd() *cobra.Command {
 		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; else piggy prompts via askpass)")
 	cmd.Flags().StringVar(&signerMode, "signer", "auto",
 		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
+	cmd.Flags().StringVar(&agentSocket, "agent-socket", "",
+		"SSH agent socket for the agent signer (default $SSH_AUTH_SOCK); dialed lazily at sign time, so the daemon starts without a card — e.g. ~/.local/state/ssh/mux-agent.sock")
 	cmd.Flags().StringVar(&configPath, "config", "",
 		"optional TOML config file (addr/domain/origin/target/guid/signer/log_format); explicit flags override it")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text",

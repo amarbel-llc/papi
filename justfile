@@ -80,7 +80,7 @@ build-installer:
 
 # --- test ---
 
-test: test-go test-ts test-ts-bundle test-nix-hm-module
+test: test-go test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module
 
 # Hermetic Go test suite (httptest fixtures; no network, no card).
 test-go:
@@ -116,6 +116,28 @@ test-nix-hm-module:
       test = import ./nix/hm/eval-test.nix {
         inherit pkgs;
         module = flake.homeManagerModules.papi-ssh-sync;
+      };
+    in test'
+    json="$(nix eval --impure --json --expr "$expr")"
+    printf '%s\n' "$json" | jq -r '.summary'
+    if [[ "$(printf '%s\n' "$json" | jq -r '.pass')" != "true" ]]; then
+        printf '%s\n' "$json" | jq -r '.failures[] | "FAIL: \(.name)\n  got: \(.result.got)"'
+        exit 1
+    fi
+
+# Smoke-test the `services.papi-oracle` home-manager module: evaluate it against
+# synthetic configs (lib.evalModules, no home-manager input) and verify the option
+# schema, the authorize-only ExecStart (--allow-callback but no --domain/--origin),
+# the default agent socket, and the non-empty-allowCallbacks assertion.
+test-nix-oracle-module:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    expr='let
+      flake = builtins.getFlake (toString ./.);
+      pkgs = flake.inputs.igloo.legacyPackages.${builtins.currentSystem};
+      test = import ./nix/hm/papi-oracle-eval-test.nix {
+        inherit pkgs;
+        module = flake.homeManagerModules.papi-oracle;
       };
     in test'
     json="$(nix eval --impure --json --expr "$expr")"

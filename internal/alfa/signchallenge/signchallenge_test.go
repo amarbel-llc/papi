@@ -392,3 +392,29 @@ func TestAuthorizeRejectsBadCallback(t *testing.T) {
 		t.Errorf("missing params = %d, want 400", rec.Code)
 	}
 }
+
+// TestAuthorizeOnlyMode: with only AllowCallbacks (no Domain), /authorize is served but
+// /sign and /login are NOT mounted — the mode homeManagerModules.papi-oracle runs.
+func TestAuthorizeOnlyMode(t *testing.T) {
+	cardPriv, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	h := Handler(ServeConfig{
+		Signer:         fakeSigner{cardPriv}, // no Domain, no Target, no Origin
+		AllowCallbacks: []string{"https://forge.linenisgreat.com/auth/callback"},
+	})
+
+	// /authorize is live (a missing-params GET reaches the handler → 400, not 404).
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/authorize", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("/authorize = %d, want 400 (mounted); a 404 would mean it is not mounted", rec.Code)
+	}
+
+	// /sign and /login are unmounted → 404.
+	for _, path := range []string{"/sign", "/login"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s in authorize-only mode = %d, want 404 (unmounted)", path, rec.Code)
+		}
+	}
+}

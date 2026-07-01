@@ -1269,3 +1269,34 @@ func TestIdentityDomainAbsentIsEmpty(t *testing.T) {
 		t.Errorf("got %q, want a single empty line", out)
 	}
 }
+
+// signChallengeServeRun runs the serve command's arg validation. It only exercises
+// the error paths, which return before the command binds a socket or blocks serving.
+func signChallengeServeRun(t *testing.T, args ...string) error {
+	t.Helper()
+	cmd := newSignChallengeServeCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	return cmd.ExecuteContext(context.Background())
+}
+
+func TestSignChallengeServeValidation(t *testing.T) {
+	// Neither --domain nor --allow-callback: nothing to serve.
+	if err := signChallengeServeRun(t); err == nil || !strings.Contains(err.Error(), "nothing to serve") {
+		t.Errorf("no mode = %v, want 'nothing to serve'", err)
+	}
+	// --domain without --origin.
+	if err := signChallengeServeRun(t, "--domain", "d.example"); err == nil ||
+		!strings.Contains(err.Error(), "--origin is required") {
+		t.Errorf("domain without origin = %v, want '--origin is required'", err)
+	}
+	// --target needs --domain; --allow-callback supplies a mode so we reach that check.
+	if err := signChallengeServeRun(t,
+		"--allow-callback", "https://forge.example/auth/callback",
+		"--target", "https://api.example"); err == nil ||
+		!strings.Contains(err.Error(), "--target requires --domain") {
+		t.Errorf("target without domain = %v, want '--target requires --domain'", err)
+	}
+}
