@@ -3,6 +3,7 @@ package authproxy
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -13,6 +14,10 @@ import (
 // DefaultCookieName is the verifier's session cookie name.
 const DefaultCookieName = "__papi_session"
 
+// maxVerifySigBody caps the /auth/verify-signature request body: a signature markl
+// plus a domain plus a nonce are a few hundred bytes, so 16 KiB is generous slack.
+const maxVerifySigBody = 16 << 10
+
 // VerifierConfig configures the FDR-0014 forward-auth verifier. It is a §5.2
 // sign-challenge verifier: it holds the verifier-only cookie HMAC key and the
 // registry of accepted slot-9A keys (the papi-ssh-sync fragment). No signing key —
@@ -22,6 +27,14 @@ type VerifierConfig struct {
 	CookieKey []byte
 	// Registry is the set of registered slot-9A keys (any of which may auth).
 	Registry *Registry
+	// EnableVerifySignature mounts POST /auth/verify-signature: the FDR-0013
+	// app-native verify oracle — a card §5.2 signature plus the domain and nonce it
+	// was signed over in, the verified principal out — for consumers that mint their
+	// own session instead of taking the verifier's cookie. It is stateless and needs
+	// only Registry (no CookieKey/OracleLogin/ExternalURL), so a verifier with just
+	// this enabled runs as a standalone verify oracle with none of the forward-auth
+	// (cookie/oracle) machinery.
+	EnableVerifySignature bool
 	// OracleLogin is the card-machine oracle's /authorize URL the login redirects to.
 	OracleLogin string
 	// ExternalURL is the verifier's externally-reachable base (scheme://host). Its
@@ -74,9 +87,18 @@ func VerifierHandler(cfg VerifierConfig) http.Handler {
 		cfg.domain = u.Host
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/verify", cfg.handleVerify)
-	mux.HandleFunc("/auth/login", cfg.handleLogin)
-	mux.HandleFunc("/auth/callback", cfg.handleCallback)
+	// The forward-auth routes all turn on the cookie key — /auth/verify parses the
+	// session cookie, /auth/login and /auth/callback mint one — so they mount only
+	// when a cookie key is configured. A verify-signature-only verifier (FDR-0013)
+	// has none and mounts just the verify oracle below.
+	if len(cfg.CookieKey) > 0 {
+		mux.HandleFunc("/auth/verify", cfg.handleVerify)
+		mux.HandleFunc("/auth/login", cfg.handleLogin)
+		mux.HandleFunc("/auth/callback", cfg.handleCallback)
+	}
+	if cfg.EnableVerifySignature {
+		mux.HandleFunc("/auth/verify-signature", cfg.handleVerifySignature)
+	}
 	return mux
 }
 
@@ -170,6 +192,73 @@ func (cfg VerifierConfig) handleCallback(w http.ResponseWriter, r *http.Request)
 	}
 	cfg.Logger.Info("authproxy: login", "principal", entry.Principal)
 	http.Redirect(w, r, rd, http.StatusFound)
+}
+
+// verifySigRequest is the POST /auth/verify-signature body: a card §5.2 signature
+// markl and the domain + nonce it was signed over. The caller owns the nonce
+// lifecycle (mint, single-use, TTL, replay guard) — the verifier keeps no state.
+// domain MUST be the exact host the signature is bound to (the oracle signs over
+// hostOf(callback), host[:port], byte-exact), or the ECDSA check fails.
+type verifySigRequest struct {
+	Signature string `json:"signature"`
+	Domain    string `json:"domain"`
+	Nonce     string `json:"nonce"`
+}
+
+// verifySigResponse is the 200 body: the principal (cn=, falling back to guid=) of
+// the registered slot-9A key that verified. A per-card key_id — the auth_key_id
+// markl (RFC-0001 §5.1: piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…) — is a reserved
+// future additive field; v1 is principal-only.
+type verifySigResponse struct {
+	Principal string `json:"principal"`
+}
+
+// handleVerifySignature is the FDR-0013 app-native verify oracle: POST a card §5.2
+// signature plus the domain and nonce it was signed over, get back the principal of
+// the registered slot-9A key that verifies it (200), or a JSON error (401). It is the
+// server-to-server JSON sibling of handleCallback with the state-parse and cookie-mint
+// stripped out — pure, stateless verification over the registry. "No registered key
+// verifies" and "verified but the principal is not allowlisted" both return 401 (a
+// generic body), so the endpoint never reveals that an unlisted card IS registered and
+// a caller can treat any non-200 as "denied".
+func (cfg VerifierConfig) handleVerifySignature(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var req verifySigRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxVerifySigBody)).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "decode request: "+err.Error())
+		return
+	}
+	if req.Signature == "" || req.Domain == "" || req.Nonce == "" {
+		writeJSONError(w, http.StatusBadRequest, "signature, domain, and nonce are required")
+		return
+	}
+	entry, err := cfg.Registry.VerifyLogin(req.Domain, req.Nonce, req.Signature)
+	if err != nil {
+		cfg.Logger.Warn("authproxy: verify-signature rejected", "err", err, "domain", req.Domain)
+		writeJSONError(w, http.StatusUnauthorized, "signature not accepted")
+		return
+	}
+	if !cfg.allowed(entry.Principal, nil) {
+		cfg.Logger.Warn("authproxy: verify-signature principal not allowed", "principal", entry.Principal)
+		writeJSONError(w, http.StatusUnauthorized, "signature not accepted")
+		return
+	}
+	cfg.Logger.Info("authproxy: verify-signature", "principal", entry.Principal, "domain", req.Domain)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(verifySigResponse{Principal: entry.Principal})
+}
+
+// writeJSONError writes a {"error": msg} body with the given status — the JSON error
+// shape the verify-signature contract pins (its callers parse JSON, not text).
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+	}{Error: msg})
 }
 
 // allowed applies the optional authz allowlist. Empty allowlist (no principals AND no

@@ -5,6 +5,8 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -180,6 +182,138 @@ func TestLoginRedirectsToOracle(t *testing.T) {
 	st, err := ParseState(cfg.CookieKey, q.Get("state"), time.Unix(1_700_000_000, 0))
 	if err != nil || st.Nonce != q.Get("nonce") || st.RD != "/admin" {
 		t.Errorf("state binding wrong: %v / %+v vs nonce %q", err, st, q.Get("nonce"))
+	}
+}
+
+// verifySigHandler builds a standalone verify-signature-only verifier (registry +
+// EnableVerifySignature, no cookie/oracle config) — the FDR-0013 app-native shape.
+func verifySigHandler(reg *Registry) http.Handler {
+	return VerifierHandler(VerifierConfig{Registry: reg, EnableVerifySignature: true})
+}
+
+// postVerifySig POSTs a JSON body to /auth/verify-signature and returns the status +
+// decoded JSON (principal on 200, error otherwise).
+func postVerifySig(h http.Handler, body string) (int, map[string]string) {
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/auth/verify-signature", strings.NewReader(body)))
+	var m map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	return rec.Code, m
+}
+
+// verifySigBody builds the {signature, domain, nonce} request JSON.
+func verifySigBody(sig, domain, nonce string) string {
+	return fmt.Sprintf(`{"signature":%q,"domain":%q,"nonce":%q}`, sig, domain, nonce)
+}
+
+func TestVerifySignatureValid(t *testing.T) {
+	priv, reg := testCard(t)
+	sig := cardSign(t, priv, testDomain, "app-nonce-1")
+	code, body := postVerifySig(verifySigHandler(reg), verifySigBody(sig, testDomain, "app-nonce-1"))
+	if code != http.StatusOK {
+		t.Fatalf("verify-signature = %d, want 200; body %v", code, body)
+	}
+	if body["principal"] != "tester" {
+		t.Errorf("principal = %q, want tester", body["principal"])
+	}
+}
+
+// TestVerifySignatureRejects: an unregistered signer, a signature over the wrong
+// domain (relay defense), and one over the wrong nonce each yield 401 with an error
+// body — the same guards handleCallback enforces, minus the cookie.
+func TestVerifySignatureRejects(t *testing.T) {
+	priv, reg := testCard(t)
+	h := verifySigHandler(reg)
+	stranger, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]string{
+		"unregistered key": cardSign(t, stranger, testDomain, "N"),
+		"wrong domain":     cardSign(t, priv, "evil.example", "N"),
+		"wrong nonce":      cardSign(t, priv, testDomain, "OTHER"),
+	}
+	for name, sig := range cases {
+		code, body := postVerifySig(h, verifySigBody(sig, testDomain, "N"))
+		if code != http.StatusUnauthorized {
+			t.Errorf("%s = %d, want 401", name, code)
+		}
+		if body["error"] == "" {
+			t.Errorf("%s: expected an error body, got %v", name, body)
+		}
+	}
+}
+
+func TestVerifySignatureBadRequest(t *testing.T) {
+	_, reg := testCard(t)
+	h := verifySigHandler(reg)
+	if code, _ := postVerifySig(h, `{"signature":"x"}`); code != http.StatusBadRequest {
+		t.Errorf("missing fields = %d, want 400", code)
+	}
+	if code, _ := postVerifySig(h, `{not json`); code != http.StatusBadRequest {
+		t.Errorf("malformed json = %d, want 400", code)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/auth/verify-signature", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET = %d, want 405", rec.Code)
+	}
+}
+
+// TestVerifySignatureNotMountedByDefault: a plain forward-auth verifier (flag off)
+// does not expose the verify oracle.
+func TestVerifySignatureNotMountedByDefault(t *testing.T) {
+	_, reg := testCard(t)
+	cfg, _ := testVerifier(reg) // EnableVerifySignature defaults false
+	rec := httptest.NewRecorder()
+	VerifierHandler(cfg).ServeHTTP(rec,
+		httptest.NewRequest(http.MethodPost, "/auth/verify-signature", strings.NewReader("{}")))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("verify-signature with flag off = %d, want 404", rec.Code)
+	}
+}
+
+// TestVerifySignatureStandaloneOmitsForwardAuth: with no cookie key, the verify
+// oracle works and the cookie-dependent forward-auth routes are not mounted.
+func TestVerifySignatureStandaloneOmitsForwardAuth(t *testing.T) {
+	priv, reg := testCard(t)
+	h := verifySigHandler(reg) // Registry + flag only; no CookieKey
+	sig := cardSign(t, priv, testDomain, "N")
+	if code, _ := postVerifySig(h, verifySigBody(sig, testDomain, "N")); code != http.StatusOK {
+		t.Errorf("standalone verify-signature = %d, want 200", code)
+	}
+	for _, path := range []string{"/auth/verify", "/auth/login", "/auth/callback"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("standalone %s = %d, want 404 (no cookie key → no forward-auth)", path, rec.Code)
+		}
+	}
+}
+
+// TestVerifySignatureAllowlist: an AllowPrincipals allowlist gates the verify oracle,
+// and a disallowed-but-registered principal collapses to 401 (no 403, no principal
+// leak) so the endpoint never reveals that an unlisted card is registered.
+func TestVerifySignatureAllowlist(t *testing.T) {
+	priv, reg := testCard(t) // principal "tester"
+	sig := cardSign(t, priv, testDomain, "N")
+
+	deny := VerifierHandler(VerifierConfig{
+		Registry: reg, EnableVerifySignature: true, AllowPrincipals: Set([]string{"someone-else"}),
+	})
+	code, body := postVerifySig(deny, verifySigBody(sig, testDomain, "N"))
+	if code != http.StatusUnauthorized {
+		t.Errorf("disallowed principal = %d, want 401 (collapsed, not 403)", code)
+	}
+	if body["principal"] != "" {
+		t.Errorf("disallowed principal leaked in body: %v", body)
+	}
+
+	allow := VerifierHandler(VerifierConfig{
+		Registry: reg, EnableVerifySignature: true, AllowPrincipals: Set([]string{"tester"}),
+	})
+	if code, _ := postVerifySig(allow, verifySigBody(sig, testDomain, "N")); code != http.StatusOK {
+		t.Errorf("allowlisted principal = %d, want 200", code)
 	}
 }
 

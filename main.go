@@ -2001,7 +2001,7 @@ func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener) error {
 func newAuthVerifierCmd() *cobra.Command {
 	var addr, cookieKeyFile, authorizedKeysFile, oracleLogin, externalURL, cookieDomain, logFormat string
 	var allowPrincipals, allowGroups []string
-	var cookieSecure bool
+	var cookieSecure, enableVerifySignature bool
 	cmd := &cobra.Command{
 		Use:   "auth-verifier --cookie-key-file <f> --authorized-keys-file <f> --oracle-login <url> --external-url <url>",
 		Short: "Run the FDR-0014 PAPI-session forward-auth verifier (nginx auth_request)",
@@ -2013,20 +2013,22 @@ func newAuthVerifierCmd() *cobra.Command {
 			"ECDSA-verifies it against the registered slot-9A keys in --authorized-keys-file (the " +
 			"papi-ssh-sync fragment), then mints the cookie ONCE (validate-at-mint; no per-request " +
 			"PAPI call). No software signing key exists — only the card signs, and any registered " +
-			"card may authenticate.",
+			"card may authenticate. With --enable-verify-signature it ALSO (or, with no forward-auth " +
+			"flags, ONLY) serves POST /auth/verify-signature: the FDR-0013 app-native verify oracle " +
+			"— a card §5.2 signature plus the domain and nonce it was signed over in, the verified " +
+			"principal out, as stateless JSON — for consumers that mint their own session instead of " +
+			"taking the verifier cookie.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			for _, req := range []struct{ name, val string }{
-				{"cookie-key-file", cookieKeyFile}, {"authorized-keys-file", authorizedKeysFile},
-				{"oracle-login", oracleLogin}, {"external-url", externalURL},
-			} {
-				if req.val == "" {
-					return fmt.Errorf("--%s is required", req.name)
-				}
-			}
-			cookieKey, err := authproxy.LoadCookieKey(cookieKeyFile)
-			if err != nil {
-				return err
+			// Two modes. Forward-auth (the default) serves /auth/verify|login|callback
+			// and needs the cookie/oracle/external config. Verify-signature-only
+			// (--enable-verify-signature with NO forward-auth flags) serves just
+			// /auth/verify-signature and needs only the registry. Setting the flag
+			// alongside any forward-auth flag runs both (combined).
+			forwardAuth := !enableVerifySignature ||
+				cookieKeyFile != "" || oracleLogin != "" || externalURL != ""
+			if authorizedKeysFile == "" {
+				return fmt.Errorf("--authorized-keys-file is required")
 			}
 			registry, err := authproxy.LoadRegistry(authorizedKeysFile)
 			if err != nil {
@@ -2036,27 +2038,52 @@ func newAuthVerifierCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			cfg := authproxy.VerifierConfig{
+				Registry:              registry,
+				EnableVerifySignature: enableVerifySignature,
+				AllowPrincipals:       authproxy.Set(allowPrincipals),
+				AllowGroups:           authproxy.Set(allowGroups),
+				Logger:                logger,
+			}
+			routes := make([]string, 0, 4)
+			if forwardAuth {
+				for _, req := range []struct{ name, val string }{
+					{"cookie-key-file", cookieKeyFile}, {"oracle-login", oracleLogin},
+					{"external-url", externalURL},
+				} {
+					if req.val == "" {
+						return fmt.Errorf("--%s is required (forward-auth mode)", req.name)
+					}
+				}
+				cookieKey, err := authproxy.LoadCookieKey(cookieKeyFile)
+				if err != nil {
+					return err
+				}
+				cfg.CookieKey = cookieKey
+				cfg.OracleLogin = oracleLogin
+				cfg.ExternalURL = externalURL
+				cfg.CookieSecure = cookieSecure
+				cfg.CookieDomain = cookieDomain
+				routes = append(routes, "/auth/verify", "/auth/login", "/auth/callback")
+			}
+			if enableVerifySignature {
+				routes = append(routes, "/auth/verify-signature")
+			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
 			ln, err := net.Listen("tcp", addr)
 			if err != nil {
 				return fmt.Errorf("listen on %s: %w", addr, err)
 			}
+			mode := "forward-auth"
+			if !forwardAuth {
+				mode = "verify-signature-only"
+			}
 			fmt.Fprintf(cmd.OutOrStdout(),
-				"papi auth-verifier: forward-auth on http://%s (/auth/verify, /auth/login, /auth/callback; external %s; oracle %s; %d registered cards)\n",
-				ln.Addr(), externalURL, oracleLogin, registry.Len())
+				"papi auth-verifier [%s]: http://%s (%s; %d registered cards)\n",
+				mode, ln.Addr(), strings.Join(routes, ", "), registry.Len())
 			srv := &http.Server{
-				Handler: authproxy.VerifierHandler(authproxy.VerifierConfig{
-					CookieKey:       cookieKey,
-					Registry:        registry,
-					OracleLogin:     oracleLogin,
-					ExternalURL:     externalURL,
-					AllowPrincipals: authproxy.Set(allowPrincipals),
-					AllowGroups:     authproxy.Set(allowGroups),
-					CookieSecure:    cookieSecure,
-					CookieDomain:    cookieDomain,
-					Logger:          logger,
-				}),
+				Handler:           authproxy.VerifierHandler(cfg),
 				ReadHeaderTimeout: 5 * time.Second,
 				ReadTimeout:       15 * time.Second,
 				WriteTimeout:      30 * time.Second,
@@ -2083,6 +2110,8 @@ func newAuthVerifierCmd() *cobra.Command {
 		"set Secure on the session cookie (requires HTTPS; set false only for plain-HTTP tailnet)")
 	cmd.Flags().StringVar(&cookieDomain, "cookie-domain", "",
 		"session cookie Domain (default: host-only)")
+	cmd.Flags().BoolVar(&enableVerifySignature, "enable-verify-signature", false,
+		"also serve POST /auth/verify-signature (FDR-0013 app-native verify oracle: a card §5.2 signature + domain + nonce → the verified principal, stateless JSON). With no forward-auth flags (--cookie-key-file/--oracle-login/--external-url), runs verify-signature-only: registry + --addr only")
 	cmd.Flags().StringVar(&logFormat, "log-format", "text",
 		"log output format: text or json")
 	return cmd
