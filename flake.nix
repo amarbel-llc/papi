@@ -38,6 +38,12 @@
       inputs.nixpkgs-master.follows = "nixpkgs";
       inputs.utils.follows = "utils";
     };
+    piggy.inputs.bats.inputs.utils.follows = "conformist/utils";
+    conformist.inputs.igloo.follows = "igloo";
+    piggy.inputs.bats.inputs.treefmt-nix.follows = "igloo/treefmt-nix";
+    conformist.inputs.nixpkgs-master.follows = "nixpkgs-master";
+    piggy.inputs.bats.inputs.nixpkgs-master.follows = "nixpkgs-master";
+    piggy.inputs.purse-first.inputs.gomod2nix.follows = "purse-first/gomod2nix";
   };
 
   outputs =

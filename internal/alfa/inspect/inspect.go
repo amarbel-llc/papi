@@ -61,11 +61,11 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 
 	pts = append(pts, conformanceChecks(ctx, c, disc)...)
 	pts = append(pts, unknownSessionPoint(ctx, c))
-	if opts.Recipient != "" {
+	if opts.authed() {
 		pts = append(pts, authenticatedChecks(ctx, c, opts)...)
 	} else {
 		pts = append(pts, skip("auth: challenge/response handshake + scoped projection (§5, §4.2)",
-			"skipped; pass --recipient <id> [--decrypt-cmd <cmd>] to validate the authenticated tier"))
+			"skipped; pass --auth-key-id <slot-9A id> (sign-challenge) or --recipient <id> [--decrypt-cmd <cmd>] (decrypt-challenge) to validate the authenticated tier"))
 	}
 	pts = append(pts, proofsChecks(ctx, c)...)
 	pts = append(pts, coLocationChecks(ctx, c)...)

@@ -54,7 +54,12 @@ export interface Discovery {
   version: string;
   handle: string;
   resources: Record<string, string>;
-  auth?: { scheme: string; challenge: string; response: string; present_session_as: string };
+  auth?: {
+    scheme: string;
+    challenge: string;
+    response: string;
+    present_session_as: string;
+  };
 }
 
 // PapiDocument is intentionally loose — only the members JS consumers commonly
@@ -99,7 +104,8 @@ function resolveWasm(override?: string): string {
 
 function resolveWasmExec(wasmPath: string, override?: string): string {
   if (override) return override;
-  if (process.env.PAPI_CLIENT_WASM_EXEC) return process.env.PAPI_CLIENT_WASM_EXEC;
+  if (process.env.PAPI_CLIENT_WASM_EXEC)
+    return process.env.PAPI_CLIENT_WASM_EXEC;
   return join(dirname(wasmPath), "wasm_exec.js");
 }
 
@@ -121,7 +127,8 @@ function ensureLoaded(opts: CallOptions): PapiCall {
   // runs it in global scope regardless of the host's module-mode guess.
   (0, eval)(readFileSync(execPath, "utf8"));
   const Go = (globalThis as { Go?: new () => GoInstance }).Go;
-  if (!Go) throw new Error(`wasm_exec.js at ${execPath} did not define globalThis.Go`);
+  if (!Go)
+    throw new Error(`wasm_exec.js at ${execPath} did not define globalThis.Go`);
 
   const go = new Go();
   const mod = new WebAssembly.Module(readFileSync(wasmPath));
@@ -162,7 +169,9 @@ export function call<T>(fn: string, body: string, opts: CallOptions = {}): T {
 
   const res = JSON.parse(papiCall(JSON.stringify(req))) as CallResult<T>;
   if (!res.ok) {
-    throw new Error(`papi-client-wasm fn=${fn}: ${res.error ?? "unknown error"}`);
+    throw new Error(
+      `papi-client-wasm fn=${fn}: ${res.error ?? "unknown error"}`,
+    );
   }
   return res.value as T;
 }
@@ -183,7 +192,8 @@ export const verifyDocument = (
   body: string,
   publishedIds: string[],
   o?: CallOptions,
-): SigVerifyResult => call<SigVerifyResult>("verify_document", body, { ...o, publishedIds });
+): SigVerifyResult =>
+  call<SigVerifyResult>("verify_document", body, { ...o, publishedIds });
 
 // --- convenience Client (does the fetch, then the core) ---
 

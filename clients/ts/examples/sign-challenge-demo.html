@@ -1,79 +1,143 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>PAPI §5 sign-challenge — browser demo (papi#36)</title>
-<style>
-  body { font: 15px/1.5 system-ui, sans-serif; max-width: 52rem; margin: 2rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.3rem; }
-  label { display: block; margin: .8rem 0 .15rem; font-weight: 600; }
-  input { width: 100%; padding: .4rem .5rem; font: inherit; box-sizing: border-box; }
-  button { margin-top: 1rem; padding: .5rem .9rem; font: inherit; cursor: pointer; }
-  pre { background: #f4f4f4; padding: .75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
-  .ok { color: #137333; } .err { color: #c5221f; } .muted { color: #666; }
-</style>
-</head>
-<body>
-<h1>PAPI §5 sign-challenge — browser demo</h1>
-<p class="muted">
-  Proves the desktop spike for <a href="https://github.com/amarbel-llc/papi/issues/36">papi#36</a>.
-  The browser talks only to the local <code>papi sign-challenge-serve</code> oracle's
-  <code>/login</code> endpoint; the oracle runs the whole RFC-0001 §5 handshake (discovery →
-  challenge → response) against the PAPI server <em>server-side</em> — so no PAPI-server CORS is
-  needed — signing the challenge with the card (slot-9A) and returning the minted PiggySession.
-  The card never leaves the oracle's host; the browser never sees the private key.
-</p>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PAPI §5 sign-challenge — browser demo (papi#36)</title>
+    <style>
+      body {
+        font:
+          15px/1.5 system-ui,
+          sans-serif;
+        max-width: 52rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      h1 {
+        font-size: 1.3rem;
+      }
+      label {
+        display: block;
+        margin: 0.8rem 0 0.15rem;
+        font-weight: 600;
+      }
+      input {
+        width: 100%;
+        padding: 0.4rem 0.5rem;
+        font: inherit;
+        box-sizing: border-box;
+      }
+      button {
+        margin-top: 1rem;
+        padding: 0.5rem 0.9rem;
+        font: inherit;
+        cursor: pointer;
+      }
+      pre {
+        background: #f4f4f4;
+        padding: 0.75rem;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        word-break: break-all;
+      }
+      .ok {
+        color: #137333;
+      }
+      .err {
+        color: #c5221f;
+      }
+      .muted {
+        color: #666;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>PAPI §5 sign-challenge — browser demo</h1>
+    <p class="muted">
+      Proves the desktop spike for
+      <a href="https://github.com/amarbel-llc/papi/issues/36">papi#36</a>. The
+      browser talks only to the local
+      <code>papi sign-challenge-serve</code> oracle's
+      <code>/login</code> endpoint; the oracle runs the whole RFC-0001 §5
+      handshake (discovery → challenge → response) against the PAPI server
+      <em>server-side</em> — so no PAPI-server CORS is needed — signing the
+      challenge with the card (slot-9A) and returning the minted PiggySession.
+      The card never leaves the oracle's host; the browser never sees the
+      private key.
+    </p>
 
-<label for="authKeyId">slot-9A <code>auth_key_id</code> (the published <code>piggy-piv_auth-v1@…</code> id)</label>
-<input id="authKeyId" placeholder="piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…" />
+    <label for="authKeyId"
+      >slot-9A <code>auth_key_id</code> (the published
+      <code>piggy-piv_auth-v1@…</code> id)</label
+    >
+    <input
+      id="authKeyId"
+      placeholder="piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…"
+    />
 
-<label for="loginUrl">oracle <code>/login</code> URL</label>
-<input id="loginUrl" />
+    <label for="loginUrl">oracle <code>/login</code> URL</label>
+    <input id="loginUrl" />
 
-<button id="login">Log in with card →</button>
+    <button id="login">Log in with card →</button>
 
-<pre id="log" aria-live="polite">(idle)</pre>
+    <pre id="log" aria-live="polite">(idle)</pre>
 
-<script>
-const $ = (id) => document.getElementById(id);
-const logEl = $("log");
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const logEl = $("log");
 
-// Default the oracle to the same host that served this page, port 8088. Works for a
-// local browser (localhost) and a remote tailnet browser (the tailnet hostname)
-// alike, since both reach the oracle on the same host as the page.
-$("loginUrl").value = `http://${location.hostname}:8088/login`;
+      // Default the oracle to the same host that served this page, port 8088. Works for a
+      // local browser (localhost) and a remote tailnet browser (the tailnet hostname)
+      // alike, since both reach the oracle on the same host as the page.
+      $("loginUrl").value = `http://${location.hostname}:8088/login`;
 
-function log(msg, cls) {
-  const line = cls ? `<span class="${cls}">${msg}</span>` : msg;
-  logEl.innerHTML = (logEl.textContent === "(idle)" ? "" : logEl.innerHTML) + line + "\n";
-}
+      function log(msg, cls) {
+        const line = cls ? `<span class="${cls}">${msg}</span>` : msg;
+        logEl.innerHTML =
+          (logEl.textContent === "(idle)" ? "" : logEl.innerHTML) + line + "\n";
+      }
 
-async function login() {
-  logEl.textContent = "";
-  const authKeyId = $("authKeyId").value.trim();
-  const loginUrl = $("loginUrl").value.trim();
-  if (!authKeyId) { log("fill in the slot-9A auth_key_id", "err"); return; }
+      async function login() {
+        logEl.textContent = "";
+        const authKeyId = $("authKeyId").value.trim();
+        const loginUrl = $("loginUrl").value.trim();
+        if (!authKeyId) {
+          log("fill in the slot-9A auth_key_id", "err");
+          return;
+        }
 
-  log(`POST ${loginUrl}  {auth_key_id}`);
-  log("the oracle is running the handshake + signing with the card — tap/PIN now if prompted …", "muted");
-  try {
-    const r = await fetch(loginUrl, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ auth_key_id: authKeyId }),
-    });
-    const text = await r.text();
-    if (!r.ok) { log(`oracle HTTP ${r.status}: ${text}`, "err"); return; }
-    const session = JSON.parse(text); // {session, principal, groups, expires_at}
-    log("session = " + JSON.stringify(session, null, 2));
-    log(`PiggySession minted ✓  principal=${session.principal ?? "?"}  present as:  Authorization: PiggySession ${session.session ?? "<id>"}`, "ok");
-  } catch (e) {
-    log("login failed (is the oracle reachable at this URL, and is its --origin pinned to this page's origin?): " + e, "err");
-  }
-}
+        log(`POST ${loginUrl}  {auth_key_id}`);
+        log(
+          "the oracle is running the handshake + signing with the card — tap/PIN now if prompted …",
+          "muted",
+        );
+        try {
+          const r = await fetch(loginUrl, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ auth_key_id: authKeyId }),
+          });
+          const text = await r.text();
+          if (!r.ok) {
+            log(`oracle HTTP ${r.status}: ${text}`, "err");
+            return;
+          }
+          const session = JSON.parse(text); // {session, principal, groups, expires_at}
+          log("session = " + JSON.stringify(session, null, 2));
+          log(
+            `PiggySession minted ✓  principal=${session.principal ?? "?"}  present as:  Authorization: PiggySession ${session.session ?? "<id>"}`,
+            "ok",
+          );
+        } catch (e) {
+          log(
+            "login failed (is the oracle reachable at this URL, and is its --origin pinned to this page's origin?): " +
+              e,
+            "err",
+          );
+        }
+      }
 
-$("login").addEventListener("click", login);
-</script>
-</body>
+      $("login").addEventListener("click", login);
+    </script>
+  </body>
 </html>

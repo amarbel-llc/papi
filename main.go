@@ -1,11 +1,12 @@
 // Command papi is the Personal API (PAPI) conformance tool. `validate` discovers,
 // introspects, and checks a domain's PAPI against RFC-0001 (emitting an
-// ndjson-crap stream; pipe to `crap-present`), running the §5 challenge/response
-// handshake when given a --recipient. The `piggy-ids`, `ssh-keys`, `person`,
-// `repos`, and `forges` subcommands surface a domain's published identity material,
-// repositories, and forge identities for downstream consumption (e.g. identity
-// bootstrap); the projected ones take --recipient/--decrypt-cmd to run the same §5
-// handshake and reveal the full scoped set.
+// ndjson-crap stream; pipe to `crap-present`), running the §5 handshake when given
+// --auth-key-id. The `piggy-ids`, `ssh-keys`, `person`, `repos`, and `forges`
+// subcommands surface a domain's published identity material, repositories, and
+// forge identities for downstream consumption (e.g. identity bootstrap); the
+// projected ones take --auth-key-id (the RECOMMENDED §5.2 sign-challenge, or the
+// legacy --recipient/--decrypt-cmd) to run the same §5 handshake and reveal the
+// full scoped set.
 package main
 
 import (
@@ -209,7 +210,7 @@ func newIdentityDomainCmd() *cobra.Command {
 }
 
 func newValidateCmd() *cobra.Command {
-	var opts inspect.Options
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "validate <domain>",
 		Short: "Validate a domain's PAPI against RFC-0001, emitting ndjson-crap",
@@ -220,23 +221,25 @@ func newValidateCmd() *cobra.Command {
 			"document signatures (§10), and the nix cache entry schema (§11) — as an " +
 			"ndjson-crap stream (pipe to " +
 			"crap-present). Accepts a bare domain (https assumed) or a full URL, and exits " +
-			"non-zero on a MUST violation. Pass --recipient (and --decrypt-cmd) to also run " +
-			"the §5 challenge/response handshake and validate the authenticated/scoped tier.",
+			"non-zero on a MUST violation. Pass --auth-key-id <slot-9A id> (§5.2 sign-challenge; " +
+			"or the legacy --recipient/--decrypt-cmd) to also run the §5 handshake and validate " +
+			"the authenticated/scoped tier.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts, err := af.options(cmd.Context())
+			if err != nil {
+				return err
+			}
 			return inspect.Run(cmd.Context(), cmd.OutOrStdout(), args[0], opts)
 		},
 	}
-	cmd.Flags().StringVar(&opts.Recipient, "recipient", "",
-		"piggy recipient id to authenticate as; runs the §5 handshake + scoped-tier checks")
-	cmd.Flags().StringVar(&opts.DecryptCmd, "decrypt-cmd", "",
-		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (e.g. a pivy-box/piggy decrypt wrapper)")
+	af.register(cmd)
 	return cmd
 }
 
 func newPiggyIDsCmd() *cobra.Command {
 	var recipientsOnly bool
-	var recipient, decryptCmd string
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "piggy-ids <domain>",
 		Short: "Print a domain's PAPI piggy-ids file (optionally only encryption recipients)",
@@ -244,8 +247,9 @@ func newPiggyIDsCmd() *cobra.Command {
 			"file: comment lines, then slot-9D encryption recipients and slot-9A SSH auth " +
 			"ids. With --recipients-only, emit just the slot-9D encryption recipients " +
 			"(RFC-0001 §5.1), ready to feed as a recipient set to an encryptor. Anonymously " +
-			"only the public ids project; pass --recipient (and --decrypt-cmd) to run the §5 " +
-			"handshake and see the full scoped set.",
+			"only the public ids project; pass --auth-key-id <slot-9A id> to run the §5.2 " +
+			"sign-challenge handshake and see the full scoped set (legacy decrypt-challenge " +
+			"servers take --recipient/--decrypt-cmd).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -253,10 +257,13 @@ func newPiggyIDsCmd() *cobra.Command {
 				return err
 			}
 			var body []byte
-			if recipient == "" {
+			if !af.active() {
 				body, _, err = c.PiggyIDs(cmd.Context())
 			} else {
-				body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/piggy-ids")
+				var opts inspect.Options
+				if opts, err = af.options(cmd.Context()); err == nil {
+					body, err = authedBody(cmd.Context(), c, opts, "/papi/piggy-ids")
+				}
 			}
 			if err != nil {
 				return err
@@ -276,7 +283,7 @@ func newPiggyIDsCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&recipientsOnly, "recipients-only", false,
 		"emit only slot-9D encryption recipients (drop comments and slot-9A auth ids)")
-	addAuthFlags(cmd, &recipient, &decryptCmd)
+	af.register(cmd)
 	return cmd
 }
 
@@ -515,7 +522,7 @@ var guidAnnotation = regexp.MustCompile(`\bguid=([0-9A-Fa-f]+)\b`)
 
 func newSSHKeysCmd() *cobra.Command {
 	var guid string
-	var recipient, decryptCmd string
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "ssh-keys <domain>",
 		Short: "Print a domain's PAPI ssh-authorized-keys (optionally one slot-9A key by guid)",
@@ -524,8 +531,9 @@ func newSSHKeysCmd() *cobra.Command {
 			"guid=<HEX> and cn=<name> (RFC-0001 §4.2). With --guid <HEX>, print only the " +
 			"line whose guid= annotation matches <HEX> (case-insensitively), erroring if no " +
 			"line matches — the affordance a bootstrapping client uses to pin its own card's " +
-			"signing key. Anonymously only the public keys project; pass --recipient (and " +
-			"--decrypt-cmd) to run the §5 handshake and see the full scoped set.",
+			"signing key. Anonymously only the public keys project; pass --auth-key-id " +
+			"<slot-9A id> to run the §5.2 sign-challenge handshake and see the full scoped set " +
+			"(legacy decrypt-challenge servers take --recipient/--decrypt-cmd).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -533,10 +541,13 @@ func newSSHKeysCmd() *cobra.Command {
 				return err
 			}
 			var body []byte
-			if recipient == "" {
+			if !af.active() {
 				body, _, err = c.SSHAuthorizedKeys(cmd.Context())
 			} else {
-				body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/ssh-authorized-keys")
+				var opts inspect.Options
+				if opts, err = af.options(cmd.Context()); err == nil {
+					body, err = authedBody(cmd.Context(), c, opts, "/papi/ssh-authorized-keys")
+				}
 			}
 			if err != nil {
 				return err
@@ -558,7 +569,7 @@ func newSSHKeysCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&guid, "guid", "",
 		"print only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
-	addAuthFlags(cmd, &recipient, &decryptCmd)
+	af.register(cmd)
 	return cmd
 }
 
@@ -1266,16 +1277,17 @@ type personView struct {
 }
 
 func newPersonCmd() *cobra.Command {
-	var recipient, decryptCmd string
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "person <domain>",
 		Short: "Print a domain's PAPI person block (handle, display name, contact email)",
 		Long: "Fetch <domain>'s GET /papi and print its person block as JSON — handle, " +
 			"display name, and contact email. Anonymously the ACL-gated person.contact is " +
-			"stripped, so no email shows (RFC-0001 §2, §6). Pass --recipient (and " +
-			"--decrypt-cmd) to run the §5 challenge/response handshake and fetch the scoped " +
-			"projection, revealing contact.email — the identity-bootstrap affordance a " +
-			"downstream consumer sources name/email from.",
+			"stripped, so no email shows (RFC-0001 §2, §6). Pass --auth-key-id <slot-9A id> to " +
+			"run the §5.2 sign-challenge handshake and fetch the scoped projection, revealing " +
+			"contact.email — the identity-bootstrap affordance a downstream consumer sources " +
+			"name/email from. (Servers advertising the legacy decrypt-challenge scheme instead " +
+			"take --recipient/--decrypt-cmd.)",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -1283,37 +1295,38 @@ func newPersonCmd() *cobra.Command {
 				return err
 			}
 			var p *papi.Person
-			if recipient == "" {
+			if !af.active() {
 				doc, _, _, derr := c.Document(cmd.Context())
 				if derr != nil {
 					return derr
 				}
 				p = doc.Person
 			} else {
-				p, err = authedPerson(cmd.Context(), c, recipient, decryptCmd)
-				if err != nil {
+				opts, oerr := af.options(cmd.Context())
+				if oerr != nil {
+					return oerr
+				}
+				if p, err = authedPerson(cmd.Context(), c, opts); err != nil {
 					return err
 				}
 			}
 			return printPerson(cmd.OutOrStdout(), p)
 		},
 	}
-	cmd.Flags().StringVar(&recipient, "recipient", "",
-		"piggy recipient id to authenticate as; runs the §5 handshake so contact.email projects")
-	cmd.Flags().StringVar(&decryptCmd, "decrypt-cmd", "",
-		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (e.g. a pivy-box/piggy decrypt wrapper)")
+	af.register(cmd)
 	return cmd
 }
 
-// authedBody runs the §5 handshake as recipient (recovering the challenge nonce via
-// decryptCmd, the card boundary) and returns the scoped response body for GET path
-// presented with the minted PiggySession. It is the shared authed-fetch behind the
-// projected-endpoint subcommands (person, repos, profiles, …), so each can list the
-// full authenticated projection — including §5-gated data — instead of the anonymous
-// one. A single call = one handshake = one card decrypt; there is no session reuse
-// across invocations, so a consumer should fetch a whole endpoint in one shot.
-func authedBody(ctx context.Context, c *papi.Client, recipient, decryptCmd, path string) ([]byte, error) {
-	sess, err := inspect.Handshake(ctx, c, inspect.Options{Recipient: recipient, DecryptCmd: decryptCmd})
+// authedBody runs the §5 handshake described by opts (sign-challenge or the legacy
+// decrypt-challenge, per the server's advertised scheme) and returns the scoped
+// response body for GET path presented with the minted PiggySession. It is the
+// shared authed-fetch behind the projected-endpoint subcommands (person, repos,
+// profiles, …), so each can list the full authenticated projection — including
+// §5-gated data — instead of the anonymous one. A single call = one handshake = one
+// card operation; there is no session reuse across invocations, so a consumer
+// should fetch a whole endpoint in one shot.
+func authedBody(ctx context.Context, c *papi.Client, opts inspect.Options, path string) ([]byte, error) {
+	sess, err := inspect.Handshake(ctx, c, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -1327,21 +1340,73 @@ func authedBody(ctx context.Context, c *papi.Client, recipient, decryptCmd, path
 	return resp.Body, nil
 }
 
-// addAuthFlags registers the shared §5 handshake flags (--recipient/--decrypt-cmd) on
-// a projected-endpoint subcommand, switching its fetch from the anonymous projection
-// to the full scoped set. (person/repos/forges register their own with endpoint-
-// specific help; this is the generic pair for the remaining projected endpoints.)
-func addAuthFlags(cmd *cobra.Command, recipient, decryptCmd *string) {
-	cmd.Flags().StringVar(recipient, "recipient", "",
-		"piggy recipient id to authenticate as; runs the §5 handshake to fetch the full scoped projection")
-	cmd.Flags().StringVar(decryptCmd, "decrypt-cmd", "",
-		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (the card boundary)")
+// signChallengeSignerFn is the slot-9A signer constructor behind a seam so CLI
+// tests can inject a fake card without a real PIV device (mirrors verifiedRecipientsFn).
+var signChallengeSignerFn = signChallengeSigner
+
+// authFlags bundles the §5 handshake flags shared by the projected-endpoint
+// subcommands. The sign-challenge set (piggy-sign-challenge, RECOMMENDED §5.2) is
+// the default path — --auth-key-id names the slot-9A key and the signer flags pick
+// how it is reached; the decrypt-challenge set (piggy-challenge-response, OPTIONAL,
+// legacy §5.1) is kept for servers that still advertise it. Handshake honors the
+// server's advertised discovery auth.scheme, so a caller passes whichever pair the
+// target server accepts.
+type authFlags struct {
+	// sign-challenge (piggy-sign-challenge)
+	authKeyID  string
+	signerMode string
+	signGUID   string
+	pin        string
+	// decrypt-challenge (piggy-challenge-response, legacy)
+	recipient  string
+	decryptCmd string
 }
 
-// authedPerson runs the §5 handshake as recipient and fetches the scoped /papi so
-// the ACL-gated person.contact projects in, returning the authenticated person.
-func authedPerson(ctx context.Context, c *papi.Client, recipient, decryptCmd string) (*papi.Person, error) {
-	body, err := authedBody(ctx, c, recipient, decryptCmd, "/papi")
+// register adds the shared auth flags to a projected-endpoint subcommand. The
+// signing-card guid flag is --sign-guid (not --guid) so it never collides with a
+// command's own --guid (e.g. ssh-keys' key selector).
+func (a *authFlags) register(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&a.authKeyID, "auth-key-id", "",
+		"slot-9A auth key id to authenticate as; runs the RECOMMENDED §5.2 sign-challenge handshake to fetch the full scoped projection")
+	cmd.Flags().StringVar(&a.signerMode, "signer", "auto",
+		"slot-9A signer for --auth-key-id: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
+	cmd.Flags().StringVar(&a.signGUID, "sign-guid", "",
+		"GUID of the slot-9A card to sign the challenge with (default: the sole provisioned card)")
+	cmd.Flags().StringVar(&a.pin, "pin", "",
+		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P)")
+	cmd.Flags().StringVar(&a.recipient, "recipient", "",
+		"slot-9D recipient id for the OPTIONAL, legacy decrypt-challenge scheme (servers advertising piggy-challenge-response)")
+	cmd.Flags().StringVar(&a.decryptCmd, "decrypt-cmd", "",
+		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (the card boundary; decrypt-challenge only)")
+}
+
+// active reports whether any auth credential was supplied, i.e. the caller wants
+// the authenticated tier rather than the anonymous projection.
+func (a *authFlags) active() bool { return a.authKeyID != "" || a.recipient != "" }
+
+// options builds the inspect.Options for the handshake, constructing the slot-9A
+// signer (which may prompt for the card/PIN) only when an --auth-key-id was given.
+func (a *authFlags) options(ctx context.Context) (inspect.Options, error) {
+	opts := inspect.Options{
+		AuthKeyID:  a.authKeyID,
+		Recipient:  a.recipient,
+		DecryptCmd: a.decryptCmd,
+	}
+	if a.authKeyID != "" {
+		signer, guid, err := signChallengeSignerFn(ctx, a.signerMode, a.signGUID, a.pin, "")
+		if err != nil {
+			return inspect.Options{}, err
+		}
+		opts.Signer = signer
+		opts.SignGUID = guid
+	}
+	return opts, nil
+}
+
+// authedPerson runs the §5 handshake described by opts and fetches the scoped /papi
+// so the ACL-gated person.contact projects in, returning the authenticated person.
+func authedPerson(ctx context.Context, c *papi.Client, opts inspect.Options) (*papi.Person, error) {
+	body, err := authedBody(ctx, c, opts, "/papi")
 	if err != nil {
 		return nil, err
 	}
@@ -1386,16 +1451,35 @@ type repoView struct {
 	DefaultBranch string `json:"default_branch,omitempty"`
 }
 
+// cloneRepo is a forge's repo as it appears under /papi/forges repos[]: its name,
+// plus a per-repo owner ONLY when a server redundantly stamps one — the spec places
+// owner on the /papi/repos flattening, not here (RFC-0001 §1.1/§4).
+type cloneRepo struct {
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
+}
+
 // cloneForge is the slice of a /papi/forges entry needed to synthesize clone urls:
-// the forge's clone channel (its published ssh_clone base, or a host derived from
-// base_url) and its repos. Other forge fields are ignored here.
+// the forge's identity (its single owner — one identity per forge, RFC-0001 §1.1),
+// its clone channel (its published ssh_clone base, or a host derived from base_url),
+// and its repos. Other forge fields are ignored here.
 type cloneForge struct {
-	BaseURL  string `json:"base_url"`
-	SSHClone string `json:"ssh_clone"`
-	Repos    []struct {
-		Owner string `json:"owner"`
-		Name  string `json:"name"`
-	} `json:"repos"`
+	BaseURL  string      `json:"base_url"`
+	SSHClone string      `json:"ssh_clone"`
+	Identity string      `json:"identity"`
+	Repos    []cloneRepo `json:"repos"`
+}
+
+// repoOwner returns the owner for one of this forge's repos: the forge's single
+// identity, honoring a per-repo owner when a server redundantly stamps one. Since
+// /papi/forges repos[] carry no owner in the spec shape, sourcing it from the forge
+// identity is what keeps the synthesized clone url from dropping the owner segment
+// (git@host:/name.git — amarbel-llc/papi#47).
+func (f cloneForge) repoOwner(r cloneRepo) string {
+	if r.Owner != "" {
+		return r.Owner
+	}
+	return f.Identity
 }
 
 // cloneURL synthesizes a git clone url for owner/name on this forge. It prefers the
@@ -1414,13 +1498,13 @@ func (f cloneForge) cloneURL(owner, name string) string {
 	return ""
 }
 
-// cloneForges fetches /papi/forges (authenticated when recipient is set) and decodes
-// the entries needed for clone-url synthesis. Sourced from /papi/forges because the
+// cloneForges fetches /papi/forges (authenticated when af carries §5 credentials)
+// and decodes the entries needed for clone-url synthesis. Sourced from /papi/forges because the
 // clone channel (ssh_clone) lives at the forge level, not on the flattened
 // /papi/repos entry (whose url is the published — often SSO-gated — web url).
-func cloneForges(ctx context.Context, c *papi.Client, recipient, decryptCmd string) ([]cloneForge, error) {
+func cloneForges(ctx context.Context, c *papi.Client, af authFlags) ([]cloneForge, error) {
 	var raw []byte
-	if recipient == "" {
+	if !af.active() {
 		v, _, err := c.Forges(ctx)
 		if err != nil {
 			return nil, err
@@ -1429,7 +1513,11 @@ func cloneForges(ctx context.Context, c *papi.Client, recipient, decryptCmd stri
 			return nil, err
 		}
 	} else {
-		body, err := authedBody(ctx, c, recipient, decryptCmd, "/papi/forges")
+		opts, err := af.options(ctx)
+		if err != nil {
+			return nil, err
+		}
+		body, err := authedBody(ctx, c, opts, "/papi/forges")
 		if err != nil {
 			return nil, err
 		}
@@ -1447,7 +1535,7 @@ func cloneForges(ctx context.Context, c *papi.Client, recipient, decryptCmd stri
 func newReposCmd() *cobra.Command {
 	var owner string
 	var urlOnly bool
-	var recipient, decryptCmd string
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "repos <domain>",
 		Short: "List a domain's PAPI repositories (GET /papi/repos)",
@@ -1455,10 +1543,12 @@ func newReposCmd() *cobra.Command {
 			"provenance-annotated GET /papi/repos list as JSON; --owner filters to a single " +
 			"owner. --url instead prints one directly-clonable git url per line: papi joins each " +
 			"repo to its forge's clone channel (the forge's published ssh_clone base, else an " +
-			"scp-style git@<host> from base_url), so a consumer can `git clone` each line as-is — " +
-			"including §5-gated forges whose /papi/repos url is only the SSO-gated web url. " +
-			"Anonymously only public forges project; pass --recipient (and --decrypt-cmd) to run " +
-			"the §5 handshake and get the full scoped set (e.g. a private forgejo over SSH). " +
+			"scp-style git@<host> from base_url) and its owner (the forge's identity), so a " +
+			"consumer can `git clone` each line as-is — including §5-gated forges whose " +
+			"/papi/repos url is only the SSO-gated web url. Anonymously only public forges " +
+			"project; pass --auth-key-id <slot-9A id> to run the §5.2 sign-challenge handshake " +
+			"and get the full scoped set (e.g. a private forgejo over SSH); servers advertising " +
+			"the legacy decrypt-challenge scheme take --recipient/--decrypt-cmd instead. " +
 			"(--url covers forge-hosted repos; organization-hosted repos, if any, appear only in " +
 			"the JSON view.)",
 		Args: cobra.ExactArgs(1),
@@ -1473,16 +1563,17 @@ func newReposCmd() *cobra.Command {
 			// channels (the flattened /papi/repos carries only the web url, so the
 			// ssh_clone base is joined in from /papi/forges).
 			if urlOnly {
-				forges, err := cloneForges(cmd.Context(), c, recipient, decryptCmd)
+				forges, err := cloneForges(cmd.Context(), c, af)
 				if err != nil {
 					return err
 				}
 				for _, f := range forges {
 					for _, r := range f.Repos {
-						if owner != "" && r.Owner != owner {
+						o := f.repoOwner(r)
+						if owner != "" && o != owner {
 							continue
 						}
-						if u := f.cloneURL(r.Owner, r.Name); u != "" {
+						if u := f.cloneURL(o, r.Name); u != "" {
 							if _, err := fmt.Fprintln(out, u); err != nil {
 								return err
 							}
@@ -1494,12 +1585,15 @@ func newReposCmd() *cobra.Command {
 
 			// JSON: the flattened, provenance-annotated /papi/repos view.
 			var repos []papi.Repo
-			if recipient == "" {
+			if !af.active() {
 				repos, _, err = c.Repos(cmd.Context())
 			} else {
-				var body []byte
-				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/repos"); err == nil {
-					repos, err = papi.DecodeRepos(body)
+				var opts inspect.Options
+				if opts, err = af.options(cmd.Context()); err == nil {
+					var body []byte
+					if body, err = authedBody(cmd.Context(), c, opts, "/papi/repos"); err == nil {
+						repos, err = papi.DecodeRepos(body)
+					}
 				}
 			}
 			if err != nil {
@@ -1522,15 +1616,12 @@ func newReposCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&owner, "owner", "", "only list repositories with this owner")
 	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one directly-clonable git url per line (synthesized from each forge's clone channel) instead of JSON")
-	cmd.Flags().StringVar(&recipient, "recipient", "",
-		"piggy recipient id to authenticate as; runs the §5 handshake so §5-gated forges (private/forgejo) are listed")
-	cmd.Flags().StringVar(&decryptCmd, "decrypt-cmd", "",
-		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (the card boundary)")
+	af.register(cmd)
 	return cmd
 }
 
 func newForgesCmd() *cobra.Command {
-	var recipient, decryptCmd string
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "forges <domain>",
 		Short: "List a domain's PAPI forges (GET /papi/forges)",
@@ -1538,9 +1629,9 @@ func newForgesCmd() *cobra.Command {
 			"repos[], and any server-specific fields such as ssh_clone) — and print the projected " +
 			"array as JSON, verbatim: unrecognized members are preserved (RFC-0001 §1.1), so a " +
 			"clone consumer can read a forge's clone channel and join it with its repos[]. " +
-			"Anonymously only public forges project; pass --recipient (and --decrypt-cmd) to run " +
-			"the §5 handshake and get the full scoped set — e.g. a private forgejo with its " +
-			"ssh_clone base.",
+			"Anonymously only public forges project; pass --auth-key-id <slot-9A id> to run the " +
+			"§5.2 sign-challenge handshake and get the full scoped set — e.g. a private forgejo " +
+			"with its ssh_clone base (legacy decrypt-challenge servers take --recipient/--decrypt-cmd).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -1548,14 +1639,17 @@ func newForgesCmd() *cobra.Command {
 				return err
 			}
 			var forges any
-			if recipient == "" {
+			if !af.active() {
 				forges, _, err = c.Forges(cmd.Context())
 			} else {
-				var body []byte
-				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/forges"); err == nil {
-					var data json.RawMessage
-					if data, _, err = papi.DecodeEnvelope(body); err == nil {
-						err = json.Unmarshal(data, &forges)
+				var opts inspect.Options
+				if opts, err = af.options(cmd.Context()); err == nil {
+					var body []byte
+					if body, err = authedBody(cmd.Context(), c, opts, "/papi/forges"); err == nil {
+						var data json.RawMessage
+						if data, _, err = papi.DecodeEnvelope(body); err == nil {
+							err = json.Unmarshal(data, &forges)
+						}
 					}
 				}
 			}
@@ -1567,17 +1661,14 @@ func newForgesCmd() *cobra.Command {
 			return enc.Encode(forges)
 		},
 	}
-	cmd.Flags().StringVar(&recipient, "recipient", "",
-		"piggy recipient id to authenticate as; runs the §5 handshake so §5-gated forges (private/forgejo) appear")
-	cmd.Flags().StringVar(&decryptCmd, "decrypt-cmd", "",
-		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (the card boundary)")
+	af.register(cmd)
 	return cmd
 }
 
 func newProfilesCmd() *cobra.Command {
 	var id string
 	var flakerefOnly bool
-	var recipient, decryptCmd string
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "profiles <domain>",
 		Short: "List a domain's PAPI host profiles (GET /papi/profiles)",
@@ -1585,8 +1676,9 @@ func newProfilesCmd() *cobra.Command {
 			"staged installer activates — and print them as JSON. --id selects a single " +
 			"profile (erroring if none matches); --flakeref prints one flakeref per line. " +
 			"Host profiles are commonly §5-gated, so an unauthenticated fetch shows only " +
-			"the anonymous-visible set; pass --recipient (and --decrypt-cmd) to run the §5 " +
-			"handshake and see the full scoped set.",
+			"the anonymous-visible set; pass --auth-key-id <slot-9A id> to run the §5.2 " +
+			"sign-challenge handshake and see the full scoped set (legacy decrypt-challenge " +
+			"servers take --recipient/--decrypt-cmd).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
@@ -1594,12 +1686,15 @@ func newProfilesCmd() *cobra.Command {
 				return err
 			}
 			var profiles []papi.Profile
-			if recipient == "" {
+			if !af.active() {
 				profiles, _, err = c.Profiles(cmd.Context())
 			} else {
-				var body []byte
-				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/profiles"); err == nil {
-					profiles, err = papi.DecodeProfiles(body)
+				var opts inspect.Options
+				if opts, err = af.options(cmd.Context()); err == nil {
+					var body []byte
+					if body, err = authedBody(cmd.Context(), c, opts, "/papi/profiles"); err == nil {
+						profiles, err = papi.DecodeProfiles(body)
+					}
 				}
 			}
 			if err != nil {
@@ -1635,13 +1730,13 @@ func newProfilesCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&id, "id", "", "select only the profile with this id")
 	cmd.Flags().BoolVar(&flakerefOnly, "flakeref", false, "print one flakeref per line instead of JSON")
-	addAuthFlags(cmd, &recipient, &decryptCmd)
+	af.register(cmd)
 	return cmd
 }
 
 func newQueryCmd() *cobra.Command {
 	var raw bool
-	var recipient, decryptCmd string
+	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "query <domain> <jq-expr>",
 		Short: "Run a jq expression over a domain's PAPI document (GET /papi)",
@@ -1650,9 +1745,10 @@ func newQueryCmd() *cobra.Command {
 			"--raw/-r prints string results unquoted (like jq -r). Lets consumers pluck " +
 			"arbitrary fields (forges[], organizations[], repos[], person, …) without " +
 			"bespoke curl+jq. Anonymously the document is the public projection; pass " +
-			"--recipient (and --decrypt-cmd) to run the §5 handshake and jq over the full " +
-			"scoped projection (the same fields other subcommands surface, reachable here " +
-			"for the endpoints without a dedicated command — organizations[], sitemap, …).",
+			"--auth-key-id <slot-9A id> to run the §5.2 sign-challenge handshake and jq over " +
+			"the full scoped projection (the same fields other subcommands surface, reachable " +
+			"here for the endpoints without a dedicated command — organizations[], sitemap, …). " +
+			"Legacy decrypt-challenge servers take --recipient/--decrypt-cmd.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query, err := gojq.Parse(args[1])
@@ -1664,14 +1760,17 @@ func newQueryCmd() *cobra.Command {
 				return err
 			}
 			var input any
-			if recipient == "" {
+			if !af.active() {
 				input, _, err = c.RawDocument(cmd.Context())
 			} else {
-				var body []byte
-				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi"); err == nil {
-					var data json.RawMessage
-					if data, _, err = papi.DecodeEnvelope(body); err == nil {
-						err = json.Unmarshal(data, &input)
+				var opts inspect.Options
+				if opts, err = af.options(cmd.Context()); err == nil {
+					var body []byte
+					if body, err = authedBody(cmd.Context(), c, opts, "/papi"); err == nil {
+						var data json.RawMessage
+						if data, _, err = papi.DecodeEnvelope(body); err == nil {
+							err = json.Unmarshal(data, &input)
+						}
 					}
 				}
 			}
@@ -1682,7 +1781,7 @@ func newQueryCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&raw, "raw", "r", false, "print string results unquoted (like jq -r)")
-	addAuthFlags(cmd, &recipient, &decryptCmd)
+	af.register(cmd)
 	return cmd
 }
 
@@ -2261,7 +2360,8 @@ func newAuthVerifierCmd() *cobra.Command {
 			routes := make([]string, 0, 4)
 			if forwardAuth {
 				for _, req := range []struct{ name, val string }{
-					{"cookie-key-file", cookieKeyFile}, {"oracle-login", oracleLogin},
+					{"cookie-key-file", cookieKeyFile},
+					{"oracle-login", oracleLogin},
 					{"external-url", externalURL},
 				} {
 					if req.val == "" {

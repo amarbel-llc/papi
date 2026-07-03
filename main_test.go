@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -22,6 +25,7 @@ import (
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
+	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -985,9 +989,11 @@ func reposServer(t *testing.T) *httptest.Server {
 	})
 	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		// Real /papi/forges shape (amarbel-llc/papi#47): the owner is the forge's
+		// single `identity`, and repos[] carry NO per-repo owner.
 		io.WriteString(w, `{"data":[`+
-			`{"kind":"github","base_url":"https://github.com","repos":[{"owner":"amarbel-llc","name":"papi"},{"owner":"amarbel-llc","name":"eng"}]},`+
-			`{"kind":"codeberg","base_url":"https://codeberg.org","repos":[{"owner":"someone","name":"dotfiles"}]}`+
+			`{"kind":"github","base_url":"https://github.com","identity":"amarbel-llc","repos":[{"name":"papi"},{"name":"eng"}]},`+
+			`{"kind":"codeberg","base_url":"https://codeberg.org","identity":"someone","repos":[{"name":"dotfiles"}]}`+
 			`],"meta":{"type":"forges","visibility":"public"}}`)
 	})
 	return httptest.NewServer(mux)
@@ -1076,8 +1082,8 @@ func reposAuthedServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	registerHandshake(mux, "repos-nonce")
-	pub := `{"kind":"github","base_url":"https://github.com","repos":[{"owner":"amarbel-llc","name":"papi"}]}`
-	gated := `{"kind":"forgejo","base_url":"https://forge.linenisgreat.com","ssh_clone":"ssh://git@krone:2222","repos":[{"owner":"amarbel-llc","name":"secret"}]}`
+	pub := `{"kind":"github","base_url":"https://github.com","identity":"amarbel-llc","repos":[{"name":"papi"}]}`
+	gated := `{"kind":"forgejo","base_url":"https://forge.linenisgreat.com","ssh_clone":"ssh://git@krone:2222","identity":"amarbel-llc","repos":[{"name":"secret"}]}`
 	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") == "PiggySession sess1" {
@@ -1116,6 +1122,114 @@ func TestReposAnonVsAuthed(t *testing.T) {
 	}
 	if n := len(strings.Split(strings.TrimSpace(authed), "\n")); n != 2 {
 		t.Fatalf("authed --url want 2 clone urls, got %d:\n%s", n, authed)
+	}
+}
+
+// signerFake signs as a slot-9A card would (SHA-256 over the bare preimage, ECDSA
+// P-256, raw r‖s), standing in for a real PIV device via the signChallengeSignerFn seam.
+type signerFake struct{ priv *ecdsa.PrivateKey }
+
+func (f signerFake) SignSlot9A(_ context.Context, _ string, msg []byte) ([]byte, error) {
+	digest := sha256.Sum256(msg)
+	r, s, err := ecdsa.Sign(rand.Reader, f.priv, digest[:])
+	if err != nil {
+		return nil, err
+	}
+	rs := make([]byte, 64)
+	r.FillBytes(rs[:32])
+	s.FillBytes(rs[32:])
+	return rs, nil
+}
+
+// reposSignServer advertises the RECOMMENDED §5.2 sign-challenge scheme and gates a
+// §5-only forgejo forge behind it: the challenge mints a nonce for a known
+// auth_key_id, the response ECDSA-verifies the slot-9A signature over the §5.2
+// preimage (bound to the request host), and authed /papi/forges adds the gated forge.
+func reposSignServer(t *testing.T, signerPub *ecdsa.PublicKey, authKeyID string) *httptest.Server {
+	t.Helper()
+	consumed := false
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/papi", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"version":"papi/v0","auth":{"scheme":"piggy-sign-challenge"}}`)
+	})
+	mux.HandleFunc("/papi/auth/challenge", func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		if m["auth_key_id"] != authKeyID {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"challenge_id":"ch1","nonce":"repos-sign-nonce","expires_at":9999999999}`)
+	})
+	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		if consumed || m["challenge_id"] != "ch1" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if err := signchallenge.Verify(signerPub, r.Host, "repos-sign-nonce", m["signature"]); err != nil {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		consumed = true
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"session":"sess1","principal":"tester","expires_at":9999999999}`)
+	})
+	githubForge := `{"kind":"github","base_url":"https://github.com","identity":"friedenberg","repos":[{"name":"papi"}]}`
+	gatedForge := `{"kind":"forgejo","base_url":"https://forge.example.com","ssh_clone":"ssh://git@forge.example.com:2222","identity":"friedenberg","repos":[{"name":"secret"}]}`
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":[`+githubForge+`,`+gatedForge+`],"meta":{"type":"forges","visibility":"scoped"}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+githubForge+`],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestReposSignChallengeURL is the CLI-level regression for amarbel-llc/papi#46:
+// against a sign-challenge server, `repos --auth-key-id ... --url` runs the §5.2
+// handshake (signing the nonce, not POSTing a slot-9D recipient) and enumerates the
+// full scoped set. The slot-9A signer is injected via the signChallengeSignerFn seam.
+func TestReposSignChallengeURL(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const authKeyID = "piggy-auth-v1@ecdsa_p256_pub-me"
+	srv := reposSignServer(t, &priv.PublicKey, authKeyID)
+	defer srv.Close()
+
+	orig := signChallengeSignerFn
+	signChallengeSignerFn = func(_ context.Context, _, guid, _, _ string) (signchallenge.Signer, string, error) {
+		return signerFake{priv}, guid, nil
+	}
+	defer func() { signChallengeSignerFn = orig }()
+
+	anon, err := runRepos(t, srv.URL, "--url")
+	if err != nil {
+		t.Fatalf("anon repos: %v", err)
+	}
+	if strings.Contains(anon, "secret") {
+		t.Errorf("anonymous --url leaked a §5-gated forge:\n%s", anon)
+	}
+	if !strings.Contains(anon, "git@github.com:friedenberg/papi.git") {
+		t.Errorf("anon --url should synthesize the public github clone url with the forge identity as owner:\n%s", anon)
+	}
+
+	authed, err := runRepos(t, srv.URL, "--auth-key-id", authKeyID, "--url")
+	if err != nil {
+		t.Fatalf("authed repos (sign-challenge): %v", err)
+	}
+	if !strings.Contains(authed, "ssh://git@forge.example.com:2222/friedenberg/secret.git") {
+		t.Errorf("sign-challenge authed --url missing the gated forgejo clone url:\n%s", authed)
+	}
+	if n := len(strings.Split(strings.TrimSpace(authed), "\n")); n != 2 {
+		t.Fatalf("sign-challenge authed --url want 2 clone urls, got %d:\n%s", n, authed)
 	}
 }
 

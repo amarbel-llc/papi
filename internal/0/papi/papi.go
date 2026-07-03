@@ -251,6 +251,27 @@ func (c *Client) Discovery(ctx context.Context) (*Discovery, int, error) {
 	return d, resp.Status, err
 }
 
+// ServingDiscovery fetches and decodes GET /.well-known/papi from the API serving
+// base (§8.1) — the canonical discovery for a split-host domain, where the identity
+// domain may host only a static stub that points here. Because the serving host is
+// the one that implements the auth endpoints, its discovery carries the
+// authoritative `auth` block (§4.1, §5); the identity-domain stub can advertise a
+// stale scheme. A client selecting a §5 scheme MUST read it from this document. When
+// the domain is not split (serving base == identity base), this is the same document
+// as Discovery.
+func (c *Client) ServingDiscovery(ctx context.Context) (*Discovery, int, error) {
+	base := c.servingBase(ctx)
+	resp, err := c.doAt(ctx, base, http.MethodGet, "/.well-known/papi", "", nil, "")
+	if err != nil {
+		return nil, 0, err
+	}
+	if resp.Status != http.StatusOK {
+		return nil, resp.Status, fmt.Errorf("serving discovery returned HTTP %d", resp.Status)
+	}
+	d, err := decodeDiscovery(resp.Body)
+	return d, resp.Status, err
+}
+
 func decodeDiscovery(body []byte) (*Discovery, error) {
 	var d Discovery
 	if err := json.Unmarshal(body, &d); err == nil && (d.Version != "" || len(d.Resources) > 0) {

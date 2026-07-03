@@ -15,7 +15,10 @@ import {
 } from "./papi.ts";
 
 const fixture = (name: string): string =>
-  readFileSync(fileURLToPath(new URL(`./testdata/${name}`, import.meta.url)), "utf8");
+  readFileSync(
+    fileURLToPath(new URL(`./testdata/${name}`, import.meta.url)),
+    "utf8",
+  );
 
 test("decodeProfiles: NixOS pair + non-NixOS home", () => {
   const body =
@@ -32,8 +35,7 @@ test("decodeProfiles: NixOS pair + non-NixOS home", () => {
 });
 
 test("decodeRepos", () => {
-  const body =
-    `{"data":[{"name":"papi","url":"https://github.com/amarbel-llc/papi","owner":"amarbel-llc"}],"meta":{"count":1}}`;
+  const body = `{"data":[{"name":"papi","url":"https://github.com/amarbel-llc/papi","owner":"amarbel-llc"}],"meta":{"count":1}}`;
   const rs = decodeRepos(body);
   expect(rs.length).toBe(1);
   expect(rs[0].name).toBe("papi");
@@ -54,7 +56,9 @@ test("verifyDocument: unsigned is not authentic", () => {
 
 test("Client.for normalizes a bare domain to an https base", () => {
   expect(Client.for("linenisgreat.com").base).toBe("https://linenisgreat.com");
-  expect(Client.for("https://api.example.test/x").base).toBe("https://api.example.test");
+  expect(Client.for("https://api.example.test/x").base).toBe(
+    "https://api.example.test",
+  );
 });
 
 // --- §10 verify of a real signed /papi document through the wasm core (FDR-0007
@@ -79,7 +83,10 @@ test("verifyDocument: wrong published id is not authentic (unverifiable)", () =>
 
 test("verifyDocument: tampered body is not authentic (signed-but-invalid)", () => {
   const pubid = fixture("signed-papi.pubid.txt").trim();
-  const tampered = fixture("signed-papi.json").replace('"fixture"', '"attacker"');
+  const tampered = fixture("signed-papi.json").replace(
+    '"fixture"',
+    '"attacker"',
+  );
   const res = verifyDocument(tampered, [pubid]);
   expect(res.authentic).toBe(false);
 });

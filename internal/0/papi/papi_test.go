@@ -65,6 +65,50 @@ func TestDecodeDiscoveryBare(t *testing.T) {
 	}
 }
 
+// TestServingDiscoveryPrefersServingHost is the split-host regression for
+// amarbel-llc/papi#46: the identity domain hosts a static discovery stub that
+// advertises a stale auth.scheme while the canonical serving host advertises the
+// current one. ServingDiscovery MUST read the serving host's auth block (it
+// implements the auth endpoints), while Discovery still reads the identity stub.
+func TestServingDiscoveryPrefersServingHost(t *testing.T) {
+	serving := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"version":"papi/v0","handle":"linenisgreat","auth":{"scheme":"piggy-sign-challenge"}}`)
+	}))
+	defer serving.Close()
+
+	// The identity stub points its resources at the serving host (so the client
+	// resolves the serving base there) but advertises the RETIRED scheme.
+	identity := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"version":"papi/v0","handle":"linenisgreat","resources":{"document":%q},"auth":{"scheme":"piggy-challenge-response"}}`,
+			serving.URL+"/papi")
+	}))
+	defer identity.Close()
+
+	c, err := NewClient(identity.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	sd, _, err := c.ServingDiscovery(ctx)
+	if err != nil {
+		t.Fatalf("ServingDiscovery: %v", err)
+	}
+	if sd.Auth == nil || sd.Auth.Scheme != "piggy-sign-challenge" {
+		t.Errorf("ServingDiscovery auth.scheme = %+v, want piggy-sign-challenge (serving host is authoritative)", sd.Auth)
+	}
+
+	id, _, err := c.Discovery(ctx)
+	if err != nil {
+		t.Fatalf("Discovery: %v", err)
+	}
+	if id.Auth == nil || id.Auth.Scheme != "piggy-challenge-response" {
+		t.Errorf("Discovery auth.scheme = %+v, want the identity stub's piggy-challenge-response", id.Auth)
+	}
+}
+
 func TestServingBaseFromResources(t *testing.T) {
 	cases := []struct {
 		res  map[string]string

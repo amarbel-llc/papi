@@ -34,9 +34,9 @@ ADR-0004.
 `piggy-ids` / `ssh-keys` / `person` / `repos` / `forges` surface a domain's
 published identity material, keys, repositories, and forge identities for
 downstream consumption (`person` / `repos` / `forges` / `profiles` / `piggy-ids` /
-`ssh-keys` / `query` all take `--recipient`, with `--decrypt-cmd`, to run the §5
-handshake and fetch the full scoped projection instead of the anonymous one —
-e.g. §5-gated private forges);
+`ssh-keys` / `query` all take `--auth-key-id` — the RECOMMENDED §5.2 sign-challenge,
+or the legacy `--recipient`/`--decrypt-cmd` — to run the §5 handshake and fetch the
+full scoped projection instead of the anonymous one — e.g. §5-gated private forges);
 `ssh-copy-id` installs those keys onto a remote host, and `ssh-sync` keeps a
 local managed `authorized_keys` file in sync with a domain on a timer (via a
 home-manager service); `bootstrap` prints a domain's
@@ -68,24 +68,32 @@ $ papi validate linenisgreat.com | crap-present
 ```
 
 Accepts a bare domain (`https` assumed) or a full URL. By default it validates
-only the public/anonymous tier. To also exercise the §5 challenge/response
-handshake and the authenticated/scoped projection, supply a recipient identity
-you control and a `--decrypt-cmd` that reads the challenge ebox (base64) on
-stdin and writes the recovered nonce on stdout. `base64 -d | pivy-box stream
-decrypt` (talking to a running pivy/piggy-agent that holds the recipient's
-slot-9D key) is exactly such a command — it base64-decodes the ebox and decrypts
-it through the card:
+only the public/anonymous tier. To also exercise the §5 handshake and the
+authenticated/scoped projection, authenticate with your slot-9A key via the
+RECOMMENDED sign-challenge scheme (RFC-0001 §5.2): pass `--auth-key-id <slot-9A id>`
+and papi signs the server's challenge nonce with that card — through a forwarded SSH
+agent when `$SSH_AUTH_SOCK` is set, else `piggy sign-bytes` against a local card:
 
 ```console
 $ papi validate linenisgreat.com \
-    --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' | crap-present
+    --auth-key-id piggy-auth-v1@... | crap-present
 ```
 
-| flag            | meaning                                                                                       |
-| --------------- | --------------------------------------------------------------------------------------------- |
-| `--recipient`   | piggy recipient id to authenticate as; runs the §5 handshake + scoped-tier checks             |
-| `--decrypt-cmd` | shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout  |
+Servers advertising the OPTIONAL, legacy decrypt-challenge scheme instead take a
+`--recipient` you control plus a `--decrypt-cmd` that reads the challenge ebox
+(base64) on stdin and writes the recovered nonce on stdout — e.g. `base64 -d |
+pivy-box stream decrypt`, talking to a pivy/piggy-agent that holds the recipient's
+slot-9D key. papi honors the server's advertised discovery `auth.scheme`, so pass
+whichever pair the target accepts.
+
+| flag            | meaning                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `--auth-key-id` | slot-9A id to authenticate as; runs the RECOMMENDED §5.2 sign-challenge handshake                 |
+| `--signer`      | slot-9A signer for `--auth-key-id`: `auto` ($SSH_AUTH_SOCK agent, else piggy sign-bytes), `agent`, `pcsc` |
+| `--sign-guid`   | GUID of the slot-9A card to sign with (default: the sole provisioned card)                        |
+| `--pin`         | PIV PIN for slot-9A signing                                                                       |
+| `--recipient`   | slot-9D id for the OPTIONAL, legacy decrypt-challenge scheme                                      |
+| `--decrypt-cmd` | shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout      |
 
 ### `papi piggy-ids <domain>`
 
@@ -93,8 +101,8 @@ Fetch `<domain>`'s `GET /papi/piggy-ids` and print it verbatim — the piggy-ids
 file: comment lines, slot-9D encryption recipients, and slot-9A SSH auth ids.
 With `--recipients-only`, emit just the bare slot-9D encryption recipients
 (RFC-0001 §5.1), ready to feed as a recipient set to an encryptor. Pass
-`--recipient` (and `--decrypt-cmd`) to run the §5 handshake and see the full
-scoped set:
+`--auth-key-id` (or the legacy `--recipient`/`--decrypt-cmd`) to run the §5
+handshake and see the full scoped set:
 
 ```console
 $ papi piggy-ids --recipients-only linenisgreat.com
@@ -107,8 +115,8 @@ OpenSSH `authorized_keys` line per visible slot-9A key, each annotated with
 `guid=<HEX>` and `cn=<name>`. With `--guid <HEX>`, print only the line whose
 `guid=` annotation matches (case-insensitively), erroring if none does — the
 affordance a bootstrapping client uses to pin its own card's signing key. Pass
-`--recipient` (and `--decrypt-cmd`) to run the §5 handshake and see the full
-scoped set:
+`--auth-key-id` (or the legacy `--recipient`/`--decrypt-cmd`) to run the §5
+handshake and see the full scoped set:
 
 ```console
 $ papi ssh-keys --guid DEADBEEF linenisgreat.com
@@ -227,16 +235,15 @@ behind §5 would be circular.
 
 Fetch `<domain>`'s `GET /papi` and print its `person` block as JSON — handle,
 display name, and contact email. Anonymously the ACL-gated `person.contact` is
-stripped, so no email shows (RFC-0001 §2). Pass `--recipient` (and the same
-`--decrypt-cmd` as `validate`) to run the §5 handshake and fetch the scoped
+stripped, so no email shows (RFC-0001 §2). Pass `--auth-key-id` (the §5.2
+sign-challenge, as with `validate`) to run the §5 handshake and fetch the scoped
 projection, revealing `contact.email` — the identity-bootstrap affordance a
 downstream consumer sources name/email from:
 
 ```console
 $ papi person linenisgreat.com           # anonymous: handle + display_name
 $ papi person linenisgreat.com \
-    --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'base64 -d | pivy-box stream decrypt'   # + contact.email
+    --auth-key-id piggy-auth-v1@...       # + contact.email
 ```
 
 ### `papi repos <domain>`
@@ -247,21 +254,21 @@ owner. `--url` instead prints one **directly-clonable** git url per line: papi
 joins each repo to its forge's clone channel — the forge's published `ssh_clone`
 base, else an scp-style `git@<host>` derived from `base_url` — so each line is
 `git clone`-able as-is, including §5-gated forges whose published `url` is only the
-SSO-gated web url. Anonymously only public forges project; pass `--recipient` (and
-`--decrypt-cmd`) to run the §5 handshake and get the full scoped set (e.g. a private
-forgejo over SSH):
+SSO-gated web url. The owner segment is the forge's `identity` (one identity per
+forge, RFC-0001 §1.1). Anonymously only public forges project; pass `--auth-key-id`
+(the §5.2 sign-challenge) to run the §5 handshake and get the full scoped set (e.g. a
+private forgejo over SSH):
 
 ```console
 $ papi repos linenisgreat.com                          # JSON: name/url/owner/forge/…
-$ papi repos linenisgreat.com --owner amarbel-llc --url
-git@github.com:amarbel-llc/papi.git
-git@github.com:amarbel-llc/eng.git
+$ papi repos linenisgreat.com --owner friedenberg --url
+git@github.com:friedenberg/papi.git
+git@github.com:friedenberg/eng.git
 …
 $ papi repos linenisgreat.com \
-    --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' --url
-git@github.com:amarbel-llc/papi.git
-ssh://git@krone:2222/amarbel-llc/private-forgejo-repo.git   # + §5-gated forgejo, over SSH
+    --auth-key-id piggy-auth-v1@... --url
+git@github.com:friedenberg/papi.git
+ssh://git@krone:2222/friedenberg/private-forgejo-repo.git   # + §5-gated forgejo, over SSH
 ```
 
 So a clone loop is just `papi repos … --url | while read -r u; do git clone "$u"; done`.
@@ -274,15 +281,14 @@ Fetch `<domain>`'s `GET /papi/forges` — the forge identities (`kind`, `base_ur
 `repos[]`, and any server-specific fields such as `ssh_clone`) — and print the
 projected array as JSON, verbatim: unrecognized members are preserved (RFC-0001
 §1.1), so a clone consumer can read a forge's clone channel and join it with its
-`repos[]`. Anonymously only public forges project; pass `--recipient` (and
-`--decrypt-cmd`) for the §5 handshake and the full scoped set — e.g. a private
+`repos[]`. Anonymously only public forges project; pass `--auth-key-id` (the §5.2
+sign-challenge) for the §5 handshake and the full scoped set — e.g. a private
 forgejo with its `ssh_clone` base:
 
 ```console
 $ papi forges linenisgreat.com                         # JSON: public forges
 $ papi forges linenisgreat.com \
-    --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'base64 -d | pivy-box stream decrypt'   # + §5-gated forgejo (ssh_clone)
+    --auth-key-id piggy-auth-v1@...                    # + §5-gated forgejo (ssh_clone)
 ```
 
 ### `papi profiles <domain>`
@@ -291,15 +297,14 @@ Fetch `<domain>`'s `GET /papi/profiles` — the host profiles (flakerefs) a stag
 installer activates (RFC-0001 §13) — and print them. By default emits the
 profiles as JSON; `--id` selects a single profile (erroring if none matches);
 `--flakeref` prints one flakeref per line. Host profiles are commonly §5-gated, so
-an unauthenticated fetch shows only the anonymous-visible set; pass `--recipient`
-(and `--decrypt-cmd`) to run the §5 handshake and see the full set:
+an unauthenticated fetch shows only the anonymous-visible set; pass `--auth-key-id`
+(the §5.2 sign-challenge) to run the §5 handshake and see the full set:
 
 ```console
 $ papi profiles linenisgreat.com                       # JSON: id/flakeref/home_flakeref/…
 $ papi profiles linenisgreat.com --id framework-laptop --flakeref
 github:amarbel-llc/eng#nixosConfigurations.framework-laptop
-$ papi profiles linenisgreat.com --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' --flakeref   # + §5-gated profiles
+$ papi profiles linenisgreat.com --auth-key-id piggy-auth-v1@... --flakeref   # + §5-gated profiles
 ```
 
 ### `papi query <domain> <jq-expr>`
@@ -309,7 +314,7 @@ an embedded [gojq](https://github.com/itchyny/gojq), so no external `jq` is
 needed — printing each result as JSON, or unquoted strings under `--raw`/`-r`.
 Lets consumers pluck arbitrary fields (`forges[]`, `organizations[]`, `repos[]`,
 `person`, …) without bespoke `curl`+`jq`. Anonymously the document is the public
-projection; pass `--recipient` (and `--decrypt-cmd`) to jq over the full scoped
+projection; pass `--auth-key-id` (the §5.2 sign-challenge) to jq over the full scoped
 projection — the way to reach the projected endpoints without a dedicated
 subcommand (`organizations[]`, `sitemap`, `templates[]`, …):
 
@@ -318,8 +323,7 @@ $ papi query linenisgreat.com '.person.handle' -r
 linenisgreat
 $ papi query linenisgreat.com '.forges[].repos[].url' -r
 $ papi query linenisgreat.com '.person.contact.email' -r \
-    --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'base64 -d | pivy-box stream decrypt'   # acl-gated, needs auth
+    --auth-key-id piggy-auth-v1@...                      # acl-gated, needs auth
 ```
 
 ### `papi enroll <domain>`

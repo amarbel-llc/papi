@@ -111,7 +111,8 @@ func withLogging(logger *slog.Logger, route string, h http.HandlerFunc) http.Han
 		case rec.status >= 400:
 			level = slog.LevelWarn
 		}
-		logger.LogAttrs(r.Context(), level, "request",
+		logger.LogAttrs(
+			r.Context(), level, "request",
 			slog.String("route", route),
 			slog.String("method", r.Method),
 			slog.Int("status", rec.status),

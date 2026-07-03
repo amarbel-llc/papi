@@ -1067,11 +1067,14 @@ The reference validator/CLI (amarbel-llc/papi) exposes the consumption contract 
 
 - **`papi person <domain>`** — fetches `GET /papi` and prints the `person` block
   (handle, display name, contact email) as JSON. Anonymously, `contact.email` is
-  absent (§2). With `--recipient <id>` (and `--decrypt-cmd <cmd>`) it runs the §5
-  handshake to obtain a session, presents it on `GET /papi` (§5.3), and so reveals
-  `contact.email` from the scoped projection. The same handshake core drives
-  `papi validate`'s authenticated tier; a consumer SHOULD reuse a §5
-  implementation rather than reimplement the challenge/response.
+  absent (§2). With `--auth-key-id <slot-9A id>` (the RECOMMENDED §5.2
+  sign-challenge; or the OPTIONAL legacy `--recipient <id>`/`--decrypt-cmd <cmd>`)
+  it runs the §5 handshake to obtain a session, presents it on `GET /papi` (§5.3),
+  and so reveals `contact.email` from the scoped projection. The client reads the
+  server's advertised `auth.scheme` (from the serving-host discovery, §4.1, §8.1)
+  to pick the scheme. The same handshake core drives `papi validate`'s
+  authenticated tier; a consumer SHOULD reuse a §5 implementation rather than
+  reimplement the challenge/response.
 - **`papi ssh-keys <domain>`** — fetches `GET /papi/ssh-authorized-keys` and prints
   it verbatim; with `--guid <HEX>` it prints only the line whose `guid=<HEX>`
   annotation matches (§12.1), erroring if none matches. This is how a client pins

@@ -222,8 +222,10 @@ func verifyReceiptAttestationWithKeys(r papi.Receipt, raw []byte, published []*e
 	}
 
 	if !pubKeyPublished(trusted, published) {
-		return ReceiptCheck{name, false,
-			"attestation.key is not published on the domain (/papi/piggy-ids or ssh_authorized_keys) — no trusted attester"}
+		return ReceiptCheck{
+			name, false,
+			"attestation.key is not published on the domain (/papi/piggy-ids or ssh_authorized_keys) — no trusted attester",
+		}
 	}
 
 	input, err := papi.CanonicalReceiptInput(raw)

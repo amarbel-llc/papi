@@ -87,7 +87,8 @@ func execHook(command string) HookFunc {
 	return func(rc RunContext, ph *crap.Phase) error {
 		ph.Command(command)
 		cmd := exec.Command("sh", "-c", command)
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(
+			os.Environ(),
 			"PAPI_INSTALLER_PLATFORM="+string(rc.Platform),
 			"PAPI_INSTALLER_STATE_DIR="+rc.StateDir,
 			"PAPI_INSTALLER_DOMAIN="+rc.Domain,
