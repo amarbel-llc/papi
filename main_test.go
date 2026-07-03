@@ -970,7 +970,8 @@ func TestPersonDisplayNameFallback(t *testing.T) {
 	}
 }
 
-// reposServer serves a /papi/repos flattened list spanning two owners/forges.
+// reposServer serves a /papi/repos flattened list spanning two owners/forges, plus
+// the matching /papi/forges (which --url synthesizes clone urls from).
 func reposServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -981,6 +982,13 @@ func reposServer(t *testing.T) *httptest.Server {
 			`{"name":"eng","url":"https://github.com/amarbel-llc/eng","owner":"amarbel-llc","forge":"github","kind":"github","visibility":"public","default_branch":"master"},`+
 			`{"name":"dotfiles","url":"https://codeberg.org/someone/dotfiles","owner":"someone","forge":"codeberg","kind":"codeberg","visibility":"public","default_branch":"main"}`+
 			`],"meta":{"type":"repos","visibility":"public","count":3}}`)
+	})
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[`+
+			`{"kind":"github","base_url":"https://github.com","repos":[{"owner":"amarbel-llc","name":"papi"},{"owner":"amarbel-llc","name":"eng"}]},`+
+			`{"kind":"codeberg","base_url":"https://codeberg.org","repos":[{"owner":"someone","name":"dotfiles"}]}`+
+			`],"meta":{"type":"forges","visibility":"public"}}`)
 	})
 	return httptest.NewServer(mux)
 }
@@ -1025,12 +1033,13 @@ func TestReposURLOwnerFilter(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("want 2 urls, got %d: %q", len(lines), out)
 	}
+	// --url synthesizes an scp-style clone url from the github forge's base_url.
 	for _, l := range lines {
-		if !strings.Contains(l, "amarbel-llc") {
-			t.Errorf("unexpected url %q", l)
+		if !strings.HasPrefix(l, "git@github.com:amarbel-llc/") || !strings.HasSuffix(l, ".git") {
+			t.Errorf("want a git@github.com:amarbel-llc/<name>.git clone url, got %q", l)
 		}
 	}
-	if strings.Contains(out, "codeberg") {
+	if strings.Contains(out, "codeberg") || strings.Contains(out, "someone") {
 		t.Errorf("--owner filter leaked another owner:\n%s", out)
 	}
 }
@@ -1060,28 +1069,29 @@ func registerHandshake(mux *http.ServeMux, nonce string) {
 	})
 }
 
-// reposAuthedServer gates a §5-only forgejo repo behind the handshake: anonymous
-// /papi/repos returns just the public github repo, the authed session also returns
-// the forgejo one.
+// reposAuthedServer gates a §5-only forgejo forge behind the handshake: anonymous
+// /papi/forges returns just the public github forge, the authed session also returns
+// the forgejo one (carrying ssh_clone). --url synthesizes clone urls from these.
 func reposAuthedServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	registerHandshake(mux, "repos-nonce")
-	pub := `{"name":"papi","url":"https://github.com/amarbel-llc/papi","owner":"amarbel-llc","forge":"github","kind":"github","visibility":"public","default_branch":"master"}`
-	gated := `{"name":"secret","url":"https://forge.linenisgreat.com/amarbel-llc/secret","owner":"amarbel-llc","forge":"forgejo-krone-amarbel-llc","kind":"forgejo","visibility":"scoped","default_branch":"main"}`
-	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, r *http.Request) {
+	pub := `{"kind":"github","base_url":"https://github.com","repos":[{"owner":"amarbel-llc","name":"papi"}]}`
+	gated := `{"kind":"forgejo","base_url":"https://forge.linenisgreat.com","ssh_clone":"ssh://git@krone:2222","repos":[{"owner":"amarbel-llc","name":"secret"}]}`
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") == "PiggySession sess1" {
-			io.WriteString(w, `{"data":[`+pub+`,`+gated+`],"meta":{"type":"repos","visibility":"scoped","count":2}}`)
+			io.WriteString(w, `{"data":[`+pub+`,`+gated+`],"meta":{"type":"forges","visibility":"scoped"}}`)
 			return
 		}
-		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"repos","visibility":"public","count":1}}`)
+		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"forges","visibility":"public"}}`)
 	})
 	return httptest.NewServer(mux)
 }
 
-// TestReposAnonVsAuthed: anonymous repos omit the §5-gated forgejo repo; the authed
-// handshake (--recipient/--decrypt-cmd) lists the full scoped set.
+// TestReposAnonVsAuthed: anonymous --url omits the §5-gated forgejo repo; the authed
+// handshake (--recipient/--decrypt-cmd) emits its SSH clone url, synthesized by joining
+// the repo to the forge's ssh_clone base — the whole point of the (b) shape.
 func TestReposAnonVsAuthed(t *testing.T) {
 	srv := reposAuthedServer(t)
 	defer srv.Close()
@@ -1090,19 +1100,22 @@ func TestReposAnonVsAuthed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anon repos: %v", err)
 	}
-	if strings.Contains(anon, "forge.linenisgreat.com") {
-		t.Errorf("anonymous repos leaked a §5-gated forgejo repo:\n%s", anon)
+	if strings.Contains(anon, "krone") || strings.Contains(anon, "linenisgreat") {
+		t.Errorf("anonymous --url leaked a §5-gated forge:\n%s", anon)
+	}
+	if !strings.Contains(anon, "git@github.com:amarbel-llc/papi.git") {
+		t.Errorf("anon --url should synthesize the public github clone url:\n%s", anon)
 	}
 
 	authed, err := runRepos(t, srv.URL, "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d", "--url")
 	if err != nil {
 		t.Fatalf("authed repos: %v", err)
 	}
-	if !strings.Contains(authed, "forge.linenisgreat.com/amarbel-llc/secret") {
-		t.Errorf("authed repos missing the §5-gated forgejo repo:\n%s", authed)
+	if !strings.Contains(authed, "ssh://git@krone:2222/amarbel-llc/secret.git") {
+		t.Errorf("authed --url missing the forgejo SSH clone url (ssh_clone join):\n%s", authed)
 	}
 	if n := len(strings.Split(strings.TrimSpace(authed), "\n")); n != 2 {
-		t.Fatalf("authed --url want 2 urls, got %d:\n%s", n, authed)
+		t.Fatalf("authed --url want 2 clone urls, got %d:\n%s", n, authed)
 	}
 }
 

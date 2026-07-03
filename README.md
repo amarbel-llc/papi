@@ -235,28 +235,32 @@ $ papi person linenisgreat.com \
 
 ### `papi repos <domain>`
 
-Fetch `<domain>`'s `GET /papi/repos` — the flattened, provenance-annotated
-repository list — and print it. By default emits the repos as JSON; `--url`
-prints one repository url per line (a `curl`+`jq` replacement for consumers that
-clone them); `--owner` filters to a single owner. Anonymously only the public
-forges project; pass `--recipient` (and `--decrypt-cmd`) to run the §5 handshake
-and list the full scoped set, including §5-gated forges (e.g. a private forgejo):
+Fetch `<domain>`'s repositories and print them. By default emits the flattened,
+provenance-annotated `GET /papi/repos` list as JSON; `--owner` filters to a single
+owner. `--url` instead prints one **directly-clonable** git url per line: papi
+joins each repo to its forge's clone channel — the forge's published `ssh_clone`
+base, else an scp-style `git@<host>` derived from `base_url` — so each line is
+`git clone`-able as-is, including §5-gated forges whose published `url` is only the
+SSO-gated web url. Anonymously only public forges project; pass `--recipient` (and
+`--decrypt-cmd`) to run the §5 handshake and get the full scoped set (e.g. a private
+forgejo over SSH):
 
 ```console
 $ papi repos linenisgreat.com                          # JSON: name/url/owner/forge/…
 $ papi repos linenisgreat.com --owner amarbel-llc --url
-https://github.com/amarbel-llc/papi
-https://github.com/amarbel-llc/eng
+git@github.com:amarbel-llc/papi.git
+git@github.com:amarbel-llc/eng.git
 …
 $ papi repos linenisgreat.com \
     --recipient piggy-recipient-v1@... \
-    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' --url   # + §5-gated forges
+    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' --url
+git@github.com:amarbel-llc/papi.git
+ssh://git@krone:2222/amarbel-llc/private-forgejo-repo.git   # + §5-gated forgejo, over SSH
 ```
 
-Note `--url` prints each repo's published `url` verbatim (for a §5-gated forge
-this is the SSO-gated web url, not a clone url). To build clone urls for gated
-forges, read the forge's clone channel from `papi forges` and join it with its
-`repos[]`.
+So a clone loop is just `papi repos … --url | while read -r u; do git clone "$u"; done`.
+(`--url` covers forge-hosted repos; organization-hosted repos, if any, appear only
+in the JSON view. For the raw forge metadata behind the synthesis, see `papi forges`.)
 
 ### `papi forges <domain>`
 

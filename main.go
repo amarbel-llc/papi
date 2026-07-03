@@ -18,6 +18,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -1357,6 +1358,64 @@ type repoView struct {
 	DefaultBranch string `json:"default_branch,omitempty"`
 }
 
+// cloneForge is the slice of a /papi/forges entry needed to synthesize clone urls:
+// the forge's clone channel (its published ssh_clone base, or a host derived from
+// base_url) and its repos. Other forge fields are ignored here.
+type cloneForge struct {
+	BaseURL  string `json:"base_url"`
+	SSHClone string `json:"ssh_clone"`
+	Repos    []struct {
+		Owner string `json:"owner"`
+		Name  string `json:"name"`
+	} `json:"repos"`
+}
+
+// cloneURL synthesizes a git clone url for owner/name on this forge. It prefers the
+// forge's published ssh_clone base (kind-agnostic — it honors whatever channel the
+// server advertised, e.g. a forgejo behind SSO), and otherwise derives an scp-style
+// git@<host> url from base_url (github/gitlab/codeberg …). Returns "" when neither is
+// available, so there is nothing to clone from.
+func (f cloneForge) cloneURL(owner, name string) string {
+	repo := owner + "/" + name
+	if f.SSHClone != "" {
+		return strings.TrimRight(f.SSHClone, "/") + "/" + repo + ".git"
+	}
+	if u, err := url.Parse(f.BaseURL); err == nil && u.Host != "" {
+		return "git@" + u.Host + ":" + repo + ".git"
+	}
+	return ""
+}
+
+// cloneForges fetches /papi/forges (authenticated when recipient is set) and decodes
+// the entries needed for clone-url synthesis. Sourced from /papi/forges because the
+// clone channel (ssh_clone) lives at the forge level, not on the flattened
+// /papi/repos entry (whose url is the published — often SSO-gated — web url).
+func cloneForges(ctx context.Context, c *papi.Client, recipient, decryptCmd string) ([]cloneForge, error) {
+	var raw []byte
+	if recipient == "" {
+		v, _, err := c.Forges(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if raw, err = json.Marshal(v); err != nil {
+			return nil, err
+		}
+	} else {
+		body, err := authedBody(ctx, c, recipient, decryptCmd, "/papi/forges")
+		if err != nil {
+			return nil, err
+		}
+		if raw, _, err = papi.DecodeEnvelope(body); err != nil {
+			return nil, err
+		}
+	}
+	var forges []cloneForge
+	if err := json.Unmarshal(raw, &forges); err != nil {
+		return nil, fmt.Errorf("parse forges for clone urls: %w", err)
+	}
+	return forges, nil
+}
+
 func newReposCmd() *cobra.Command {
 	var owner string
 	var urlOnly bool
@@ -1364,18 +1423,48 @@ func newReposCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "repos <domain>",
 		Short: "List a domain's PAPI repositories (GET /papi/repos)",
-		Long: "Fetch <domain>'s GET /papi/repos — the flattened, provenance-annotated " +
-			"repository list — and print it. By default emits the repos as JSON; --url " +
-			"prints one repository url per line (a curl+jq replacement for consumers that " +
-			"clone them); --owner filters to a single owner. Anonymously only the public " +
-			"forges project; pass --recipient (and --decrypt-cmd) to run the §5 handshake " +
-			"and list the full scoped set, including §5-gated forges (e.g. a private forgejo).",
+		Long: "Fetch <domain>'s repositories and print them. By default emits the flattened, " +
+			"provenance-annotated GET /papi/repos list as JSON; --owner filters to a single " +
+			"owner. --url instead prints one directly-clonable git url per line: papi joins each " +
+			"repo to its forge's clone channel (the forge's published ssh_clone base, else an " +
+			"scp-style git@<host> from base_url), so a consumer can `git clone` each line as-is — " +
+			"including §5-gated forges whose /papi/repos url is only the SSO-gated web url. " +
+			"Anonymously only public forges project; pass --recipient (and --decrypt-cmd) to run " +
+			"the §5 handshake and get the full scoped set (e.g. a private forgejo over SSH). " +
+			"(--url covers forge-hosted repos; organization-hosted repos, if any, appear only in " +
+			"the JSON view.)",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
 			if err != nil {
 				return err
 			}
+			out := cmd.OutOrStdout()
+
+			// --url emits directly-clonable urls, synthesized from the forges' clone
+			// channels (the flattened /papi/repos carries only the web url, so the
+			// ssh_clone base is joined in from /papi/forges).
+			if urlOnly {
+				forges, err := cloneForges(cmd.Context(), c, recipient, decryptCmd)
+				if err != nil {
+					return err
+				}
+				for _, f := range forges {
+					for _, r := range f.Repos {
+						if owner != "" && r.Owner != owner {
+							continue
+						}
+						if u := f.cloneURL(r.Owner, r.Name); u != "" {
+							if _, err := fmt.Fprintln(out, u); err != nil {
+								return err
+							}
+						}
+					}
+				}
+				return nil
+			}
+
+			// JSON: the flattened, provenance-annotated /papi/repos view.
 			var repos []papi.Repo
 			if recipient == "" {
 				repos, _, err = c.Repos(cmd.Context())
@@ -1388,18 +1477,9 @@ func newReposCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			out := cmd.OutOrStdout()
 			views := make([]repoView, 0, len(repos))
 			for _, r := range repos {
 				if owner != "" && r.Owner != owner {
-					continue
-				}
-				if urlOnly {
-					if r.URL != "" {
-						if _, err := fmt.Fprintln(out, r.URL); err != nil {
-							return err
-						}
-					}
 					continue
 				}
 				views = append(views, repoView{
@@ -1407,16 +1487,13 @@ func newReposCmd() *cobra.Command {
 					Kind: r.Kind, Visibility: r.Visibility, DefaultBranch: r.DefaultBranch,
 				})
 			}
-			if urlOnly {
-				return nil
-			}
 			enc := json.NewEncoder(out)
 			enc.SetIndent("", "  ")
 			return enc.Encode(views)
 		},
 	}
 	cmd.Flags().StringVar(&owner, "owner", "", "only list repositories with this owner")
-	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one repository url per line instead of JSON")
+	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one directly-clonable git url per line (synthesized from each forge's clone channel) instead of JSON")
 	cmd.Flags().StringVar(&recipient, "recipient", "",
 		"piggy recipient id to authenticate as; runs the §5 handshake so §5-gated forges (private/forgejo) are listed")
 	cmd.Flags().StringVar(&decryptCmd, "decrypt-cmd", "",
