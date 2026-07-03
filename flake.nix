@@ -223,9 +223,10 @@
       # machine. FDR-0014 client side; see papi#44.
       homeManagerModules.papi-oracle = import ./nix/hm/papi-oracle.nix self;
 
-      # The FDR-0014 forward-auth verifier as a systemd service. Curried with `self`
-      # so `package` defaults to self.packages.${system}.papi. A consumer (circus)
-      # imports it and fronts it with nginx auth_request.
+      # The FDR-0014 forward-auth verifier as a systemd service (a consumer like circus
+      # imports it and fronts it with nginx auth_request). With enableVerifySignature it
+      # also (or, standalone, only) serves the FDR-0013 app-native /auth/verify-signature
+      # oracle. Curried with `self` so `package` defaults to self.packages.${system}.papi.
       nixosModules.papi-auth-verifier = import ./nix/nixos/papi-auth-verifier.nix self;
     };
 }

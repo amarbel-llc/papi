@@ -80,7 +80,7 @@ build-installer:
 
 # --- test ---
 
-test: test-go test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module
+test: test-go test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module test-nix-verifier-module
 
 # Hermetic Go test suite (httptest fixtures; no network, no card).
 test-go:
@@ -138,6 +138,28 @@ test-nix-oracle-module:
       test = import ./nix/hm/papi-oracle-eval-test.nix {
         inherit pkgs;
         module = flake.homeManagerModules.papi-oracle;
+      };
+    in test'
+    json="$(nix eval --impure --json --expr "$expr")"
+    printf '%s\n' "$json" | jq -r '.summary'
+    if [[ "$(printf '%s\n' "$json" | jq -r '.pass')" != "true" ]]; then
+        printf '%s\n' "$json" | jq -r '.failures[] | "FAIL: \(.name)\n  got: \(.result.got)"'
+        exit 1
+    fi
+
+# Smoke-test the `services.papi-auth-verifier` NixOS module: evaluate it against
+# synthetic configs (lib.evalModules, no NixOS system) and verify the option schema,
+# the forward-auth / verify-signature-only / combined ExecStart, and the
+# forward-auth-requires-its-flags assertion. Mirrors test-nix-oracle-module.
+test-nix-verifier-module:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    expr='let
+      flake = builtins.getFlake (toString ./.);
+      pkgs = flake.inputs.igloo.legacyPackages.${builtins.currentSystem};
+      test = import ./nix/nixos/papi-auth-verifier-eval-test.nix {
+        inherit pkgs;
+        module = flake.nixosModules.papi-auth-verifier;
       };
     in test'
     json="$(nix eval --impure --json --expr "$expr")"
@@ -217,6 +239,18 @@ debug-sign-challenge-smoke domain="api.linenisgreat.com" signer="agent":
 [group("debug")]
 debug-sign-challenge-serve domain target origin addr="0.0.0.0:8088":
     nix develop --command go run . sign-challenge-serve --domain "{{domain}}" --target "{{target}}" --origin "{{origin}}" --addr "{{addr}}"
+
+# Run the standalone verify-signature verifier (FDR-0013 app-native verify oracle) for
+# an interim/dev test: POST /auth/verify-signature turns a card §5.2 signature + domain
+# + nonce into the verified principal (stateless JSON). Point a consumer (e.g. a Better
+# Auth plugin) at it. registry = a papi-ssh-sync fragment / saved
+# /papi/ssh-authorized-keys body carrying the slot-9A auth keys. addr=0.0.0.0:9099 to
+# reach it from another host/tailnet (it holds no secret — registry public keys only).
+# e.g.
+#   just debug-auth-verify-signature-serve /var/lib/papi/registry
+[group("debug")]
+debug-auth-verify-signature-serve registry addr="127.0.0.1:9099":
+    nix develop --command go run . auth-verifier --enable-verify-signature --authorized-keys-file "{{registry}}" --addr "{{addr}}" --log-format text
 
 # Serve the sign-challenge demo page (clients/ts/examples/) over http://localhost so
 # the browser sees a real http origin (file:// gives Origin "null"). Pulls python3
