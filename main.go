@@ -236,20 +236,28 @@ func newValidateCmd() *cobra.Command {
 
 func newPiggyIDsCmd() *cobra.Command {
 	var recipientsOnly bool
+	var recipient, decryptCmd string
 	cmd := &cobra.Command{
 		Use:   "piggy-ids <domain>",
 		Short: "Print a domain's PAPI piggy-ids file (optionally only encryption recipients)",
 		Long: "Fetch <domain>'s GET /papi/piggy-ids and print it verbatim — the piggy-ids " +
 			"file: comment lines, then slot-9D encryption recipients and slot-9A SSH auth " +
 			"ids. With --recipients-only, emit just the slot-9D encryption recipients " +
-			"(RFC-0001 §5.1), ready to feed as a recipient set to an encryptor.",
+			"(RFC-0001 §5.1), ready to feed as a recipient set to an encryptor. Anonymously " +
+			"only the public ids project; pass --recipient (and --decrypt-cmd) to run the §5 " +
+			"handshake and see the full scoped set.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
 			if err != nil {
 				return err
 			}
-			body, _, err := c.PiggyIDs(cmd.Context())
+			var body []byte
+			if recipient == "" {
+				body, _, err = c.PiggyIDs(cmd.Context())
+			} else {
+				body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/piggy-ids")
+			}
 			if err != nil {
 				return err
 			}
@@ -268,6 +276,7 @@ func newPiggyIDsCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&recipientsOnly, "recipients-only", false,
 		"emit only slot-9D encryption recipients (drop comments and slot-9A auth ids)")
+	addAuthFlags(cmd, &recipient, &decryptCmd)
 	return cmd
 }
 
@@ -506,6 +515,7 @@ var guidAnnotation = regexp.MustCompile(`\bguid=([0-9A-Fa-f]+)\b`)
 
 func newSSHKeysCmd() *cobra.Command {
 	var guid string
+	var recipient, decryptCmd string
 	cmd := &cobra.Command{
 		Use:   "ssh-keys <domain>",
 		Short: "Print a domain's PAPI ssh-authorized-keys (optionally one slot-9A key by guid)",
@@ -514,14 +524,20 @@ func newSSHKeysCmd() *cobra.Command {
 			"guid=<HEX> and cn=<name> (RFC-0001 §4.2). With --guid <HEX>, print only the " +
 			"line whose guid= annotation matches <HEX> (case-insensitively), erroring if no " +
 			"line matches — the affordance a bootstrapping client uses to pin its own card's " +
-			"signing key.",
+			"signing key. Anonymously only the public keys project; pass --recipient (and " +
+			"--decrypt-cmd) to run the §5 handshake and see the full scoped set.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
 			if err != nil {
 				return err
 			}
-			body, _, err := c.SSHAuthorizedKeys(cmd.Context())
+			var body []byte
+			if recipient == "" {
+				body, _, err = c.SSHAuthorizedKeys(cmd.Context())
+			} else {
+				body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/ssh-authorized-keys")
+			}
 			if err != nil {
 				return err
 			}
@@ -542,6 +558,7 @@ func newSSHKeysCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&guid, "guid", "",
 		"print only the slot-9A key whose guid=<HEX> annotation matches (case-insensitive)")
+	addAuthFlags(cmd, &recipient, &decryptCmd)
 	return cmd
 }
 
@@ -1310,6 +1327,17 @@ func authedBody(ctx context.Context, c *papi.Client, recipient, decryptCmd, path
 	return resp.Body, nil
 }
 
+// addAuthFlags registers the shared §5 handshake flags (--recipient/--decrypt-cmd) on
+// a projected-endpoint subcommand, switching its fetch from the anonymous projection
+// to the full scoped set. (person/repos/forges register their own with endpoint-
+// specific help; this is the generic pair for the remaining projected endpoints.)
+func addAuthFlags(cmd *cobra.Command, recipient, decryptCmd *string) {
+	cmd.Flags().StringVar(recipient, "recipient", "",
+		"piggy recipient id to authenticate as; runs the §5 handshake to fetch the full scoped projection")
+	cmd.Flags().StringVar(decryptCmd, "decrypt-cmd", "",
+		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (the card boundary)")
+}
+
 // authedPerson runs the §5 handshake as recipient and fetches the scoped /papi so
 // the ACL-gated person.contact projects in, returning the authenticated person.
 func authedPerson(ctx context.Context, c *papi.Client, recipient, decryptCmd string) (*papi.Person, error) {
@@ -1549,6 +1577,7 @@ func newForgesCmd() *cobra.Command {
 func newProfilesCmd() *cobra.Command {
 	var id string
 	var flakerefOnly bool
+	var recipient, decryptCmd string
 	cmd := &cobra.Command{
 		Use:   "profiles <domain>",
 		Short: "List a domain's PAPI host profiles (GET /papi/profiles)",
@@ -1556,14 +1585,23 @@ func newProfilesCmd() *cobra.Command {
 			"staged installer activates — and print them as JSON. --id selects a single " +
 			"profile (erroring if none matches); --flakeref prints one flakeref per line. " +
 			"Host profiles are commonly §5-gated, so an unauthenticated fetch shows only " +
-			"the anonymous-visible set.",
+			"the anonymous-visible set; pass --recipient (and --decrypt-cmd) to run the §5 " +
+			"handshake and see the full scoped set.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
 			if err != nil {
 				return err
 			}
-			profiles, _, err := c.Profiles(cmd.Context())
+			var profiles []papi.Profile
+			if recipient == "" {
+				profiles, _, err = c.Profiles(cmd.Context())
+			} else {
+				var body []byte
+				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/profiles"); err == nil {
+					profiles, err = papi.DecodeProfiles(body)
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -1597,11 +1635,13 @@ func newProfilesCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&id, "id", "", "select only the profile with this id")
 	cmd.Flags().BoolVar(&flakerefOnly, "flakeref", false, "print one flakeref per line instead of JSON")
+	addAuthFlags(cmd, &recipient, &decryptCmd)
 	return cmd
 }
 
 func newQueryCmd() *cobra.Command {
 	var raw bool
+	var recipient, decryptCmd string
 	cmd := &cobra.Command{
 		Use:   "query <domain> <jq-expr>",
 		Short: "Run a jq expression over a domain's PAPI document (GET /papi)",
@@ -1609,7 +1649,10 @@ func newQueryCmd() *cobra.Command {
 			"it — an embedded gojq, no external jq binary — printing each result as JSON. " +
 			"--raw/-r prints string results unquoted (like jq -r). Lets consumers pluck " +
 			"arbitrary fields (forges[], organizations[], repos[], person, …) without " +
-			"bespoke curl+jq.",
+			"bespoke curl+jq. Anonymously the document is the public projection; pass " +
+			"--recipient (and --decrypt-cmd) to run the §5 handshake and jq over the full " +
+			"scoped projection (the same fields other subcommands surface, reachable here " +
+			"for the endpoints without a dedicated command — organizations[], sitemap, …).",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			query, err := gojq.Parse(args[1])
@@ -1620,7 +1663,18 @@ func newQueryCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			input, _, err := c.RawDocument(cmd.Context())
+			var input any
+			if recipient == "" {
+				input, _, err = c.RawDocument(cmd.Context())
+			} else {
+				var body []byte
+				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi"); err == nil {
+					var data json.RawMessage
+					if data, _, err = papi.DecodeEnvelope(body); err == nil {
+						err = json.Unmarshal(data, &input)
+					}
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -1628,6 +1682,7 @@ func newQueryCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVarP(&raw, "raw", "r", false, "print string results unquoted (like jq -r)")
+	addAuthFlags(cmd, &recipient, &decryptCmd)
 	return cmd
 }
 

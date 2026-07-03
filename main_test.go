@@ -1176,6 +1176,151 @@ func TestForgesAnonVsAuthedPassThrough(t *testing.T) {
 	}
 }
 
+// authedTextServer serves a text/plain projected endpoint gated by the §5 handshake:
+// anonymous returns pub, the authed session returns pub + a §5-gated extra line.
+func authedTextServer(t *testing.T, path, pub, extra string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	registerHandshake(mux, "text-nonce")
+	mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, pub+"\n"+extra+"\n")
+			return
+		}
+		io.WriteString(w, pub+"\n")
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestPiggyIDsAuthed / TestSSHKeysAuthed: the text endpoints gate their scoped set
+// behind --recipient, exactly like the JSON ones.
+func TestPiggyIDsAuthed(t *testing.T) {
+	srv := authedTextServer(t, "/papi/piggy-ids", "piggy-recipient-v1@pub", "piggy-recipient-v1@gated")
+	defer srv.Close()
+	run := func(args ...string) string {
+		cmd := newPiggyIDsCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs(args)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("piggy-ids %v: %v", args, err)
+		}
+		return out.String()
+	}
+	if anon := run(srv.URL); strings.Contains(anon, "gated") {
+		t.Errorf("anonymous piggy-ids leaked a §5-gated id:\n%s", anon)
+	}
+	if authed := run(srv.URL, "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d"); !strings.Contains(authed, "gated") {
+		t.Errorf("authed piggy-ids missing the §5-gated id:\n%s", authed)
+	}
+}
+
+func TestSSHKeysAuthed(t *testing.T) {
+	// guids must be hex (the --guid matcher is [0-9A-Fa-f]+); cn labels carry the
+	// pub/gated distinction for the leak check.
+	srv := authedTextServer(t, "/papi/ssh-authorized-keys",
+		"ecdsa-sha2-nistp256 AAAApub guid=BEEF cn=pub",
+		"ecdsa-sha2-nistp256 BBBBgated guid=DEAD cn=gated")
+	defer srv.Close()
+	run := func(args ...string) string {
+		cmd := newSSHKeysCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs(args)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("ssh-keys %v: %v", args, err)
+		}
+		return out.String()
+	}
+	if anon := run(srv.URL); strings.Contains(anon, "cn=gated") {
+		t.Errorf("anonymous ssh-keys leaked a §5-gated key:\n%s", anon)
+	}
+	// --guid resolves against the authed set: the gated card is found only with auth.
+	if authed := run(srv.URL, "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d", "--guid", "DEAD"); !strings.Contains(authed, "guid=DEAD") {
+		t.Errorf("authed ssh-keys --guid DEAD should resolve the §5-gated key:\n%s", authed)
+	}
+}
+
+// profilesAuthedServer gates a §5-only host profile behind the handshake.
+func profilesAuthedServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	registerHandshake(mux, "profiles-nonce")
+	pub := `{"id":"public-host","flakeref":"github:x/y#pub"}`
+	gated := `{"id":"private-host","flakeref":"github:x/y#priv"}`
+	mux.HandleFunc("/papi/profiles", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":[`+pub+`,`+gated+`],"meta":{"type":"profiles","visibility":"scoped"}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"profiles","visibility":"public"}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestProfilesAuthed(t *testing.T) {
+	srv := profilesAuthedServer(t)
+	defer srv.Close()
+	run := func(args ...string) string {
+		cmd := newProfilesCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs(args)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("profiles %v: %v", args, err)
+		}
+		return out.String()
+	}
+	if anon := run(srv.URL, "--flakeref"); strings.Contains(anon, "priv") {
+		t.Errorf("anonymous profiles leaked a §5-gated host profile:\n%s", anon)
+	}
+	authed := run(srv.URL, "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d", "--flakeref")
+	if !strings.Contains(authed, "github:x/y#priv") {
+		t.Errorf("authed profiles missing the §5-gated host profile:\n%s", authed)
+	}
+}
+
+// queryAuthedServer gates person.contact behind the handshake (the §2 acl gate),
+// so a jq over the scoped /papi projection reaches it.
+func queryAuthedServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	registerHandshake(mux, "query-nonce")
+	mux.HandleFunc("/papi", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":{"person":{"handle":"t","contact":{"email":"me@example.com"}}},"meta":{"visibility":"scoped"}}`)
+			return
+		}
+		io.WriteString(w, `{"data":{"person":{"handle":"t"}},"meta":{"visibility":"public"}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func TestQueryAuthed(t *testing.T) {
+	srv := queryAuthedServer(t)
+	defer srv.Close()
+	run := func(args ...string) string {
+		cmd := newQueryCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs(args)
+		if err := cmd.ExecuteContext(context.Background()); err != nil {
+			t.Fatalf("query %v: %v", args, err)
+		}
+		return strings.TrimSpace(out.String())
+	}
+	expr := `.person.contact.email // "none"`
+	if anon := run(srv.URL, expr, "-r"); anon != "none" {
+		t.Errorf("anonymous query saw acl-gated contact.email = %q, want none", anon)
+	}
+	if authed := run(srv.URL, expr, "-r", "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d"); authed != "me@example.com" {
+		t.Errorf("authed query contact.email = %q, want me@example.com", authed)
+	}
+}
+
 // profilesServer serves a /papi/profiles list: a NixOS host (system + standalone
 // home, carrying home_flakeref) and a non-NixOS home profile (no home_flakeref).
 func profilesServer(t *testing.T) *httptest.Server {

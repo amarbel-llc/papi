@@ -33,8 +33,10 @@ ADR-0004.
 `papi` has these subcommands: `validate` checks a domain against the spec;
 `piggy-ids` / `ssh-keys` / `person` / `repos` / `forges` surface a domain's
 published identity material, keys, repositories, and forge identities for
-downstream consumption (`person`, `repos`, and `forges` take `--recipient` to run
-the §5 handshake and reveal the full scoped set, e.g. §5-gated private forges);
+downstream consumption (`person` / `repos` / `forges` / `profiles` / `piggy-ids` /
+`ssh-keys` / `query` all take `--recipient`, with `--decrypt-cmd`, to run the §5
+handshake and fetch the full scoped projection instead of the anonymous one —
+e.g. §5-gated private forges);
 `ssh-copy-id` installs those keys onto a remote host, and `ssh-sync` keeps a
 local managed `authorized_keys` file in sync with a domain on a timer (via a
 home-manager service); `bootstrap` prints a domain's
@@ -90,7 +92,9 @@ $ papi validate linenisgreat.com \
 Fetch `<domain>`'s `GET /papi/piggy-ids` and print it verbatim — the piggy-ids
 file: comment lines, slot-9D encryption recipients, and slot-9A SSH auth ids.
 With `--recipients-only`, emit just the bare slot-9D encryption recipients
-(RFC-0001 §5.1), ready to feed as a recipient set to an encryptor:
+(RFC-0001 §5.1), ready to feed as a recipient set to an encryptor. Pass
+`--recipient` (and `--decrypt-cmd`) to run the §5 handshake and see the full
+scoped set:
 
 ```console
 $ papi piggy-ids --recipients-only linenisgreat.com
@@ -102,7 +106,9 @@ Fetch `<domain>`'s `GET /papi/ssh-authorized-keys` and print it verbatim — one
 OpenSSH `authorized_keys` line per visible slot-9A key, each annotated with
 `guid=<HEX>` and `cn=<name>`. With `--guid <HEX>`, print only the line whose
 `guid=` annotation matches (case-insensitively), erroring if none does — the
-affordance a bootstrapping client uses to pin its own card's signing key:
+affordance a bootstrapping client uses to pin its own card's signing key. Pass
+`--recipient` (and `--decrypt-cmd`) to run the §5 handshake and see the full
+scoped set:
 
 ```console
 $ papi ssh-keys --guid DEADBEEF linenisgreat.com
@@ -285,12 +291,15 @@ Fetch `<domain>`'s `GET /papi/profiles` — the host profiles (flakerefs) a stag
 installer activates (RFC-0001 §13) — and print them. By default emits the
 profiles as JSON; `--id` selects a single profile (erroring if none matches);
 `--flakeref` prints one flakeref per line. Host profiles are commonly §5-gated, so
-an unauthenticated fetch shows only the anonymous-visible set:
+an unauthenticated fetch shows only the anonymous-visible set; pass `--recipient`
+(and `--decrypt-cmd`) to run the §5 handshake and see the full set:
 
 ```console
 $ papi profiles linenisgreat.com                       # JSON: id/flakeref/home_flakeref/…
 $ papi profiles linenisgreat.com --id framework-laptop --flakeref
 github:amarbel-llc/eng#nixosConfigurations.framework-laptop
+$ papi profiles linenisgreat.com --recipient piggy-recipient-v1@... \
+    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' --flakeref   # + §5-gated profiles
 ```
 
 ### `papi query <domain> <jq-expr>`
@@ -299,12 +308,18 @@ Fetch `<domain>`'s `GET /papi` document and evaluate a jq expression against it 
 an embedded [gojq](https://github.com/itchyny/gojq), so no external `jq` is
 needed — printing each result as JSON, or unquoted strings under `--raw`/`-r`.
 Lets consumers pluck arbitrary fields (`forges[]`, `organizations[]`, `repos[]`,
-`person`, …) without bespoke `curl`+`jq`:
+`person`, …) without bespoke `curl`+`jq`. Anonymously the document is the public
+projection; pass `--recipient` (and `--decrypt-cmd`) to jq over the full scoped
+projection — the way to reach the projected endpoints without a dedicated
+subcommand (`organizations[]`, `sitemap`, `templates[]`, …):
 
 ```console
 $ papi query linenisgreat.com '.person.handle' -r
 linenisgreat
 $ papi query linenisgreat.com '.forges[].repos[].url' -r
+$ papi query linenisgreat.com '.person.contact.email' -r \
+    --recipient piggy-recipient-v1@... \
+    --decrypt-cmd 'base64 -d | pivy-box stream decrypt'   # acl-gated, needs auth
 ```
 
 ### `papi enroll <domain>`
