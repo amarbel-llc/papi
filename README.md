@@ -31,8 +31,10 @@ ADR-0004.
 ## The CLI
 
 `papi` has these subcommands: `validate` checks a domain against the spec;
-`piggy-ids` / `ssh-keys` / `person` / `repos` surface a domain's published
-identity material, keys, and repositories for downstream consumption;
+`piggy-ids` / `ssh-keys` / `person` / `repos` / `forges` surface a domain's
+published identity material, keys, repositories, and forge identities for
+downstream consumption (`person`, `repos`, and `forges` take `--recipient` to run
+the §5 handshake and reveal the full scoped set, e.g. §5-gated private forges);
 `ssh-copy-id` installs those keys onto a remote host, and `ssh-sync` keeps a
 local managed `authorized_keys` file in sync with a domain on a timer (via a
 home-manager service); `bootstrap` prints a domain's
@@ -236,7 +238,9 @@ $ papi person linenisgreat.com \
 Fetch `<domain>`'s `GET /papi/repos` — the flattened, provenance-annotated
 repository list — and print it. By default emits the repos as JSON; `--url`
 prints one repository url per line (a `curl`+`jq` replacement for consumers that
-clone them); `--owner` filters to a single owner:
+clone them); `--owner` filters to a single owner. Anonymously only the public
+forges project; pass `--recipient` (and `--decrypt-cmd`) to run the §5 handshake
+and list the full scoped set, including §5-gated forges (e.g. a private forgejo):
 
 ```console
 $ papi repos linenisgreat.com                          # JSON: name/url/owner/forge/…
@@ -244,6 +248,31 @@ $ papi repos linenisgreat.com --owner amarbel-llc --url
 https://github.com/amarbel-llc/papi
 https://github.com/amarbel-llc/eng
 …
+$ papi repos linenisgreat.com \
+    --recipient piggy-recipient-v1@... \
+    --decrypt-cmd 'base64 -d | pivy-box stream decrypt' --url   # + §5-gated forges
+```
+
+Note `--url` prints each repo's published `url` verbatim (for a §5-gated forge
+this is the SSO-gated web url, not a clone url). To build clone urls for gated
+forges, read the forge's clone channel from `papi forges` and join it with its
+`repos[]`.
+
+### `papi forges <domain>`
+
+Fetch `<domain>`'s `GET /papi/forges` — the forge identities (`kind`, `base_url`,
+`repos[]`, and any server-specific fields such as `ssh_clone`) — and print the
+projected array as JSON, verbatim: unrecognized members are preserved (RFC-0001
+§1.1), so a clone consumer can read a forge's clone channel and join it with its
+`repos[]`. Anonymously only public forges project; pass `--recipient` (and
+`--decrypt-cmd`) for the §5 handshake and the full scoped set — e.g. a private
+forgejo with its `ssh_clone` base:
+
+```console
+$ papi forges linenisgreat.com                         # JSON: public forges
+$ papi forges linenisgreat.com \
+    --recipient piggy-recipient-v1@... \
+    --decrypt-cmd 'base64 -d | pivy-box stream decrypt'   # + §5-gated forgejo (ssh_clone)
 ```
 
 ### `papi profiles <domain>`

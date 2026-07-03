@@ -543,6 +543,24 @@ func (c *Client) Profiles(ctx context.Context) ([]Profile, int, error) {
 	return profiles, status, err
 }
 
+// Forges fetches GET /papi/forges and returns its projected array as a generic JSON
+// value, unwrapping the {data,meta} envelope. Deliberately generic (not the typed
+// Forge): RFC-0001 §1.1 forge entries carry id/kind/base_url/identity/repos[] and the
+// server MAY add fields (e.g. ssh_clone) that clients MUST pass through unchanged — a
+// clone consumer reads a forge's clone channel from them. Unauthenticated → only public
+// forges; the CLI's --recipient fetches the full scoped set.
+func (c *Client) Forges(ctx context.Context) (any, int, error) {
+	data, _, status, err := c.envelope(ctx, "/papi/forges")
+	if err != nil {
+		return nil, status, err
+	}
+	var v any
+	if err := json.Unmarshal(data, &v); err != nil {
+		return nil, status, fmt.Errorf("/papi/forges data: %w", err)
+	}
+	return v, status, nil
+}
+
 // RawDocument fetches GET /papi and returns its projected data as a generic JSON
 // value (map/slice/scalar), unwrapping the envelope — for ad-hoc querying over
 // the whole document (the `papi query` facility).

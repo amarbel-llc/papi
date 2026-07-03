@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1031,6 +1032,134 @@ func TestReposURLOwnerFilter(t *testing.T) {
 	}
 	if strings.Contains(out, "codeberg") {
 		t.Errorf("--owner filter leaked another owner:\n%s", out)
+	}
+}
+
+// registerHandshake wires the §5 challenge/response onto mux: the challenge mints
+// base64(nonce) (a `base64 -d` decrypt-cmd recovers it), the response validates it
+// once and mints session "sess1". Projected endpoints then gate their scoped set on
+// the `Authorization: PiggySession sess1` header. Mirrors internal/alfa/inspect's
+// mock-box fixture.
+func registerHandshake(mux *http.ServeMux, nonce string) {
+	consumed := false
+	mux.HandleFunc("/papi/auth/challenge", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"challenge_id":"ch1","ebox_b64":%q,"expires_at":9999999999}`,
+			base64.StdEncoding.EncodeToString([]byte(nonce)))
+	})
+	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		if consumed || m["challenge_id"] != "ch1" || m["nonce"] != nonce {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		consumed = true
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"session":"sess1","principal":"tester","expires_at":9999999999}`)
+	})
+}
+
+// reposAuthedServer gates a §5-only forgejo repo behind the handshake: anonymous
+// /papi/repos returns just the public github repo, the authed session also returns
+// the forgejo one.
+func reposAuthedServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	registerHandshake(mux, "repos-nonce")
+	pub := `{"name":"papi","url":"https://github.com/amarbel-llc/papi","owner":"amarbel-llc","forge":"github","kind":"github","visibility":"public","default_branch":"master"}`
+	gated := `{"name":"secret","url":"https://forge.linenisgreat.com/amarbel-llc/secret","owner":"amarbel-llc","forge":"forgejo-krone-amarbel-llc","kind":"forgejo","visibility":"scoped","default_branch":"main"}`
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":[`+pub+`,`+gated+`],"meta":{"type":"repos","visibility":"scoped","count":2}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"repos","visibility":"public","count":1}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestReposAnonVsAuthed: anonymous repos omit the §5-gated forgejo repo; the authed
+// handshake (--recipient/--decrypt-cmd) lists the full scoped set.
+func TestReposAnonVsAuthed(t *testing.T) {
+	srv := reposAuthedServer(t)
+	defer srv.Close()
+
+	anon, err := runRepos(t, srv.URL, "--url")
+	if err != nil {
+		t.Fatalf("anon repos: %v", err)
+	}
+	if strings.Contains(anon, "forge.linenisgreat.com") {
+		t.Errorf("anonymous repos leaked a §5-gated forgejo repo:\n%s", anon)
+	}
+
+	authed, err := runRepos(t, srv.URL, "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d", "--url")
+	if err != nil {
+		t.Fatalf("authed repos: %v", err)
+	}
+	if !strings.Contains(authed, "forge.linenisgreat.com/amarbel-llc/secret") {
+		t.Errorf("authed repos missing the §5-gated forgejo repo:\n%s", authed)
+	}
+	if n := len(strings.Split(strings.TrimSpace(authed), "\n")); n != 2 {
+		t.Fatalf("authed --url want 2 urls, got %d:\n%s", n, authed)
+	}
+}
+
+// forgesAuthedServer gates a §5-only forgejo forge (carrying the non-standard
+// ssh_clone field) behind the handshake.
+func forgesAuthedServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	registerHandshake(mux, "forges-nonce")
+	pub := `{"id":"github-amarbel-llc","kind":"github","base_url":"https://github.com","repos":[{"name":"papi","owner":"amarbel-llc"}]}`
+	gated := `{"id":"forgejo-krone-amarbel-llc","kind":"forgejo","base_url":"https://forge.linenisgreat.com","ssh_clone":"ssh://git@krone:2222","repos":[{"name":"secret","owner":"amarbel-llc","default_branch":"main"}]}`
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":[`+pub+`,`+gated+`],"meta":{"type":"forges","visibility":"scoped"}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func runForges(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newForgesCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+// TestForgesAnonVsAuthedPassThrough: anonymous forges omit the §5-gated forge; the
+// authed set includes it AND passes the server's non-standard ssh_clone field through
+// verbatim (RFC-0001 §1.1 — clients preserve members they don't recognize), which is
+// what a clone consumer joins with repos[] to build SSH clone urls.
+func TestForgesAnonVsAuthedPassThrough(t *testing.T) {
+	srv := forgesAuthedServer(t)
+	defer srv.Close()
+
+	anon, err := runForges(t, srv.URL)
+	if err != nil {
+		t.Fatalf("anon forges: %v", err)
+	}
+	if strings.Contains(anon, "ssh_clone") || strings.Contains(anon, "forgejo") {
+		t.Errorf("anonymous forges leaked the §5-gated forgejo forge:\n%s", anon)
+	}
+
+	authed, err := runForges(t, srv.URL, "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d")
+	if err != nil {
+		t.Fatalf("authed forges: %v", err)
+	}
+	if !strings.Contains(authed, `"ssh_clone"`) || !strings.Contains(authed, "ssh://git@krone:2222") {
+		t.Errorf("authed forges dropped the server's ssh_clone field (must pass through):\n%s", authed)
+	}
+	if !strings.Contains(authed, "forgejo") {
+		t.Errorf("authed forges missing the §5-gated forgejo forge:\n%s", authed)
 	}
 }
 

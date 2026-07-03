@@ -1,9 +1,11 @@
 // Command papi is the Personal API (PAPI) conformance tool. `validate` discovers,
 // introspects, and checks a domain's PAPI against RFC-0001 (emitting an
 // ndjson-crap stream; pipe to `crap-present`), running the §5 challenge/response
-// handshake when given a --recipient. The `piggy-ids`, `ssh-keys`, and `person`
-// subcommands surface a domain's published identity material for downstream
-// consumption (e.g. identity bootstrap).
+// handshake when given a --recipient. The `piggy-ids`, `ssh-keys`, `person`,
+// `repos`, and `forges` subcommands surface a domain's published identity material,
+// repositories, and forge identities for downstream consumption (e.g. identity
+// bootstrap); the projected ones take --recipient/--decrypt-cmd to run the same §5
+// handshake and reveal the full scoped set.
 package main
 
 import (
@@ -76,6 +78,7 @@ func main() {
 	root.AddCommand(newGHAuthCmd())
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
+	root.AddCommand(newForgesCmd())
 	root.AddCommand(newProfilesCmd())
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newEnrollCmd())
@@ -1284,14 +1287,32 @@ func newPersonCmd() *cobra.Command {
 	return cmd
 }
 
-// authedPerson runs the §5 handshake as recipient and fetches the scoped /papi so
-// the ACL-gated person.contact projects in, returning the authenticated person.
-func authedPerson(ctx context.Context, c *papi.Client, recipient, decryptCmd string) (*papi.Person, error) {
+// authedBody runs the §5 handshake as recipient (recovering the challenge nonce via
+// decryptCmd, the card boundary) and returns the scoped response body for GET path
+// presented with the minted PiggySession. It is the shared authed-fetch behind the
+// projected-endpoint subcommands (person, repos, profiles, …), so each can list the
+// full authenticated projection — including §5-gated data — instead of the anonymous
+// one. A single call = one handshake = one card decrypt; there is no session reuse
+// across invocations, so a consumer should fetch a whole endpoint in one shot.
+func authedBody(ctx context.Context, c *papi.Client, recipient, decryptCmd, path string) ([]byte, error) {
 	sess, err := inspect.Handshake(ctx, c, inspect.Options{Recipient: recipient, DecryptCmd: decryptCmd})
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.FetchAuthed(ctx, "/papi", sess.ID)
+	resp, err := c.FetchAuthed(ctx, path, sess.ID)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status != http.StatusOK {
+		return nil, fmt.Errorf("GET %s (authed): HTTP %d", path, resp.Status)
+	}
+	return resp.Body, nil
+}
+
+// authedPerson runs the §5 handshake as recipient and fetches the scoped /papi so
+// the ACL-gated person.contact projects in, returning the authenticated person.
+func authedPerson(ctx context.Context, c *papi.Client, recipient, decryptCmd string) (*papi.Person, error) {
+	body, err := authedBody(ctx, c, recipient, decryptCmd, "/papi")
 	if err != nil {
 		return nil, err
 	}
@@ -1300,7 +1321,7 @@ func authedPerson(ctx context.Context, c *papi.Client, recipient, decryptCmd str
 			Person *papi.Person `json:"person"`
 		} `json:"data"`
 	}
-	if err := json.Unmarshal(resp.Body, &env); err != nil {
+	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, fmt.Errorf("/papi (authed) data: %w", err)
 	}
 	return env.Data.Person, nil
@@ -1339,20 +1360,31 @@ type repoView struct {
 func newReposCmd() *cobra.Command {
 	var owner string
 	var urlOnly bool
+	var recipient, decryptCmd string
 	cmd := &cobra.Command{
 		Use:   "repos <domain>",
 		Short: "List a domain's PAPI repositories (GET /papi/repos)",
 		Long: "Fetch <domain>'s GET /papi/repos — the flattened, provenance-annotated " +
 			"repository list — and print it. By default emits the repos as JSON; --url " +
 			"prints one repository url per line (a curl+jq replacement for consumers that " +
-			"clone them); --owner filters to a single owner.",
+			"clone them); --owner filters to a single owner. Anonymously only the public " +
+			"forges project; pass --recipient (and --decrypt-cmd) to run the §5 handshake " +
+			"and list the full scoped set, including §5-gated forges (e.g. a private forgejo).",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
 			if err != nil {
 				return err
 			}
-			repos, _, err := c.Repos(cmd.Context())
+			var repos []papi.Repo
+			if recipient == "" {
+				repos, _, err = c.Repos(cmd.Context())
+			} else {
+				var body []byte
+				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/repos"); err == nil {
+					repos, err = papi.DecodeRepos(body)
+				}
+			}
 			if err != nil {
 				return err
 			}
@@ -1385,6 +1417,55 @@ func newReposCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&owner, "owner", "", "only list repositories with this owner")
 	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one repository url per line instead of JSON")
+	cmd.Flags().StringVar(&recipient, "recipient", "",
+		"piggy recipient id to authenticate as; runs the §5 handshake so §5-gated forges (private/forgejo) are listed")
+	cmd.Flags().StringVar(&decryptCmd, "decrypt-cmd", "",
+		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (the card boundary)")
+	return cmd
+}
+
+func newForgesCmd() *cobra.Command {
+	var recipient, decryptCmd string
+	cmd := &cobra.Command{
+		Use:   "forges <domain>",
+		Short: "List a domain's PAPI forges (GET /papi/forges)",
+		Long: "Fetch <domain>'s GET /papi/forges — the forge identities (kind, base_url, " +
+			"repos[], and any server-specific fields such as ssh_clone) — and print the projected " +
+			"array as JSON, verbatim: unrecognized members are preserved (RFC-0001 §1.1), so a " +
+			"clone consumer can read a forge's clone channel and join it with its repos[]. " +
+			"Anonymously only public forges project; pass --recipient (and --decrypt-cmd) to run " +
+			"the §5 handshake and get the full scoped set — e.g. a private forgejo with its " +
+			"ssh_clone base.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			var forges any
+			if recipient == "" {
+				forges, _, err = c.Forges(cmd.Context())
+			} else {
+				var body []byte
+				if body, err = authedBody(cmd.Context(), c, recipient, decryptCmd, "/papi/forges"); err == nil {
+					var data json.RawMessage
+					if data, _, err = papi.DecodeEnvelope(body); err == nil {
+						err = json.Unmarshal(data, &forges)
+					}
+				}
+			}
+			if err != nil {
+				return err
+			}
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(forges)
+		},
+	}
+	cmd.Flags().StringVar(&recipient, "recipient", "",
+		"piggy recipient id to authenticate as; runs the §5 handshake so §5-gated forges (private/forgejo) appear")
+	cmd.Flags().StringVar(&decryptCmd, "decrypt-cmd", "",
+		"shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout (the card boundary)")
 	return cmd
 }
 
