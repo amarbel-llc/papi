@@ -1082,8 +1082,8 @@ func reposAuthedServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	registerHandshake(mux, "repos-nonce")
-	pub := `{"kind":"github","base_url":"https://github.com","identity":"amarbel-llc","repos":[{"name":"papi"}]}`
-	gated := `{"kind":"forgejo","base_url":"https://forge.linenisgreat.com","ssh_clone":"ssh://git@krone:2222","identity":"amarbel-llc","repos":[{"name":"secret"}]}`
+	pub := `{"id":"github-primary","kind":"github","base_url":"https://github.com","identity":"amarbel-llc","repos":[]}`
+	gated := `{"id":"forgejo-gated","kind":"forgejo","base_url":"https://forge.linenisgreat.com","ssh_clone":"ssh://git@krone:2222","identity":"amarbel-llc","repos":[]}`
 	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") == "PiggySession sess1" {
@@ -1091,6 +1091,16 @@ func reposAuthedServer(t *testing.T) *httptest.Server {
 			return
 		}
 		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	pubRepo := `{"name":"papi","url":"https://github.com/amarbel-llc/papi","owner":"amarbel-llc","forge":"github-primary","kind":"github","visibility":"public","default_branch":"master"}`
+	gatedRepo := `{"name":"secret","url":"https://forge.linenisgreat.com/amarbel-llc/secret","owner":"amarbel-llc","forge":"forgejo-gated","kind":"forgejo","visibility":"scoped","default_branch":"main"}`
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":[`+pubRepo+`,`+gatedRepo+`],"meta":{"type":"repos","visibility":"scoped"}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+pubRepo+`],"meta":{"type":"repos","visibility":"public"}}`)
 	})
 	return httptest.NewServer(mux)
 }
@@ -1178,8 +1188,8 @@ func reposSignServer(t *testing.T, signerPub *ecdsa.PublicKey, authKeyID string)
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"data":{"session":"sess1","principal":"tester","expires_at":9999999999},"meta":{"type":"papi-auth-session"}}`)
 	})
-	githubForge := `{"kind":"github","base_url":"https://github.com","identity":"friedenberg","repos":[{"name":"papi"}]}`
-	gatedForge := `{"kind":"forgejo","base_url":"https://forge.example.com","ssh_clone":"ssh://git@forge.example.com:2222","identity":"friedenberg","repos":[{"name":"secret"}]}`
+	githubForge := `{"id":"github-primary","kind":"github","base_url":"https://github.com","identity":"friedenberg","repos":[]}`
+	gatedForge := `{"id":"forgejo-gated","kind":"forgejo","base_url":"https://forge.example.com","ssh_clone":"ssh://git@forge.example.com:2222","identity":"friedenberg","repos":[]}`
 	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.Header.Get("Authorization") == "PiggySession sess1" {
@@ -1187,6 +1197,19 @@ func reposSignServer(t *testing.T, signerPub *ecdsa.PublicKey, authKeyID string)
 			return
 		}
 		io.WriteString(w, `{"data":[`+githubForge+`],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	// The flattened /papi/repos is the authoritative list --url enumerates: the github
+	// repo (whose forge publishes repos:[]) and, when authed, the gated forgejo repo.
+	// Each carries the `forge` id --url joins to the clone channel.
+	pubRepo := `{"name":"papi","url":"https://github.com/friedenberg/papi","owner":"friedenberg","forge":"github-primary","kind":"github","visibility":"public","default_branch":"master"}`
+	gatedRepo := `{"name":"secret","url":"https://forge.example.com/friedenberg/secret","owner":"friedenberg","forge":"forgejo-gated","kind":"forgejo","visibility":"scoped","default_branch":"main"}`
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":[`+pubRepo+`,`+gatedRepo+`],"meta":{"type":"repos","visibility":"scoped"}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+pubRepo+`],"meta":{"type":"repos","visibility":"public"}}`)
 	})
 	return httptest.NewServer(mux)
 }
@@ -1230,6 +1253,103 @@ func TestReposSignChallengeURL(t *testing.T) {
 	}
 	if n := len(strings.Split(strings.TrimSpace(authed), "\n")); n != 2 {
 		t.Fatalf("sign-challenge authed --url want 2 clone urls, got %d:\n%s", n, authed)
+	}
+}
+
+// flattenedReposServer mirrors the live linenisgreat shape that regressed papi#50:
+// /papi/forges publishes a github forge with an EMPTY repos[] (a read-through anchor)
+// while the flattened /papi/repos — the authoritative list — still carries the github
+// repos. --url must emit them by joining each flattened entry to its forge by id.
+func flattenedReposServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[`+
+			`{"id":"github-primary","kind":"github","base_url":"https://github.com","identity":"friedenberg","repos":[]},`+
+			`{"id":"forgejo-krone","kind":"forgejo","base_url":"https://forge.linenisgreat.com","ssh_clone":"ssh://git@forge.linenisgreat.com:2222","identity":"amarbel-llc","repos":[]}`+
+			`],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[`+
+			`{"name":"xdg","url":"https://github.com/friedenberg/xdg","owner":"friedenberg","forge":"github-primary","kind":"github","visibility":"public","default_branch":"master"},`+
+			`{"name":"stats-me","url":"https://forge.linenisgreat.com/amarbel-llc/stats-me","owner":"amarbel-llc","forge":"forgejo-krone","kind":"forgejo","visibility":"public","default_branch":"master"}`+
+			`],"meta":{"type":"repos","visibility":"public","count":2}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+// TestReposURLFromFlattenedRepos is the papi#50 regression: --url must source repos
+// from the authoritative flattened /papi/repos and join clone channels by `forge` id,
+// so a github forge that publishes repos:[] (the live linenisgreat read-through shape)
+// still yields clone urls — the bug was --url iterating the empty forge.repos[].
+func TestReposURLFromFlattenedRepos(t *testing.T) {
+	srv := flattenedReposServer(t)
+	defer srv.Close()
+	out, err := runRepos(t, srv.URL, "--url")
+	if err != nil {
+		t.Fatalf("repos --url: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 clone urls, got %d:\n%s", len(lines), out)
+	}
+	// The github repo comes from the flattened list even though its forge's repos[] is
+	// empty — derived scp-style from base_url.
+	if !strings.Contains(out, "git@github.com:friedenberg/xdg.git") {
+		t.Errorf("missing the github clone url (the dropped forge.repos=[] regression):\n%s", out)
+	}
+	// The forgejo repo uses the forge's ssh_clone override (scheme + :2222), not a
+	// host-derived url.
+	if !strings.Contains(out, "ssh://git@forge.linenisgreat.com:2222/amarbel-llc/stats-me.git") {
+		t.Errorf("missing the forgejo ssh_clone url:\n%s", out)
+	}
+}
+
+// TestReposURLWarnsAndStrict is the papi#50 safety net: a published repo with no
+// derivable clone url is reported on stderr and omitted (exit 0), and --strict turns
+// that omission into a nonzero exit.
+func TestReposURLWarnsAndStrict(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// A forge with neither ssh_clone nor a parseable base_url host.
+		io.WriteString(w, `{"data":[{"id":"weird","kind":"bare","base_url":"","identity":"x","repos":[]}],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// A repo whose forge has no channel AND whose own url has no host → undrivable.
+		io.WriteString(w, `{"data":[{"name":"orphan","url":"","owner":"x","forge":"weird","kind":"bare","visibility":"public"}],"meta":{"type":"repos","visibility":"public","count":1}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	// Default: omitted with a stderr warning, exit 0.
+	cmd := newReposCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out, errBuf bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&errBuf)
+	cmd.SetArgs([]string{srv.URL, "--url"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("--url should not error by default: %v", err)
+	}
+	if strings.TrimSpace(out.String()) != "" {
+		t.Errorf("want no clone urls, got:\n%s", out.String())
+	}
+	if !strings.Contains(errBuf.String(), "orphan") || !strings.Contains(errBuf.String(), "omitted") {
+		t.Errorf("want a stderr omission warning naming the repo, got:\n%s", errBuf.String())
+	}
+
+	// --strict: the same omission is a nonzero exit.
+	strictCmd := newReposCmd()
+	strictCmd.SilenceUsage, strictCmd.SilenceErrors = true, true
+	strictCmd.SetOut(new(bytes.Buffer))
+	strictCmd.SetErr(new(bytes.Buffer))
+	strictCmd.SetArgs([]string{srv.URL, "--url", "--strict"})
+	if err := strictCmd.ExecuteContext(context.Background()); err == nil {
+		t.Error("--strict should exit nonzero when a published repo is omitted")
 	}
 }
 

@@ -1451,35 +1451,18 @@ type repoView struct {
 	DefaultBranch string `json:"default_branch,omitempty"`
 }
 
-// cloneRepo is a forge's repo as it appears under /papi/forges repos[]: its name,
-// plus a per-repo owner ONLY when a server redundantly stamps one — the spec places
-// owner on the /papi/repos flattening, not here (RFC-0001 §1.1/§4).
-type cloneRepo struct {
-	Owner string `json:"owner"`
-	Name  string `json:"name"`
-}
-
 // cloneForge is the slice of a /papi/forges entry needed to synthesize clone urls:
-// the forge's identity (its single owner — one identity per forge, RFC-0001 §1.1),
-// its clone channel (its published ssh_clone base, or a host derived from base_url),
-// and its repos. Other forge fields are ignored here.
+// its `id` (the join key — a flattened /papi/repos entry's `forge` references it), its
+// clone channel (the published ssh_clone base, or a host derived from base_url), and
+// its identity. The forge's own repos[] are deliberately NOT read: --url enumerates
+// the authoritative flattened /papi/repos and joins each entry here by `forge` id, so
+// a forge that publishes an empty repos[] (a github/codeberg read-through anchor)
+// still contributes clone urls (amarbel-llc/papi#50).
 type cloneForge struct {
-	BaseURL  string      `json:"base_url"`
-	SSHClone string      `json:"ssh_clone"`
-	Identity string      `json:"identity"`
-	Repos    []cloneRepo `json:"repos"`
-}
-
-// repoOwner returns the owner for one of this forge's repos: the forge's single
-// identity, honoring a per-repo owner when a server redundantly stamps one. Since
-// /papi/forges repos[] carry no owner in the spec shape, sourcing it from the forge
-// identity is what keeps the synthesized clone url from dropping the owner segment
-// (git@host:/name.git — amarbel-llc/papi#47).
-func (f cloneForge) repoOwner(r cloneRepo) string {
-	if r.Owner != "" {
-		return r.Owner
-	}
-	return f.Identity
+	ID       string `json:"id"`
+	BaseURL  string `json:"base_url"`
+	SSHClone string `json:"ssh_clone"`
+	Identity string `json:"identity"`
 }
 
 // cloneURL synthesizes a git clone url for owner/name on this forge. It prefers the
@@ -1498,32 +1481,19 @@ func (f cloneForge) cloneURL(owner, name string) string {
 	return ""
 }
 
-// cloneForges fetches /papi/forges (authenticated when af carries §5 credentials)
-// and decodes the entries needed for clone-url synthesis. Sourced from /papi/forges because the
-// clone channel (ssh_clone) lives at the forge level, not on the flattened
-// /papi/repos entry (whose url is the published — often SSO-gated — web url).
-func cloneForges(ctx context.Context, c *papi.Client, af authFlags) ([]cloneForge, error) {
-	var raw []byte
-	if !af.active() {
-		v, _, err := c.Forges(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if raw, err = json.Marshal(v); err != nil {
-			return nil, err
-		}
-	} else {
-		opts, err := af.options(ctx)
-		if err != nil {
-			return nil, err
-		}
-		body, err := authedBody(ctx, c, opts, "/papi/forges")
-		if err != nil {
-			return nil, err
-		}
-		if raw, _, err = papi.DecodeEnvelope(body); err != nil {
-			return nil, err
-		}
+// cloneForges fetches the anonymous /papi/forges and decodes the clone channels
+// (id + ssh_clone + base_url) --url joins repos to. The clone channel lives at the
+// forge level, not on the flattened /papi/repos entry (whose url is the published —
+// often SSO-gated — web url). The authenticated --url path fetches /papi/forges under
+// a reused session in urlData (one card operation), so this helper is anonymous-only.
+func cloneForges(ctx context.Context, c *papi.Client) ([]cloneForge, error) {
+	v, _, err := c.Forges(ctx)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
 	}
 	var forges []cloneForge
 	if err := json.Unmarshal(raw, &forges); err != nil {
@@ -1532,9 +1502,118 @@ func cloneForges(ctx context.Context, c *papi.Client, af authFlags) ([]cloneForg
 	return forges, nil
 }
 
+// fetchRepos returns the flattened /papi/repos list — anonymous, or (when af carries
+// §5 credentials) the authenticated scoped set. It is the authoritative full repo
+// set (RFC-0001 §4): every published repo appears here with its `forge` provenance,
+// even when that forge publishes an empty repos[] at /papi/forges.
+func fetchRepos(ctx context.Context, c *papi.Client, af authFlags) ([]papi.Repo, error) {
+	if !af.active() {
+		repos, _, err := c.Repos(ctx)
+		return repos, err
+	}
+	opts, err := af.options(ctx)
+	if err != nil {
+		return nil, err
+	}
+	body, err := authedBody(ctx, c, opts, "/papi/repos")
+	if err != nil {
+		return nil, err
+	}
+	return papi.DecodeRepos(body)
+}
+
+// cloneURLForRepo synthesizes a clone url for a flattened /papi/repos entry by joining
+// it to its forge's clone channel, looked up by the entry's `forge` id: the forge's
+// ssh_clone override, else an scp-style git@<host> from the forge's base_url, else —
+// when the forge entry is absent or carries no channel — from the repo's own published
+// url host. Returns "" when no host is available anywhere (the caller warns + omits).
+func cloneURLForRepo(r papi.Repo, byID map[string]cloneForge) string {
+	if f, ok := byID[r.Forge]; ok {
+		if u := f.cloneURL(r.Owner, r.Name); u != "" {
+			return u
+		}
+	}
+	if u, err := url.Parse(r.URL); err == nil && u.Host != "" && r.Owner != "" && r.Name != "" {
+		return "git@" + u.Host + ":" + r.Owner + "/" + r.Name + ".git"
+	}
+	return ""
+}
+
+// urlData gathers what --url needs — the flattened /papi/repos list and the forge
+// clone channels keyed by `forge` id — running the §5 handshake AT MOST ONCE: both
+// endpoints are fetched under a single minted session, so an authed --url costs one
+// card operation, not one per endpoint.
+func urlData(ctx context.Context, c *papi.Client, af authFlags) ([]papi.Repo, map[string]cloneForge, error) {
+	var repos []papi.Repo
+	var forges []cloneForge
+	if !af.active() {
+		var err error
+		if repos, _, err = c.Repos(ctx); err != nil {
+			return nil, nil, err
+		}
+		if forges, err = cloneForges(ctx, c); err != nil {
+			return nil, nil, err
+		}
+	} else {
+		opts, err := af.options(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		sess, err := inspect.Handshake(ctx, c, opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		reposBody, err := fetchAuthedOK(ctx, c, "/papi/repos", sess.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if repos, err = papi.DecodeRepos(reposBody); err != nil {
+			return nil, nil, err
+		}
+		forgesBody, err := fetchAuthedOK(ctx, c, "/papi/forges", sess.ID)
+		if err != nil {
+			return nil, nil, err
+		}
+		if forges, err = parseCloneForges(forgesBody); err != nil {
+			return nil, nil, err
+		}
+	}
+	byID := make(map[string]cloneForge, len(forges))
+	for _, f := range forges {
+		byID[f.ID] = f
+	}
+	return repos, byID, nil
+}
+
+// fetchAuthedOK GETs path presenting the session (§5.3) and requires HTTP 200.
+func fetchAuthedOK(ctx context.Context, c *papi.Client, path, session string) ([]byte, error) {
+	resp, err := c.FetchAuthed(ctx, path, session)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status != http.StatusOK {
+		return nil, fmt.Errorf("GET %s (authed): HTTP %d", path, resp.Status)
+	}
+	return resp.Body, nil
+}
+
+// parseCloneForges decodes a /papi/forges response body (unwrapping the §4.2 envelope)
+// into the clone-channel slices --url joins repos to.
+func parseCloneForges(body []byte) ([]cloneForge, error) {
+	data, _, err := papi.DecodeEnvelope(body)
+	if err != nil {
+		return nil, err
+	}
+	var forges []cloneForge
+	if err := json.Unmarshal(data, &forges); err != nil {
+		return nil, fmt.Errorf("parse forges for clone urls: %w", err)
+	}
+	return forges, nil
+}
+
 func newReposCmd() *cobra.Command {
 	var owner string
-	var urlOnly bool
+	var urlOnly, strict bool
 	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "repos <domain>",
@@ -1559,43 +1638,42 @@ func newReposCmd() *cobra.Command {
 			}
 			out := cmd.OutOrStdout()
 
-			// --url emits directly-clonable urls, synthesized from the forges' clone
-			// channels (the flattened /papi/repos carries only the web url, so the
-			// ssh_clone base is joined in from /papi/forges).
+			// --url emits directly-clonable urls. It enumerates the authoritative
+			// flattened /papi/repos (which lists EVERY repo — github/codeberg included —
+			// even when a forge publishes an empty repos[]) and joins each entry to its
+			// forge's clone channel by `forge` id: the ssh_clone base from /papi/forges,
+			// else an scp-style url from base_url or the repo's own url host
+			// (amarbel-llc/papi#50). A repo with no derivable clone url is reported on
+			// stderr and omitted; --strict makes that a nonzero exit.
 			if urlOnly {
-				forges, err := cloneForges(cmd.Context(), c, af)
+				repos, byID, err := urlData(cmd.Context(), c, af)
 				if err != nil {
 					return err
 				}
-				for _, f := range forges {
-					for _, r := range f.Repos {
-						o := f.repoOwner(r)
-						if owner != "" && o != owner {
-							continue
-						}
-						if u := f.cloneURL(o, r.Name); u != "" {
-							if _, err := fmt.Fprintln(out, u); err != nil {
-								return err
-							}
-						}
+				errOut := cmd.ErrOrStderr()
+				dropped := 0
+				for _, r := range repos {
+					if owner != "" && r.Owner != owner {
+						continue
 					}
+					u := cloneURLForRepo(r, byID)
+					if u == "" {
+						fmt.Fprintf(errOut, "%s/%s: no clone url derivable from forge %q — omitted\n", r.Owner, r.Name, r.Forge)
+						dropped++
+						continue
+					}
+					if _, err := fmt.Fprintln(out, u); err != nil {
+						return err
+					}
+				}
+				if strict && dropped > 0 {
+					return fmt.Errorf("%d published repo(s) omitted from --url (no derivable clone url); see stderr", dropped)
 				}
 				return nil
 			}
 
 			// JSON: the flattened, provenance-annotated /papi/repos view.
-			var repos []papi.Repo
-			if !af.active() {
-				repos, _, err = c.Repos(cmd.Context())
-			} else {
-				var opts inspect.Options
-				if opts, err = af.options(cmd.Context()); err == nil {
-					var body []byte
-					if body, err = authedBody(cmd.Context(), c, opts, "/papi/repos"); err == nil {
-						repos, err = papi.DecodeRepos(body)
-					}
-				}
-			}
+			repos, err := fetchRepos(cmd.Context(), c, af)
 			if err != nil {
 				return err
 			}
@@ -1615,7 +1693,8 @@ func newReposCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&owner, "owner", "", "only list repositories with this owner")
-	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one directly-clonable git url per line (synthesized from each forge's clone channel) instead of JSON")
+	cmd.Flags().BoolVar(&urlOnly, "url", false, "print one directly-clonable git url per line (each flattened /papi/repos entry joined to its forge's clone channel) instead of JSON")
+	cmd.Flags().BoolVar(&strict, "strict", false, "with --url, exit nonzero if any published repo is omitted (no derivable clone url)")
 	af.register(cmd)
 	return cmd
 }
