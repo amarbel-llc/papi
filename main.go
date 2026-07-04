@@ -1620,16 +1620,17 @@ func newReposCmd() *cobra.Command {
 		Short: "List a domain's PAPI repositories (GET /papi/repos)",
 		Long: "Fetch <domain>'s repositories and print them. By default emits the flattened, " +
 			"provenance-annotated GET /papi/repos list as JSON; --owner filters to a single " +
-			"owner. --url instead prints one directly-clonable git url per line: papi joins each " +
-			"repo to its forge's clone channel (the forge's published ssh_clone base, else an " +
-			"scp-style git@<host> from base_url) and its owner (the forge's identity), so a " +
-			"consumer can `git clone` each line as-is — including §5-gated forges whose " +
-			"/papi/repos url is only the SSO-gated web url. Anonymously only public forges " +
-			"project; pass --auth-key-id <slot-9A id> to run the §5.2 sign-challenge handshake " +
-			"and get the full scoped set (e.g. a private forgejo over SSH); servers advertising " +
-			"the legacy decrypt-challenge scheme take --recipient/--decrypt-cmd instead. " +
-			"(--url covers forge-hosted repos; organization-hosted repos, if any, appear only in " +
-			"the JSON view.)",
+			"owner. --url instead prints one directly-clonable git url per line: papi enumerates " +
+			"the flattened /papi/repos (every published repo — forge- AND organization-hosted) " +
+			"and joins each entry to its forge's clone channel by `forge` id — the forge's " +
+			"published ssh_clone base, else an scp-style git@<host> from base_url or the repo's " +
+			"own url host — so a consumer can `git clone` each line as-is, including §5-gated " +
+			"forges whose /papi/repos url is only the SSO-gated web url. A published repo with no " +
+			"derivable clone url is reported on stderr and omitted; --strict makes that a nonzero " +
+			"exit. Anonymously only public repos project; pass --auth-key-id <slot-9A id> to run " +
+			"the §5.2 sign-challenge handshake and get the full scoped set (e.g. a private forgejo " +
+			"over SSH); servers advertising the legacy decrypt-challenge scheme take " +
+			"--recipient/--decrypt-cmd instead.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			c, err := papi.NewClient(args[0])
