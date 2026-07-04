@@ -221,3 +221,23 @@ func TestFilterRecipients(t *testing.T) {
 		}
 	}
 }
+
+// TestDecodeEnvelopeStrict pins the no-leniency §4.2 contract: a JSON endpoint's
+// body MUST carry the {data,meta} envelope, so a bare (un-enveloped) body is
+// rejected rather than read at the top level. The prior lenient fallback is what
+// let the auth-handshake client read the wrong nesting level undetected.
+func TestDecodeEnvelopeStrict(t *testing.T) {
+	data, meta, err := DecodeEnvelope([]byte(`{"data":{"x":1},"meta":{"type":"t"}}`))
+	if err != nil {
+		t.Fatalf("enveloped body: %v", err)
+	}
+	if string(data) != `{"x":1}` || meta["type"] != "t" {
+		t.Errorf("data=%s meta=%v", data, meta)
+	}
+	if _, _, err := DecodeEnvelope([]byte(`{"x":1}`)); err == nil {
+		t.Error("bare body should be rejected (§4.2 envelope is mandatory), got nil error")
+	}
+	if _, _, err := DecodeEnvelope([]byte(`not json`)); err == nil {
+		t.Error("non-JSON body should error")
+	}
+}

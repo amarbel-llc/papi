@@ -1059,7 +1059,7 @@ func registerHandshake(mux *http.ServeMux, nonce string) {
 	consumed := false
 	mux.HandleFunc("/papi/auth/challenge", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"challenge_id":"ch1","ebox_b64":%q,"expires_at":9999999999}`,
+		fmt.Fprintf(w, `{"data":{"challenge_id":"ch1","ebox_b64":%q,"expires_at":9999999999},"meta":{"type":"papi-auth-challenge"}}`,
 			base64.StdEncoding.EncodeToString([]byte(nonce)))
 	})
 	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
@@ -1071,7 +1071,7 @@ func registerHandshake(mux *http.ServeMux, nonce string) {
 		}
 		consumed = true
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"session":"sess1","principal":"tester","expires_at":9999999999}`)
+		io.WriteString(w, `{"data":{"session":"sess1","principal":"tester","expires_at":9999999999},"meta":{"type":"papi-auth-session"}}`)
 	})
 }
 
@@ -1161,7 +1161,7 @@ func reposSignServer(t *testing.T, signerPub *ecdsa.PublicKey, authKeyID string)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"challenge_id":"ch1","nonce":"repos-sign-nonce","expires_at":9999999999}`)
+		io.WriteString(w, `{"data":{"challenge_id":"ch1","nonce":"repos-sign-nonce","expires_at":9999999999},"meta":{"type":"papi-auth-challenge"}}`)
 	})
 	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
 		var m map[string]string
@@ -1176,7 +1176,7 @@ func reposSignServer(t *testing.T, signerPub *ecdsa.PublicKey, authKeyID string)
 		}
 		consumed = true
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"session":"sess1","principal":"tester","expires_at":9999999999}`)
+		io.WriteString(w, `{"data":{"session":"sess1","principal":"tester","expires_at":9999999999},"meta":{"type":"papi-auth-session"}}`)
 	})
 	githubForge := `{"kind":"github","base_url":"https://github.com","identity":"friedenberg","repos":[{"name":"papi"}]}`
 	gatedForge := `{"kind":"forgejo","base_url":"https://forge.example.com","ssh_clone":"ssh://git@forge.example.com:2222","identity":"friedenberg","repos":[{"name":"secret"}]}`

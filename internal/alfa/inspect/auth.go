@@ -163,7 +163,11 @@ func signHandshake(ctx context.Context, c *papi.Client, opts Options) (Session, 
 		return Session{}, fmt.Errorf("challenge: want 200/403/503, got %d (§5.1)", ch.Status)
 	}
 
-	chal, err := signchallenge.ParseChallenge(ch.Body)
+	chData, _, err := papi.DecodeEnvelope(ch.Body)
+	if err != nil {
+		return Session{}, fmt.Errorf("challenge response (§4.2/§5.1): %w", err)
+	}
+	chal, err := signchallenge.ParseChallenge(chData)
 	if err != nil {
 		return Session{}, err
 	}
@@ -201,11 +205,15 @@ func decryptHandshake(ctx context.Context, c *papi.Client, opts Options) (Sessio
 		return Session{}, fmt.Errorf("challenge: want 200/403/503, got %d (§5.1)", ch.Status)
 	}
 
+	chData, _, err := papi.DecodeEnvelope(ch.Body)
+	if err != nil {
+		return Session{}, fmt.Errorf("challenge response (§4.2/§5.1): %w", err)
+	}
 	var chJSON struct {
 		ChallengeID string `json:"challenge_id"`
 		EboxB64     string `json:"ebox_b64"`
 	}
-	if json.Unmarshal(ch.Body, &chJSON) != nil || chJSON.ChallengeID == "" || chJSON.EboxB64 == "" {
+	if json.Unmarshal(chData, &chJSON) != nil || chJSON.ChallengeID == "" || chJSON.EboxB64 == "" {
 		return Session{}, fmt.Errorf("challenge body lacks challenge_id + ebox_b64 (§5.1)")
 	}
 
@@ -232,11 +240,15 @@ func finishHandshake(ctx context.Context, c *papi.Client, respBody []byte) (Sess
 	if rs.Status != http.StatusOK {
 		return Session{}, fmt.Errorf("response: want 200, got %d (§5.2)", rs.Status)
 	}
+	sessData, _, err := papi.DecodeEnvelope(rs.Body)
+	if err != nil {
+		return Session{}, fmt.Errorf("session response (§4.2/§5.2): %w", err)
+	}
 	var session struct {
 		Session   string `json:"session"`
 		Principal string `json:"principal"`
 	}
-	if json.Unmarshal(rs.Body, &session) != nil || session.Session == "" {
+	if json.Unmarshal(sessData, &session) != nil || session.Session == "" {
 		return Session{}, fmt.Errorf("response body lacks session (§5.2)")
 	}
 	return Session{ID: session.Session, Principal: session.Principal, respBody: respBody}, nil

@@ -40,7 +40,7 @@ func mockBoxServer() *httptest.Server {
 		}
 		ebox := base64.StdEncoding.EncodeToString([]byte(mockNonce))
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"challenge_id":"ch1","ebox_b64":%q,"expires_at":9999999999}`, ebox)
+		fmt.Fprintf(w, `{"data":{"challenge_id":"ch1","ebox_b64":%q,"expires_at":9999999999},"meta":{"type":"papi-auth-challenge"}}`, ebox)
 	})
 	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
 		var m map[string]string
@@ -51,7 +51,7 @@ func mockBoxServer() *httptest.Server {
 		}
 		consumed = true
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"session":"sess1","principal":"tester","groups":["authenticated"],"expires_at":9999999999}`)
+		io.WriteString(w, `{"data":{"session":"sess1","principal":"tester","groups":["authenticated"],"expires_at":9999999999},"meta":{"type":"papi-auth-session"}}`)
 	})
 	mux.HandleFunc("/papi", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -155,7 +155,7 @@ func mockSignServer(pub *ecdsa.PublicKey) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"challenge_id":"ch1","nonce":%q,"expires_at":9999999999}`, mockNonce)
+		fmt.Fprintf(w, `{"data":{"challenge_id":"ch1","nonce":%q,"expires_at":9999999999},"meta":{"type":"papi-auth-challenge"}}`, mockNonce)
 	})
 	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, r *http.Request) {
 		var m map[string]string
@@ -170,7 +170,7 @@ func mockSignServer(pub *ecdsa.PublicKey) *httptest.Server {
 		}
 		consumed = true
 		w.Header().Set("Content-Type", "application/json")
-		io.WriteString(w, `{"session":"sess1","principal":"tester","expires_at":9999999999}`)
+		io.WriteString(w, `{"data":{"session":"sess1","principal":"tester","expires_at":9999999999},"meta":{"type":"papi-auth-session"}}`)
 	})
 	mux.HandleFunc("/papi", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -254,5 +254,49 @@ func TestAuthUnknownRecipientSkips(t *testing.T) {
 	})
 	if len(pts) != 1 || pts[0].reason == "" {
 		t.Fatalf("unknown recipient (403) should yield a single skip, got:\n%s", descs(pts))
+	}
+}
+
+// TestAuthHandshakeReadsFromDataEnvelope pins the §4.2/§5 fix: the auth handshake
+// reads challenge_id/nonce and session/principal from the envelope's `data`, and —
+// strictly — a bare (un-enveloped) auth body is rejected, not silently read at the
+// top level. Reading the whole envelope as if the fields were top-level (the bug)
+// finds no challenge_id; bare bodies were the leniency that hid the mismatch against
+// the live reference server.
+func TestAuthHandshakeReadsFromDataEnvelope(t *testing.T) {
+	challenge := []byte(`{"data":{"challenge_id":"c1","nonce":"00ff","expires_at":1},"meta":{"type":"papi-auth-challenge"}}`)
+	chData, _, err := papi.DecodeEnvelope(challenge)
+	if err != nil {
+		t.Fatalf("DecodeEnvelope(challenge): %v", err)
+	}
+	chal, err := signchallenge.ParseChallenge(chData)
+	if err != nil {
+		t.Fatalf("ParseChallenge from .data: %v", err)
+	}
+	if chal.ChallengeID != "c1" || chal.Nonce != "00ff" {
+		t.Errorf("challenge = %+v, want challenge_id=c1 nonce=00ff read from .data", chal)
+	}
+
+	// The bug: reading the whole envelope at the top level finds no challenge_id.
+	if _, err := signchallenge.ParseChallenge(challenge); err == nil {
+		t.Error("ParseChallenge on the whole envelope should fail — challenge_id is not at the top level (the bug)")
+	}
+
+	session := []byte(`{"data":{"session":"s1","principal":"p","groups":[],"expires_at":1},"meta":{"type":"papi-auth-session"}}`)
+	sessData, _, err := papi.DecodeEnvelope(session)
+	if err != nil {
+		t.Fatalf("DecodeEnvelope(session): %v", err)
+	}
+	var got struct {
+		Session   string `json:"session"`
+		Principal string `json:"principal"`
+	}
+	if json.Unmarshal(sessData, &got) != nil || got.Session != "s1" || got.Principal != "p" {
+		t.Errorf("session from .data = %+v, want session=s1 principal=p", got)
+	}
+
+	// Strict, no leniency: a bare auth body is non-conformant and rejected.
+	if _, _, err := papi.DecodeEnvelope([]byte(`{"challenge_id":"c1","nonce":"00ff"}`)); err == nil {
+		t.Error("DecodeEnvelope on a bare auth body should error (§4.2 envelope is mandatory)")
 	}
 }

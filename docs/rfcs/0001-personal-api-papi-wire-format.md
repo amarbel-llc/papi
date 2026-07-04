@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-06-26
-amendments: 17
+amended: 2026-07-04
+amendments: 18
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -260,6 +260,10 @@ endpoints (`/papi/forges`, `/papi/repos`, `/papi/organizations`, `/papi/sitemap`
 `"public"` for the anonymous principal and `"scoped"` for an authenticated
 principal.
 
+The §5 authentication endpoints (`POST /papi/auth/challenge`, `POST
+/papi/auth/response`) are JSON endpoints and MUST use this envelope; their §5.1–§5.4
+shapes are the `data` payload (§5).
+
 The `text/plain` endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`, and
 the OPTIONAL `/papi/bootstrap`) MUST NOT use the envelope; they return a raw body
 with `Content-Type: text/plain`. Clients MUST NOT assume every PAPI response is
@@ -312,6 +316,14 @@ A **cardless variant** of sign-challenge (§5.4) lets a host that holds no card 
 with a provisioned certificate chaining to the published slot-9A. §5.1–5.2 specify
 the challenge and response for both schemes; all paths mint the same session
 (§5.3). A server implements at least one scheme and advertises it.
+
+All §5 endpoints that return JSON — `POST /papi/auth/challenge` and `POST
+/papi/auth/response` — are subject to the §4.2 response envelope, exactly like every
+other JSON endpoint. The challenge, response, session, and cardless objects shown
+bare in §5.1–§5.4 are the `<payload>` carried in the envelope's `data` member
+(`{ "data": <shape>, "meta": {…} }`); a client MUST read these fields from `data`,
+not from the top level. The bare objects below show the payload, not the whole HTTP
+body.
 
 #### 5.1. Challenge
 
@@ -1640,3 +1652,19 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   discovery by a §10.3 verifier. Captured from a reference-server pentest fix
   (friedenberg/linenisgreat#49, merged + live); realigns the spec with the
   corrected server. Additive clarification of an OPTIONAL surface — no version bump.
+- **2026-07-04, Amendment 18 — The §4.2 envelope is universal, including §5 auth.**
+  Made explicit that the §4.2 `{data, meta}` response envelope applies to the §5
+  authentication endpoints (`POST /papi/auth/challenge`, `POST /papi/auth/response`)
+  like every other JSON endpoint: the challenge / response / session / cardless
+  objects drawn bare in §5.1–§5.4 are the `data` payload, and a client MUST read
+  those fields from `data`, not the top level. Added the rule to the §5 intro and a
+  cross-reference from §4.2. Resolves a latent conflict between §4.2's universal
+  "JSON endpoints MUST wrap" rule (whose only carve-outs are the text/plain
+  endpoints) and §5.1–§5.4's bare example shapes: the reference server
+  (site-linenisgreat) envelopes the auth responses, while the amarbel-llc/papi
+  client's auth handshake read the fields at the top level and failed against the
+  live server (`papi validate` / `papi repos --auth-key-id`). The server is correct;
+  the client plus the spec ambiguity were the bug. The client now reads the
+  handshake fields from `data`, and the shared `DecodeEnvelope` rejects a bare body
+  rather than tolerating it (the leniency that hid the mismatch). Clarification of
+  the already-stated §4.2 intent — no version bump.

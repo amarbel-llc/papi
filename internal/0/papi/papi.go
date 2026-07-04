@@ -429,19 +429,23 @@ type Profile struct {
 }
 
 // DecodeEnvelope unwraps a {data, meta} response body (RFC-0001 §4.2), returning
-// the data bytes and the meta block. A body that is not the envelope (no `data`)
-// is tolerated and returned verbatim as the data. It is the pure, network-free
-// core the fetching Client methods and the wasm client (FDR-0007) share.
+// the data bytes and the meta block. Every JSON endpoint MUST wrap its payload in
+// the envelope (§4.2; only the text/plain endpoints are exempt, and the discovery
+// document is decoded separately as a spec-literal bare object, §4.1), so a body
+// with no `data` member is non-conformant and rejected rather than read at the top
+// level. A lenient fallback here is precisely what let the auth-handshake client
+// read responses off the wrong nesting level undetected. It is the pure,
+// network-free core the fetching Client methods and the wasm client (FDR-0007)
+// share.
 func DecodeEnvelope(body []byte) (json.RawMessage, map[string]any, error) {
 	var env Envelope
 	if err := json.Unmarshal(body, &env); err != nil {
 		return nil, nil, fmt.Errorf("not JSON: %w", err)
 	}
-	data := env.Data
-	if len(data) == 0 {
-		data = body // tolerate an un-enveloped body
+	if len(env.Data) == 0 {
+		return nil, env.Meta, fmt.Errorf("response is not the §4.2 {data,meta} envelope: no \"data\" member")
 	}
-	return data, env.Meta, nil
+	return env.Data, env.Meta, nil
 }
 
 // DecodeDocument decodes a GET /papi body into the projected Document plus the raw
