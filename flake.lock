@@ -260,11 +260,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1783134399,
-        "narHash": "sha256-3OU4ifCsYlFPOefVYiKQpGC+zAzX8cVQNBZvqbnRerI=",
+        "lastModified": 1783161005,
+        "narHash": "sha256-jMFdt8ONs17pLD/Nf5WzHQbalNaHIykLcSeiXPIPkbY=",
         "owner": "amarbel-llc",
         "repo": "piggy",
-        "rev": "343bcc3ea7518b6e1d81e364fa02986c10f392c5",
+        "rev": "b7ba9a895f8adc0a5b4ac118c71822e2fbb20830",
         "type": "github"
       },
       "original": {
