@@ -181,6 +181,16 @@
           papi-client-ts = papi-client-ts;
           papi-installer = papi-installer;
           conformist-impure-config = impureEval.config.build.configFile;
+          # The store-pinned, toolchain-hermetic spinclass hook pair from the
+          # pure eval (eng tier-B convergence, proven on madder): pre-commit
+          # (`--staged --exit-zero-on-fix`) formats staged content at
+          # authoring time; repair (`--commit --amend --exit-zero-on-fix`) is
+          # the merge-repair phase, which self-heals bump commits against the
+          # rebuilt post-bump devshell. Both on the devShell PATH below —
+          # papi previously exposed NEITHER, so the eng-sweatfile hooks fell
+          # through to eng's (now severed) fallback wrapper.
+          conformist-pre-commit = eval.config.build.preCommit;
+          conformist-repair = eval.config.build.repair;
         };
 
         formatter = eval.config.build.wrapper;
@@ -194,6 +204,11 @@
             pkgs.go
             pkgs.just
             conformistPkg
+            # The spinclass hook pair (see packages.conformist-pre-commit /
+            # .conformist-repair), resolved from the devShell PATH by the
+            # sweatfile [hooks] commands.
+            eval.config.build.preCommit
+            eval.config.build.repair
             # dagnabit(1): tiers internal/ packages by dependency depth — see
             # `just codemod-reposition` and the README Layout section.
             purse-first.packages.${system}.dagnabit
