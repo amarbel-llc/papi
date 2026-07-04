@@ -44,6 +44,8 @@
     conformist.inputs.nixpkgs-master.follows = "nixpkgs-master";
     piggy.inputs.bats.inputs.nixpkgs-master.follows = "nixpkgs-master";
     piggy.inputs.purse-first.inputs.gomod2nix.follows = "purse-first/gomod2nix";
+    piggy.inputs.conformist.follows = "conformist";
+    piggy.inputs.purse-first.follows = "purse-first";
   };
 
   outputs =
