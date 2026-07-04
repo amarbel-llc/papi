@@ -2083,20 +2083,23 @@ func signChallengeSigner(ctx context.Context, mode, guid, pin, agentSocket strin
 
 func newSignChallengeCmd() *cobra.Command {
 	var domain, guid, pin, signerMode string
+	var fromResponse bool
 	cmd := &cobra.Command{
 		Use:   "sign-challenge --domain <domain>",
 		Short: "Sign a §5.2 auth challenge with slot-9A, emitting the /papi/auth/response body",
-		Long: "Read a PAPI sign-challenge — the POST /papi/auth/challenge response JSON " +
-			"{challenge_id, nonce, expires_at} — on stdin, build the §5.2 domain-separated " +
-			"preimage papi-auth-v1\\n<domain>\\n<nonce>, sign SHA-256(preimage) with the " +
-			"caller's PIV slot-9A key (ECDSA P-256, via `piggy sign-bytes --slot 9a` — the " +
-			"card must be physically present; no agent), and print the POST " +
-			"/papi/auth/response body {challenge_id, signature} on stdout, where signature " +
-			"is a papi-auth-sig-v1@ecdsa_p256_sig markl id (raw 64-byte r‖s). --domain is " +
-			"the PAPI identity domain the signature binds to; it is never echoed by the " +
-			"challenge (cross-site relay defense), so it must be supplied here. With no " +
-			"--guid the sole provisioned card is used; --pin passes the slot-9A PIN to " +
-			"piggy. The server verifies the signature against the registered slot-9A key " +
+		Long: "Read a §5.2 challenge — the bare challenge payload {challenge_id, nonce, " +
+			"expires_at} — on stdin, build the §5.2 domain-separated preimage " +
+			"papi-auth-v1\\n<domain>\\n<nonce>, sign SHA-256(preimage) with the caller's PIV " +
+			"slot-9A key (ECDSA P-256, via `piggy sign-bytes --slot 9a` — the card must be " +
+			"physically present; no agent), and print the POST /papi/auth/response body " +
+			"{challenge_id, signature} on stdout, where signature is a " +
+			"papi-auth-sig-v1@ecdsa_p256_sig markl id (raw 64-byte r‖s). A live server wraps " +
+			"its POST /papi/auth/challenge response in the §4.2 {data, meta} envelope; pass " +
+			"--from-response to feed that whole response on stdin and read the challenge from " +
+			".data. --domain is the PAPI identity domain the signature binds to; it is never " +
+			"echoed by the challenge (cross-site relay defense), so it must be supplied here. " +
+			"With no --guid the sole provisioned card is used; --pin passes the slot-9A PIN " +
+			"to piggy. The server verifies the signature against the registered slot-9A key " +
 			"and mints a session — this command performs no network I/O itself.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -2107,6 +2110,13 @@ func newSignChallengeCmd() *cobra.Command {
 			raw, err := io.ReadAll(cmd.InOrStdin())
 			if err != nil {
 				return fmt.Errorf("read challenge JSON from stdin: %w", err)
+			}
+			if fromResponse {
+				data, _, derr := papi.DecodeEnvelope(raw)
+				if derr != nil {
+					return fmt.Errorf("--from-response: stdin is not the §4.2 {data,meta} /papi/auth/challenge response: %w", derr)
+				}
+				raw = data
 			}
 			ch, err := signchallenge.ParseChallenge(raw)
 			if err != nil {
@@ -2136,6 +2146,8 @@ func newSignChallengeCmd() *cobra.Command {
 		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
 	cmd.Flags().StringVar(&signerMode, "signer", "auto",
 		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
+	cmd.Flags().BoolVar(&fromResponse, "from-response", false,
+		"treat stdin as the full enveloped POST /papi/auth/challenge response ({data,meta}, §4.2) and read the challenge from .data; default expects the bare challenge payload {challenge_id, nonce, expires_at}")
 	return cmd
 }
 

@@ -413,13 +413,17 @@ piggy-recipient-v1@pivy_ecdh_p256_pub-qfjr3sgs…
 ### `papi sign-challenge --domain <domain>`
 
 Answer a [§5.2 sign-challenge](docs/rfcs/0001-personal-api-papi-wire-format.md)
-(the RECOMMENDED `papi/v0` auth scheme): read the server's challenge JSON
-(`{challenge_id, nonce, expires_at}`, the `POST /papi/auth/challenge` response) on
-**stdin**, build the domain-separated preimage `papi-auth-v1\n<domain>\n<nonce>`,
-sign `SHA-256(preimage)` with your PIV **slot-9A** key (ECDSA P-256, via `piggy
+(the RECOMMENDED `papi/v0` auth scheme). It is a strict signing **primitive**: read
+the **bare challenge payload** (`{challenge_id, nonce, expires_at}`) on **stdin**,
+build the domain-separated preimage `papi-auth-v1\n<domain>\n<nonce>`, sign
+`SHA-256(preimage)` with your PIV **slot-9A** key (ECDSA P-256, via `piggy
 sign-bytes --slot 9a` — the card must be present; no agent), and print the `POST
 /papi/auth/response` body `{challenge_id, signature}` on **stdout**, where
 `signature` is a `papi-auth-sig-v1@ecdsa_p256_sig` markl id (raw 64-byte `r‖s`).
+A live server wraps its `POST /papi/auth/challenge` response in the
+[§4.2 `{data, meta}` envelope](docs/rfcs/0001-personal-api-papi-wire-format.md), so
+stdin is the bare challenge, **not** the raw HTTP body — pass **`--from-response`**
+to feed that whole enveloped response on stdin and read the challenge from `.data`.
 `--domain` is the PAPI identity domain the signature binds to — it is **never
 echoed** by the challenge (cross-site relay defense), so you supply it. With no
 `--guid` the sole provisioned card is used; `--pin` passes the slot-9A PIN. The
@@ -427,8 +431,14 @@ command does no network I/O itself — the caller POSTs the body and the server
 verifies it against the registered slot-9A key, minting a session.
 
 ```console
+# the signing primitive: a bare challenge payload on stdin
 $ echo '{"challenge_id":"a1b2…","nonce":"3f9c…","expires_at":1750000000}' \
     | papi sign-challenge --domain staging.example.com --pin ******
+{"challenge_id":"a1b2…","signature":"papi-auth-sig-v1@ecdsa_p256_sig-qqqsyq…"}
+
+# or pipe the live server's enveloped {data,meta} response straight in
+$ curl -fsS https://api.example.com/papi/auth/challenge -d '{"auth_key_id":"…"}' \
+    | papi sign-challenge --domain example.com --from-response --pin ******
 {"challenge_id":"a1b2…","signature":"papi-auth-sig-v1@ecdsa_p256_sig-qqqsyq…"}
 ```
 

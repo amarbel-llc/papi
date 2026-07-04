@@ -1252,6 +1252,57 @@ func forgesAuthedServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+// TestSignChallengeFromResponse pins the offline-signer papercut fix: by default
+// `papi sign-challenge` is a strict bare-payload primitive, and --from-response lets
+// a user pipe the live server's full §4.2-enveloped /papi/auth/challenge response
+// straight in (challenge read from .data). No leniency — the input shape is chosen
+// explicitly per invocation, not sniffed.
+func TestSignChallengeFromResponse(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := signChallengeSignerFn
+	signChallengeSignerFn = func(_ context.Context, _, guid, _, _ string) (signchallenge.Signer, string, error) {
+		return signerFake{priv}, guid, nil
+	}
+	defer func() { signChallengeSignerFn = orig }()
+
+	const enveloped = `{"data":{"challenge_id":"ch1","nonce":"0011223344556677","expires_at":9999999999},"meta":{"type":"papi-auth-challenge"}}`
+
+	// --from-response unwraps the {data,meta} envelope and signs the inner challenge.
+	cmd := newSignChallengeCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetIn(strings.NewReader(enveloped))
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{"--domain", "staging.linenisgreat.com", "--from-response"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("sign-challenge --from-response: %v", err)
+	}
+	var resp signchallenge.Response
+	if err := json.Unmarshal(out.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v; out=%s", err, out.String())
+	}
+	if resp.ChallengeID != "ch1" {
+		t.Errorf("challenge_id = %q, want ch1 (read from .data)", resp.ChallengeID)
+	}
+	if !strings.HasPrefix(resp.Signature, "papi-auth-sig-v1@") {
+		t.Errorf("signature = %q, want a papi-auth-sig-v1 markl id", resp.Signature)
+	}
+
+	// Without --from-response the enveloped body is rejected — the default is the
+	// strict bare primitive (ParseChallenge finds no top-level challenge_id).
+	bare := newSignChallengeCmd()
+	bare.SilenceUsage, bare.SilenceErrors = true, true
+	bare.SetIn(strings.NewReader(enveloped))
+	bare.SetOut(new(bytes.Buffer))
+	bare.SetArgs([]string{"--domain", "staging.linenisgreat.com"})
+	if err := bare.ExecuteContext(context.Background()); err == nil {
+		t.Error("sign-challenge without --from-response should reject an enveloped body (strict bare primitive)")
+	}
+}
+
 func runForges(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newForgesCmd()
