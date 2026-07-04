@@ -418,3 +418,23 @@ func TestAuthorizeOnlyMode(t *testing.T) {
 		}
 	}
 }
+
+// TestUnwrapDataStrict pins the broker's no-leniency §4.2 handling: a PAPI server
+// response with no `data` member is rejected, not read at the top level (mirrors
+// internal/0/papi.DecodeEnvelope; RFC-0001 Amendment 18). Tolerating a bare body
+// is the same leniency that hid the client auth-handshake bug.
+func TestUnwrapDataStrict(t *testing.T) {
+	data, err := unwrapData([]byte(`{"data":{"session":"s1"},"meta":{"type":"papi-auth-session"}}`))
+	if err != nil {
+		t.Fatalf("enveloped body: %v", err)
+	}
+	if string(data) != `{"session":"s1"}` {
+		t.Errorf(`data = %s, want {"session":"s1"}`, data)
+	}
+	if _, err := unwrapData([]byte(`{"session":"s1"}`)); err == nil {
+		t.Error("bare body should be rejected (§4.2 envelope is mandatory), got nil error")
+	}
+	if _, err := unwrapData([]byte(`not json`)); err == nil {
+		t.Error("non-JSON body should error")
+	}
+}

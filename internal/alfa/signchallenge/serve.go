@@ -249,7 +249,11 @@ func runHandshake(ctx context.Context, httpc *http.Client, base string, cfg Serv
 	if err != nil {
 		return nil, "challenge", err
 	}
-	ch, err := ParseChallenge(unwrapData(chRaw))
+	chData, err := unwrapData(chRaw)
+	if err != nil {
+		return nil, "challenge", err
+	}
+	ch, err := ParseChallenge(chData)
 	if err != nil {
 		return nil, "challenge", err
 	}
@@ -261,7 +265,11 @@ func runHandshake(ctx context.Context, httpc *http.Client, base string, cfg Serv
 	if err != nil {
 		return nil, "response", err
 	}
-	return unwrapData(sessRaw), "", nil
+	sessData, err := unwrapData(sessRaw)
+	if err != nil {
+		return nil, "response", err
+	}
+	return sessData, "", nil
 }
 
 func brokerClient(cfg ServeConfig) *http.Client {
@@ -353,16 +361,23 @@ func postJSON(ctx context.Context, httpc *http.Client, url string, body any) ([]
 	return rb, nil
 }
 
-// unwrapData returns the inner object of a {"data": …, "meta": …} envelope — the
-// reference server's response shape — or the body unchanged when there is none.
-func unwrapData(raw []byte) []byte {
+// unwrapData returns the inner object of the {"data": …, "meta": …} envelope
+// (RFC-0001 §4.2). Every JSON PAPI response — including the §5 auth endpoints
+// (Amendment 18) — carries it, so a body with no `data` member is non-conformant
+// and rejected rather than read at the top level. Tolerating a bare body here is
+// the same leniency that let the client auth handshake read the wrong nesting level
+// undetected (mirrors internal/0/papi.DecodeEnvelope).
+func unwrapData(raw []byte) ([]byte, error) {
 	var env struct {
 		Data json.RawMessage `json:"data"`
 	}
-	if err := json.Unmarshal(raw, &env); err == nil && len(env.Data) > 0 {
-		return env.Data
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("not JSON: %w", err)
 	}
-	return raw
+	if len(env.Data) == 0 {
+		return nil, fmt.Errorf("response is not the §4.2 {data,meta} envelope: no \"data\" member")
+	}
+	return env.Data, nil
 }
 
 // setCORS pins the response to the configured origin and advertises the methods and
