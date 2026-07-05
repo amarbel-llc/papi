@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-07-05
-amendments: 19
+amendments: 20
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -573,7 +573,12 @@ A bootstrap target is either:
 
 `<domain>` is the authority of the well-known URI (§4); the client fetches
 `https://<domain>/.well-known/papi` and follows `resources.templates` (falling
-back to `<base>/papi/templates` if the discovery document omits it).
+back to `<base>/papi/templates` if the discovery document omits it). `<base>` is
+the **serving base** — the origin (and any path prefix) the other `resources` are
+served from, derived from `resources` (e.g. `resources.document`'s origin), NOT the
+discovery origin: on a split-host domain the identity host serving
+`/.well-known/papi` may differ from the serving host that answers `/papi/*` (§4.1),
+so the fallback MUST target the serving base.
 
 #### 8.2. Selection
 
@@ -1684,3 +1689,12 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   side is the papi access asserter (`papi forge check`, amarbel-llc/papi#48, FDR-0010),
   which reconciles a domain's declared forge/repo visibility against verified anonymous
   access. Additive and OPTIONAL — no version bump.
+- **2026-07-05, Amendment 20 — §8.1 fallback base is the serving base.** Clarified §8.1:
+  when discovery omits `resources.templates`, the `<base>` a client falls back to for
+  `<base>/papi/templates` is the **serving base** derived from `resources` (the origin
+  serving `/papi/*`, e.g. `resources.document`'s origin), NOT the discovery origin — so
+  the fallback stays correct on a split-host domain where the identity host serving
+  `/.well-known/papi` differs from the serving host. Matches the papi client's existing
+  serving-base resolution (servingBaseFromResources). Surfaced by the conformist#43
+  consumer; clarification of an underspecified spot, no behavior change for single-host
+  domains — no version bump.
