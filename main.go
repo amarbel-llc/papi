@@ -81,6 +81,7 @@ func main() {
 	root.AddCommand(newPersonCmd())
 	root.AddCommand(newReposCmd())
 	root.AddCommand(newForgesCmd())
+	root.AddCommand(newForgeCmd())
 	root.AddCommand(newProfilesCmd())
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newEnrollCmd())
@@ -233,6 +234,48 @@ func newValidateCmd() *cobra.Command {
 			return inspect.Run(cmd.Context(), cmd.OutOrStdout(), args[0], opts)
 		},
 	}
+	af.register(cmd)
+	return cmd
+}
+
+func newForgeCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "forge",
+		Short:         "Forge-focused PAPI checks",
+		Long:          "Subcommands that reconcile a domain's declared forge/repo model against verified access.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	cmd.AddCommand(newForgeCheckCmd())
+	return cmd
+}
+
+func newForgeCheckCmd() *cobra.Command {
+	var af authFlags
+	var forgeID string
+	cmd := &cobra.Command{
+		Use:   "check <domain>",
+		Short: "Reconcile a domain's declared forge/repo visibility against verified anonymous access",
+		Long: "Reconcile what <domain>'s PAPI DECLARES about forge/repo visibility against what is " +
+			"VERIFIED to be anonymously accessible (papi#48, FDR-0010), emitting an ndjson-crap stream " +
+			"(pipe to crap-present) and exiting non-zero on a MUST violation. The card-free floor reads " +
+			"each forge's declared `canary` — a published visibility:private repo (RFC-0001 §1.1) — and " +
+			"MUST-fails if it appears in the anonymous /papi/repos (a private-repo leak). Pass " +
+			"--auth-key-id <slot-9A id> (§5.2 sign-challenge; or the legacy --recipient/--decrypt-cmd) to " +
+			"additionally reconcile the full declared set: every declared-public repo anonymously visible, " +
+			"every declared-private/scoped repo hidden. --forge <id> scopes the check to one forge entry. " +
+			"Deployment/topology assertions (DNS→address, firewall, nginx) are out of scope — they belong " +
+			"to circus, which delegates the visibility half here.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts, err := af.options(cmd.Context())
+			if err != nil {
+				return err
+			}
+			return inspect.RunForgeCheck(cmd.Context(), cmd.OutOrStdout(), args[0], forgeID, opts)
+		},
+	}
+	cmd.Flags().StringVar(&forgeID, "forge", "", "scope the check to a single forge entry by its id")
 	af.register(cmd)
 	return cmd
 }

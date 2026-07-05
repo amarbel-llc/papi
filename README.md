@@ -291,6 +291,26 @@ $ papi forges linenisgreat.com \
     --auth-key-id piggy-auth-v1@...                    # + §5-gated forgejo (ssh_clone)
 ```
 
+### `papi forge check <domain>`
+
+Reconcile what `<domain>` **declares** about forge/repo visibility against what is
+**verified** anonymously accessible (papi#48, [FDR-0010](docs/features/0010-forge-access-asserter.md)),
+as an ndjson-crap stream (pipe to `crap-present`); exits non-zero on a MUST violation.
+The **card-free floor** reads each forge's declared `canary` — a published
+`visibility:private` repo (RFC-0001 §1.1) — and fails if it appears in the anonymous
+`/papi/repos` (a private-repo leak). Pass `--auth-key-id` (or the legacy
+`--recipient`/`--decrypt-cmd`) to also reconcile the full declared set: every
+declared-public repo anonymously visible, every declared-private/scoped repo hidden.
+`--forge <id>` scopes to one forge. Deployment/topology (DNS, firewall, nginx) is out
+of scope — that is circus's plane, which delegates the visibility half here.
+
+```console
+$ papi forge check linenisgreat.com                        # card-free canary floor
+$ papi forge check linenisgreat.com --forge forgejo-krone  # scope to one forge
+$ papi forge check linenisgreat.com \
+    --auth-key-id piggy-auth-v1@...                         # + full declared-vs-verified reconcile
+```
+
 ### `papi profiles <domain>`
 
 Fetch `<domain>`'s `GET /papi/profiles` — the host profiles (flakerefs) a staged

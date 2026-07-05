@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-07-04
-amendments: 18
+amended: 2026-07-05
+amendments: 19
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -106,6 +106,14 @@ field of each `organizations[]` entry MUST use a `kind` drawn from:
 A forge entry SHOULD carry `id`, `kind`, `base_url`, `identity`,
 `identity_type`, and `repos[]`. The server MAY include additional fields; clients
 MUST ignore members they do not recognize.
+
+A forge entry MAY carry an OPTIONAL `canary` member — the `<owner>/<name>` of a
+repository the forge publishes with `visibility:"private"`. It is exposed on the
+(public) forge entry so a consumer can assert, **without credentials**, that the
+named private repo never surfaces in the anonymous projection (a private-repo leak
+canary). The named repository itself is still projected per §2 — only its
+`<owner>/<name>` is exposed here. The consuming side is the access asserter
+(`papi forge check`, amarbel-llc/papi#48).
 
 ### 2. Visibility and ACL Projection
 
@@ -1668,3 +1676,11 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   handshake fields from `data`, and the shared `DecodeEnvelope` rejects a bare body
   rather than tolerating it (the leniency that hid the mismatch). Clarification of
   the already-stated §4.2 intent — no version bump.
+- **2026-07-05, Amendment 19 — Forge access-asserter canary member (§1.1).** Added the
+  OPTIONAL `canary` member to a forge entry (§1.1): the `<owner>/<name>` of a repo the
+  forge publishes `visibility:"private"`, exposed on the public forge entry so a
+  card-free consumer can assert that repo never surfaces in the anonymous projection (a
+  private-repo leak canary — the named repo itself is still §2-projected). The consuming
+  side is the papi access asserter (`papi forge check`, amarbel-llc/papi#48, FDR-0010),
+  which reconciles a domain's declared forge/repo visibility against verified anonymous
+  access. Additive and OPTIONAL — no version bump.

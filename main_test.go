@@ -1423,6 +1423,102 @@ func TestSignChallengeFromResponse(t *testing.T) {
 	}
 }
 
+// forgeCheckServer serves a forge that declares a private canary plus an anonymous
+// /papi/repos that either hides the canary (leak=false) or leaks it (leak=true).
+func forgeCheckServer(t *testing.T, leak bool) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":"forgejo-krone","kind":"forgejo","base_url":"https://forge.example.com","identity":"amarbel-llc","canary":"amarbel-llc/papi-private-canary"}],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		pub := `{"name":"stats-me","url":"https://forge.example.com/amarbel-llc/stats-me","owner":"amarbel-llc","forge":"forgejo-krone","kind":"forgejo","visibility":"public"}`
+		if leak {
+			canary := `{"name":"papi-private-canary","url":"https://forge.example.com/amarbel-llc/papi-private-canary","owner":"amarbel-llc","forge":"forgejo-krone","kind":"forgejo","visibility":"public"}`
+			io.WriteString(w, `{"data":[`+pub+`,`+canary+`],"meta":{"type":"repos","visibility":"public","count":2}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"repos","visibility":"public","count":1}}`)
+	})
+	return httptest.NewServer(mux)
+}
+
+func runForgeCheck(t *testing.T, args ...string) (string, error) {
+	t.Helper()
+	cmd := newForgeCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	err := cmd.ExecuteContext(context.Background())
+	return out.String(), err
+}
+
+// TestForgeCheckCanaryAbsent: the card-free floor passes (exit 0) when the declared
+// canary is absent from the anonymous /papi/repos.
+func TestForgeCheckCanaryAbsent(t *testing.T) {
+	srv := forgeCheckServer(t, false)
+	defer srv.Close()
+	out, err := runForgeCheck(t, "check", srv.URL)
+	if err != nil {
+		t.Fatalf("forge check: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "absent from anonymous") {
+		t.Errorf("want a canary-absent ok point:\n%s", out)
+	}
+}
+
+// TestForgeCheckCanaryLeaked: a canary present in the anonymous listing is a MUST
+// failure (nonzero exit) — the private-repo leak the shared gate exists to catch.
+func TestForgeCheckCanaryLeaked(t *testing.T) {
+	srv := forgeCheckServer(t, true)
+	defer srv.Close()
+	out, err := runForgeCheck(t, "check", srv.URL)
+	if err == nil {
+		t.Fatalf("forge check should fail on a leaked canary:\n%s", out)
+	}
+	if !strings.Contains(out, "LEAKED") {
+		t.Errorf("want a canary-leak MUST failure:\n%s", out)
+	}
+}
+
+// TestForgeCheckAuthedReconcile: with a handshake, the authed tier reconciles the full
+// declared set — a declared-public repo anonymously visible AND a declared-private repo
+// anonymously hidden both pass.
+func TestForgeCheckAuthedReconcile(t *testing.T) {
+	mux := http.NewServeMux()
+	registerHandshake(mux, "forge-nonce")
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":"forgejo-krone","kind":"forgejo","base_url":"https://forge.example.com","identity":"amarbel-llc"}],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	pub := `{"name":"stats-me","url":"https://forge.example.com/amarbel-llc/stats-me","owner":"amarbel-llc","forge":"forgejo-krone","kind":"forgejo","visibility":"public"}`
+	priv := `{"name":"secret","url":"https://forge.example.com/amarbel-llc/secret","owner":"amarbel-llc","forge":"forgejo-krone","kind":"forgejo","visibility":"private"}`
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Header.Get("Authorization") == "PiggySession sess1" {
+			io.WriteString(w, `{"data":[`+pub+`,`+priv+`],"meta":{"type":"repos","visibility":"scoped"}}`)
+			return
+		}
+		io.WriteString(w, `{"data":[`+pub+`],"meta":{"type":"repos","visibility":"public"}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	out, err := runForgeCheck(t, "check", srv.URL, "--recipient", "piggy-x", "--decrypt-cmd", "base64 -d")
+	if err != nil {
+		t.Fatalf("authed forge check: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "declared-public repo") {
+		t.Errorf("want the declared-public reconciliation verdict:\n%s", out)
+	}
+	if !strings.Contains(out, "declared-private") {
+		t.Errorf("want the declared-private reconciliation verdict:\n%s", out)
+	}
+}
+
 func runForges(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	cmd := newForgesCmd()
