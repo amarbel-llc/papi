@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-07-05
-amendments: 20
+amendments: 21
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -579,6 +579,14 @@ served from, derived from `resources` (e.g. `resources.document`'s origin), NOT 
 discovery origin: on a split-host domain the identity host serving
 `/.well-known/papi` may differ from the serving host that answers `/papi/*` (§4.1),
 so the fallback MUST target the serving base.
+
+A client following `resources.templates` (or deriving the serving base from any
+`resources` URL) MUST require the target to be **HTTPS** and its host to be either the
+operator-named `<domain>` or a subdomain of it — the host equals `<domain>` or ends
+with `.<domain>` (e.g. an `api.<domain>` serving host); it MUST NOT follow an
+advertised URL to any other host. This admits the split-host frontend → api-subdomain
+delegation while refusing a jump to an unrelated party (`evil.com`,
+`example.com.evil.com`); see Security Considerations.
 
 #### 8.2. Selection
 
@@ -1281,8 +1289,9 @@ that resolves a domain it does not trust, or that followed a discovery link from
 response it did not originate (see the `Host` header note above), could be steered
 to an arbitrary flake. A bootstrapping client SHOULD surface the resolved flakeref
 to the operator before initializing it, MUST honor nix's own flake-evaluation trust
-prompts rather than suppressing them, and SHOULD restrict resolution to domains the
-operator named explicitly.
+prompts rather than suppressing them, and MUST NOT follow an advertised resource URL
+to a host outside the operator-named domain and its subdomains (§8.1) — following one
+to an unrelated host is a trust-transfer to a potentially attacker-chosen host.
 
 **Advertised caches are configuration trust (§11).** A `caches[]` entry names a
 substituter the consuming host will fetch closures from and a `trusted_public_keys`
@@ -1698,3 +1707,13 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   serving-base resolution (servingBaseFromResources). Surfaced by the conformist#43
   consumer; clarification of an underspecified spot, no behavior change for single-host
   domains — no version bump.
+- **2026-07-05, Amendment 21 — §8 resolution follows subdomains only.** Pinned the host
+  boundary for following an advertised resource URL (§8.1) and tightened the matching
+  Security Consideration: a client MUST require HTTPS and a host equal to the
+  operator-named `<domain>` or a subdomain of it (host == `<domain>` or ends with
+  `.<domain>`), and MUST NOT follow an advertised URL to an unrelated host. This admits
+  the real split-host frontend → `api.<domain>` delegation (the linenisgreat topology,
+  and the serving base of Amendment 20) while refusing a jump to a third party
+  (`evil.com`, `example.com.evil.com`). Surfaced by the conformist#43 consumer resolving
+  templates against live infra. Clarification of the §8 / Security intent — no version
+  bump.
