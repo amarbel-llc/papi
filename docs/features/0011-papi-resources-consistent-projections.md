@@ -1,14 +1,13 @@
 ---
-status: proposed
+status: experimental
 date: 2026-07-05
 promotion-criteria: >
-  proposed → experimental when the projection-consistency invariants are pinned in
-  an RFC-0001 amendment and `papi validate` grows the reconciliation check (fetch
-  /papi + the projected sub-endpoints, MUST-fail on drift). experimental → testing
-  when the check runs green against the reference server (linenisgreat) and, replayed
-  against the pre-fix papi#50 shape, flags it. testing → accepted when it has caught
-  or cleared a real projection change in the wild and the "which endpoints reconcile"
-  set has held steady for two weeks.
+  experimental (`papi validate` reconciles /papi/repos ⟷ /papi/forges as SHOULD
+  verdicts — forge-provenance resolution + clone-channel reachability) → testing when
+  the invariants are pinned in an RFC-0001 amendment (so the check MUST-fails on drift)
+  and, replayed against the pre-fix papi#50 shape, it flags it. testing → accepted when
+  it has caught or cleared a real projection change in the wild and the reconciled-
+  endpoint set has held steady for two weeks.
 ---
 
 # PAPI resources as consistent projections of one model

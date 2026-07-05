@@ -60,6 +60,7 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 	}
 
 	pts = append(pts, conformanceChecks(ctx, c, disc)...)
+	pts = append(pts, projectionChecks(ctx, c)...)
 	pts = append(pts, unknownSessionPoint(ctx, c))
 	if opts.authed() {
 		pts = append(pts, authenticatedChecks(ctx, c, opts)...)

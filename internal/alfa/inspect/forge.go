@@ -17,9 +17,11 @@ import (
 // visibility:"private", named on the PUBLIC forge entry so a card-free checker can
 // assert it stays out of the anonymous projection (RFC-0001 §1.1, FDR-0010).
 type forgeEntry struct {
-	ID     string `json:"id"`
-	Kind   string `json:"kind"`
-	Canary string `json:"canary"`
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	BaseURL  string `json:"base_url"`
+	SSHClone string `json:"ssh_clone"`
+	Canary   string `json:"canary"`
 }
 
 func decodeForgeEntries(body []byte) ([]forgeEntry, error) {
