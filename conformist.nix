@@ -3,9 +3,9 @@
 # formatters and repo-specific tweaks.
 { ... }:
 {
-  # Formatters: nixfmt for the flake, gofmt for the validator's Go sources.
+  # Formatters: nixfmt for the flake; goimports+gofumpt for Go sources (via
+  # eng-go preset imported in flake.nix).
   programs.nixfmt.enable = true;
-  programs.gofmt.enable = true;
 
   # eng-versioning(7) derives the key from go.mod (module .../papi -> PAPI_VERSION);
   # set it explicitly too so version.env stays the unambiguous source of truth.

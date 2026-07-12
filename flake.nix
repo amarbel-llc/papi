@@ -161,6 +161,7 @@
         eval = conformist.lib.evalModule pkgs {
           imports = [
             conformist.lib.presets.eng
+            conformist.lib.presets.eng-go
             ./conformist.nix
           ];
           package = conformistPkg;
