@@ -46,6 +46,7 @@
     piggy.inputs.purse-first.inputs.gomod2nix.follows = "purse-first/gomod2nix";
     piggy.inputs.conformist.follows = "conformist";
     piggy.inputs.purse-first.follows = "purse-first";
+    purse-first.inputs.conformist.follows = "conformist";
   };
 
   outputs =
