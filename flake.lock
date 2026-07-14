@@ -230,11 +230,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1784040481,
-        "narHash": "sha256-cgpJj1aErS5sz3rYy4pfDIdENKZpHZo4x7qPoEbzRvU=",
+        "lastModified": 1784058284,
+        "narHash": "sha256-RdGbgnCawDBZd8DaiiCB9d0Jo+exVA4TFpYLRmAr4P4=",
         "ref": "refs/heads/master",
-        "rev": "b762fd1979ff27dd0f173ac19bbeb5e54e747be9",
-        "revCount": 1033,
+        "rev": "20e2bcdbdeef6a4bcb04e565925e5ba6b89fdc77",
+        "revCount": 1034,
         "type": "git",
         "url": "https://code.linenisgreat.com/piggy.git"
       },
@@ -282,11 +282,11 @@
         "rev": "7e15e981e7494ce0286a7cb279bbda083f726b19",
         "revCount": 1002,
         "type": "git",
-        "url": "https://code.linenisgreat.com/purse-first.git"
+        "url": "https://github.com/amarbel-llc/purse-first.git"
       },
       "original": {
         "type": "git",
-        "url": "https://code.linenisgreat.com/purse-first.git"
+        "url": "https://github.com/amarbel-llc/purse-first.git"
       }
     },
     "root": {

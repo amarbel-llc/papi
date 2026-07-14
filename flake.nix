@@ -21,7 +21,7 @@
     # is on the devShell PATH for `just codemod-reposition`; its nix package
     # also installs dagnabit(1). Follow the shared inputs to collapse the lock.
     purse-first = {
-      url = "git+https://code.linenisgreat.com/purse-first.git";
+      url = "git+https://github.com/amarbel-llc/purse-first.git";
       inputs.igloo.follows = "igloo";
       inputs.nixpkgs-master.follows = "nixpkgs";
       inputs.utils.follows = "utils";
