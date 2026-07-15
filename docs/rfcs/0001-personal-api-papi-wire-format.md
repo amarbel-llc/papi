@@ -2,7 +2,7 @@
 status: proposed
 date: 2026-06-16
 amended: 2026-07-05
-amendments: 21
+amendments: 22
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -114,6 +114,22 @@ named private repo never surfaces in the anonymous projection (a private-repo le
 canary). The named repository itself is still projected per §2 — only its
 `<owner>/<name>` is exposed here. The consuming side is the access asserter
 (`papi forge check`, amarbel-llc/papi#48).
+
+Each entry of the `/papi/repos` flattened list (§4) MAY carry an OPTIONAL boolean
+member `canonical`. When `true`, it marks that forge's entry as the **canonical**
+source for that repository — the one a consumer SHOULD prefer when it needs a
+single clone URL or web URL for a given repository name.
+
+For any repository **name** that appears in more than one `/papi/repos` entry (a
+dual-homed or multi-homed repository whose `name` is the same across entries for
+different `forge` provenance), EXACTLY ONE entry MUST carry `canonical: true`. A
+server that publishes multiple entries for the same `name` without any `canonical`
+marker, or with more than one `canonical: true` among those entries, is
+non-conformant; `papi validate` MUST flag each such `name` as a MUST violation
+(§4, Amendment 22). A repository `name` with only a single `/papi/repos` entry is
+implicitly canonical and need not carry the marker; its presence is OPTIONAL and
+MUST be accepted by clients. Clients MUST ignore members they do not recognize
+(§1.1).
 
 ### 2. Visibility and ACL Projection
 
@@ -1717,3 +1733,16 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   (`evil.com`, `example.com.evil.com`). Surfaced by the conformist#43 consumer resolving
   templates against live infra. Clarification of the §8 / Security intent — no version
   bump.
+- **2026-07-15, Amendment 22 — `/papi/repos` canonical marker.** Added the OPTIONAL
+  boolean member `canonical` to each `/papi/repos` entry (§1.1): when `true`, it
+  marks that forge's entry as the canonical source for a dual-homed (or multi-homed)
+  repository. For any repository `name` that appears in more than one `/papi/repos`
+  entry, EXACTLY ONE entry MUST carry `canonical: true`; zero markers or multiple
+  markers among entries sharing the same `name` are MUST violations, flagged by `papi
+  validate`. A single-entry repository is implicitly canonical; the marker is OPTIONAL
+  there and MUST be accepted by clients. The conformance check is added to the
+  validator (amarbel-llc/papi, §4, papi#53); the projection surface (`papi repos` JSON
+  output) passes the field through so consumers see it. Motivation: consumers
+  (linenisgreat/doppelgang#18) were inferring canonicality from enumeration order; the
+  2026-07-14 fleet ref-flip mis-rewrote ~34 inputs across 12 repos because of it.
+  Additive and OPTIONAL — no version bump.

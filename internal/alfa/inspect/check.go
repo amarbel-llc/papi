@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/amarbel-llc/papi/internal/0/papi"
@@ -281,4 +282,59 @@ func authUnknownPoint(status int) point {
 func hasKey(m map[string]json.RawMessage, k string) bool {
 	_, ok := m[k]
 	return ok
+}
+
+// repoCanonicalChecks validates the RFC-0001 Amendment 22 canonical-marker
+// invariant: for every repository name that appears more than once in
+// /papi/repos, exactly one entry must carry canonical:true. Zero markers (no
+// declared canonical) or multiple markers for the same name are each a MUST
+// violation.
+func repoCanonicalChecks(repos []papi.Repo) []point {
+	const label = "conformance: /papi/repos canonical marker (§1.1, Amendment 22)"
+
+	// Group entries by name; only names with >1 entry need a canonical marker.
+	byName := make(map[string][]papi.Repo)
+	for _, r := range repos {
+		byName[r.Name] = append(byName[r.Name], r)
+	}
+
+	var zeroMarked, multiMarked []string
+	for name, entries := range byName {
+		if len(entries) <= 1 {
+			continue
+		}
+		count := 0
+		for _, e := range entries {
+			if e.Canonical {
+				count++
+			}
+		}
+		switch {
+		case count == 0:
+			zeroMarked = append(zeroMarked, name)
+		case count > 1:
+			multiMarked = append(multiMarked, name)
+		}
+	}
+
+	if len(zeroMarked) == 0 && len(multiMarked) == 0 {
+		return []point{ok(label + ": all multi-forge repos have exactly one canonical marker")}
+	}
+
+	var pts []point
+	if len(zeroMarked) > 0 {
+		sort.Strings(zeroMarked)
+		pts = append(pts, mustFail(
+			label+": multi-forge repo(s) missing canonical:true (MUST have exactly one)",
+			map[string]any{"names": zeroMarked},
+		))
+	}
+	if len(multiMarked) > 0 {
+		sort.Strings(multiMarked)
+		pts = append(pts, mustFail(
+			label+": multi-forge repo(s) with more than one canonical:true (MUST have exactly one)",
+			map[string]any{"names": multiMarked},
+		))
+	}
+	return pts
 }

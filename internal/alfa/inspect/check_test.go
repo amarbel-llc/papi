@@ -110,6 +110,50 @@ func TestAuthUnknownPoint(t *testing.T) {
 	}
 }
 
+func TestRepoCanonicalChecks(t *testing.T) {
+	single := []papi.Repo{
+		{Name: "foo", Forge: "fj"},
+	}
+	if pts := repoCanonicalChecks(single); hasMustFail(pts) {
+		t.Error("single-entry repo must not require a canonical marker")
+	}
+
+	dualOK := []papi.Repo{
+		{Name: "foo", Forge: "fj", Canonical: true},
+		{Name: "foo", Forge: "gh"},
+	}
+	if pts := repoCanonicalChecks(dualOK); hasMustFail(pts) {
+		t.Error("dual-entry repo with exactly one canonical:true must pass")
+	}
+
+	dualMissing := []papi.Repo{
+		{Name: "foo", Forge: "fj"},
+		{Name: "foo", Forge: "gh"},
+	}
+	pts := repoCanonicalChecks(dualMissing)
+	if !hasMustFail(pts) {
+		t.Error("dual-entry repo with no canonical:true must be a MUST failure")
+	}
+
+	dualDouble := []papi.Repo{
+		{Name: "foo", Forge: "fj", Canonical: true},
+		{Name: "foo", Forge: "gh", Canonical: true},
+	}
+	pts = repoCanonicalChecks(dualDouble)
+	if !hasMustFail(pts) {
+		t.Error("dual-entry repo with two canonical:true must be a MUST failure")
+	}
+
+	mixed := []papi.Repo{
+		{Name: "foo", Forge: "fj", Canonical: true},
+		{Name: "foo", Forge: "gh"},
+		{Name: "bar", Forge: "fj"},
+	}
+	if pts := repoCanonicalChecks(mixed); hasMustFail(pts) {
+		t.Error("foo correctly marked, bar single-entry: must pass")
+	}
+}
+
 func TestRunNonConformantACLLeak(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/papi", func(w http.ResponseWriter, r *http.Request) {

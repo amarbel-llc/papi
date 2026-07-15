@@ -1492,6 +1492,7 @@ type repoView struct {
 	Kind          string `json:"kind,omitempty"`
 	Visibility    string `json:"visibility,omitempty"`
 	DefaultBranch string `json:"default_branch,omitempty"`
+	Canonical     bool   `json:"canonical,omitempty"`
 }
 
 // cloneForge is the slice of a /papi/forges entry needed to synthesize clone urls:
@@ -1729,6 +1730,7 @@ func newReposCmd() *cobra.Command {
 				views = append(views, repoView{
 					Name: r.Name, URL: r.URL, Owner: r.Owner, Forge: r.Forge,
 					Kind: r.Kind, Visibility: r.Visibility, DefaultBranch: r.DefaultBranch,
+					Canonical: r.Canonical,
 				})
 			}
 			enc := json.NewEncoder(out)

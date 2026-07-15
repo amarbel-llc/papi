@@ -412,6 +412,7 @@ type Repo struct {
 	Visibility    string `json:"visibility"`
 	DefaultBranch string `json:"default_branch"`
 	Description   string `json:"description"`
+	Canonical     bool   `json:"canonical,omitempty"`
 }
 
 // Profile is a host-profile entry from the GET /papi/profiles endpoint (RFC-0001

@@ -222,6 +222,28 @@ func TestFilterRecipients(t *testing.T) {
 	}
 }
 
+// TestDecodeReposCanonical verifies the RFC-0001 Amendment 22 canonical field
+// round-trips through DecodeRepos correctly.
+func TestDecodeReposCanonical(t *testing.T) {
+	body := []byte(`{"data":[
+		{"name":"foo","forge":"fj","canonical":true},
+		{"name":"foo","forge":"gh"}
+	],"meta":{"visibility":"public"}}`)
+	repos, err := DecodeRepos(body)
+	if err != nil {
+		t.Fatalf("DecodeRepos: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("got %d repo(s), want 2", len(repos))
+	}
+	if !repos[0].Canonical {
+		t.Error("first entry (fj) should have Canonical=true")
+	}
+	if repos[1].Canonical {
+		t.Error("second entry (gh) should have Canonical=false")
+	}
+}
+
 // TestDecodeEnvelopeStrict pins the no-leniency §4.2 contract: a JSON endpoint's
 // body MUST carry the {data,meta} envelope, so a bare (un-enveloped) body is
 // rejected rather than read at the top level. The prior lenient fallback is what
