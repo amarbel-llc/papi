@@ -289,19 +289,29 @@ func hasKey(m map[string]json.RawMessage, k string) bool {
 // /papi/repos, exactly one entry must carry canonical:true. Zero markers (no
 // declared canonical) or multiple markers for the same name are each a MUST
 // violation.
+//
+// Grouping is by bare NAME, exactly as the amendment's prose says — not by
+// owner/name. A dual-homed repo's owner necessarily differs per forge entry
+// (the owner is the forge-side identity: amarbel-llc on a github
+// read-through, linenisgreat on the forge), so owner-scoped grouping is
+// blind to the very migration case the amendment exists for (papi#55; the
+// owner-scoped key briefly shipped in 7eb7254 and validated nothing).
+// Name-scoping also matches consumers, which key their repo maps by name:
+// two same-name entries are ambiguous to them regardless of owner, so
+// demanding a marker even for genuinely-distinct same-name repos is the
+// disambiguation consumers need, not a false positive.
 func repoCanonicalChecks(repos []papi.Repo) []point {
 	const label = "conformance: /papi/repos canonical marker (§1.1, Amendment 22)"
 
 	type counts struct{ total, canonical int }
 	byName := make(map[string]counts)
 	for _, r := range repos {
-		key := r.Owner + "/" + r.Name
-		c := byName[key]
+		c := byName[r.Name]
 		c.total++
 		if r.Canonical {
 			c.canonical++
 		}
-		byName[key] = c
+		byName[r.Name] = c
 	}
 
 	var multiCount int

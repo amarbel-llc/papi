@@ -126,10 +126,15 @@ different `forge` provenance), EXACTLY ONE entry MUST carry `canonical: true`. A
 server that publishes multiple entries for the same `name` without any `canonical`
 marker, or with more than one `canonical: true` among those entries, is
 non-conformant; `papi validate` MUST flag each such `name` as a MUST violation
-(§4, Amendment 22). A repository `name` with only a single `/papi/repos` entry is
-implicitly canonical and need not carry the marker; its presence is OPTIONAL and
-MUST be accepted by clients. Clients MUST ignore members they do not recognize
-(§1.1).
+(§4, Amendment 22). The grouping is deliberately by bare `name`, not
+`owner`/`name`: a dual-homed repository's `owner` is its forge-side identity and
+typically differs across its entries, and consumers key their repository maps by
+`name` — entries sharing a `name` are therefore ambiguous to consumers regardless
+of `owner`, including genuinely distinct same-name repositories, which likewise
+require exactly one marker (papi#55). A repository `name` with only a single
+`/papi/repos` entry is implicitly canonical and need not carry the marker; its
+presence is OPTIONAL and MUST be accepted by clients. Clients MUST ignore members
+they do not recognize (§1.1).
 
 ### 2. Visibility and ACL Projection
 
@@ -1745,4 +1750,7 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   output) passes the field through so consumers see it. Motivation: consumers
   (linenisgreat/doppelgang#18) were inferring canonicality from enumeration order; the
   2026-07-14 fleet ref-flip mis-rewrote ~34 inputs across 12 repos because of it.
-  Additive and OPTIONAL — no version bump.
+  Additive and OPTIONAL — no version bump. Clarified same-day (papi#55): the
+  grouping is by bare `name`, not `owner`/`name` — a dual-homed repo's `owner`
+  differs per forge entry, so an owner-scoped check cannot see the migration
+  case; the validator briefly shipped owner-scoped and was corrected.

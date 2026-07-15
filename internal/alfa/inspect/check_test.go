@@ -133,13 +133,23 @@ func TestRepoCanonicalChecks(t *testing.T) {
 		t.Error("single-entry repo must produce a skip (no multi-forge repos to validate)")
 	}
 
-	// Same name but different owners: distinct repos, no multi-forge constraint.
+	// Same name from different owners IS the dual-homed shape: owner is the
+	// forge-side identity and necessarily differs per forge entry, so the
+	// amendment's bare-name grouping must demand a marker here (papi#55 —
+	// an owner-scoped key would never see the migration case at all).
 	diffOwners := []papi.Repo{
 		{Owner: "alice", Name: "utils", Forge: "fj"},
 		{Owner: "bob", Name: "utils", Forge: "gh"},
 	}
-	if pts := repoCanonicalChecks(diffOwners); hasMustFail(pts) {
-		t.Error("same name from different owners must not require a canonical marker")
+	if pts := repoCanonicalChecks(diffOwners); !hasMustFail(pts) {
+		t.Error("same name across owners (dual-homed shape) with no canonical:true must be a MUST failure")
+	}
+	diffOwnersMarked := []papi.Repo{
+		{Owner: "alice", Name: "utils", Forge: "fj", Canonical: true},
+		{Owner: "bob", Name: "utils", Forge: "gh"},
+	}
+	if pts := repoCanonicalChecks(diffOwnersMarked); hasMustFail(pts) {
+		t.Error("same name across owners with exactly one canonical:true must pass")
 	}
 
 	dualOK := []papi.Repo{
