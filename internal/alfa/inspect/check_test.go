@@ -110,25 +110,49 @@ func TestAuthUnknownPoint(t *testing.T) {
 	}
 }
 
-func TestRepoCanonicalChecks(t *testing.T) {
-	single := []papi.Repo{
-		{Name: "foo", Forge: "fj"},
+func hasSkip(pts []point) bool {
+	for _, p := range pts {
+		if p.reason != "" {
+			return true
+		}
 	}
-	if pts := repoCanonicalChecks(single); hasMustFail(pts) {
-		t.Error("single-entry repo must not require a canonical marker")
+	return false
+}
+
+func TestRepoCanonicalChecks(t *testing.T) {
+	// No repos at all: nothing to validate → skip, not ok.
+	if pts := repoCanonicalChecks(nil); hasMustFail(pts) || !hasSkip(pts) {
+		t.Error("empty repos must produce a skip, not a MUST failure or a plain ok")
+	}
+
+	// Single-entry per owner/name: no multi-forge constraint → skip.
+	single := []papi.Repo{
+		{Owner: "alice", Name: "foo", Forge: "fj"},
+	}
+	if pts := repoCanonicalChecks(single); hasMustFail(pts) || !hasSkip(pts) {
+		t.Error("single-entry repo must produce a skip (no multi-forge repos to validate)")
+	}
+
+	// Same name but different owners: distinct repos, no multi-forge constraint.
+	diffOwners := []papi.Repo{
+		{Owner: "alice", Name: "utils", Forge: "fj"},
+		{Owner: "bob", Name: "utils", Forge: "gh"},
+	}
+	if pts := repoCanonicalChecks(diffOwners); hasMustFail(pts) {
+		t.Error("same name from different owners must not require a canonical marker")
 	}
 
 	dualOK := []papi.Repo{
-		{Name: "foo", Forge: "fj", Canonical: true},
-		{Name: "foo", Forge: "gh"},
+		{Owner: "alice", Name: "foo", Forge: "fj", Canonical: true},
+		{Owner: "alice", Name: "foo", Forge: "gh"},
 	}
 	if pts := repoCanonicalChecks(dualOK); hasMustFail(pts) {
 		t.Error("dual-entry repo with exactly one canonical:true must pass")
 	}
 
 	dualMissing := []papi.Repo{
-		{Name: "foo", Forge: "fj"},
-		{Name: "foo", Forge: "gh"},
+		{Owner: "alice", Name: "foo", Forge: "fj"},
+		{Owner: "alice", Name: "foo", Forge: "gh"},
 	}
 	pts := repoCanonicalChecks(dualMissing)
 	if !hasMustFail(pts) {
@@ -136,8 +160,8 @@ func TestRepoCanonicalChecks(t *testing.T) {
 	}
 
 	dualDouble := []papi.Repo{
-		{Name: "foo", Forge: "fj", Canonical: true},
-		{Name: "foo", Forge: "gh", Canonical: true},
+		{Owner: "alice", Name: "foo", Forge: "fj", Canonical: true},
+		{Owner: "alice", Name: "foo", Forge: "gh", Canonical: true},
 	}
 	pts = repoCanonicalChecks(dualDouble)
 	if !hasMustFail(pts) {
@@ -145,9 +169,9 @@ func TestRepoCanonicalChecks(t *testing.T) {
 	}
 
 	mixed := []papi.Repo{
-		{Name: "foo", Forge: "fj", Canonical: true},
-		{Name: "foo", Forge: "gh"},
-		{Name: "bar", Forge: "fj"},
+		{Owner: "alice", Name: "foo", Forge: "fj", Canonical: true},
+		{Owner: "alice", Name: "foo", Forge: "gh"},
+		{Owner: "alice", Name: "bar", Forge: "fj"},
 	}
 	if pts := repoCanonicalChecks(mixed); hasMustFail(pts) {
 		t.Error("foo correctly marked, bar single-entry: must pass")

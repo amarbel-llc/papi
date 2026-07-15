@@ -10,33 +10,37 @@ import (
 )
 
 // projectionChecks reconciles a domain's projected views of its repository set
-// (FDR-0011): the authoritative flattened /papi/repos against the /papi/forges clone
-// channels it joins to. It asserts every /papi/repos entry's `forge` resolves to a
-// /papi/forges id (no dangling provenance) and every repo is joinable to a clone
-// channel (no repo silently unreachable — the papi#50 class of drift). These are
-// reported as SHOULD verdicts: the invariants become normative MUSTs only once pinned
-// in an RFC-0001 amendment (FDR-0011), so a violation is surfaced here without tripping
-// the conformance exit code.
+// (FDR-0011) and validates the RFC-0001 Amendment 22 canonical-marker invariant.
+// The FDR-0011 assertions (dangling provenance, unreachable clone channel) are SHOULD
+// verdicts pending an RFC amendment. The canonical-marker check is a MUST. Both share
+// the repos fetch so /papi/repos is only called once per validate run.
 func projectionChecks(ctx context.Context, c *papi.Client) []point {
 	const label = "projections: /papi/repos ⟷ /papi/forges (FDR-0011)"
 
+	repos, _, err := c.Repos(ctx)
+	if err != nil {
+		return []point{
+			skip(label, "GET /papi/repos failed: "+err.Error()),
+			skip("conformance: /papi/repos canonical marker (§1.1, Amendment 22)", "GET /papi/repos failed: "+err.Error()),
+		}
+	}
+
+	canonicalPts := repoCanonicalChecks(repos)
+
+	if len(repos) == 0 {
+		return append([]point{skip(label, "no repositories to reconcile")}, canonicalPts...)
+	}
+
 	forgesResp, err := c.Fetch(ctx, "/papi/forges")
 	if err != nil {
-		return []point{skip(label, "GET /papi/forges failed: "+err.Error())}
+		return append([]point{skip(label, "GET /papi/forges failed: "+err.Error())}, canonicalPts...)
 	}
 	if forgesResp.Status != http.StatusOK {
-		return []point{skip(label, fmt.Sprintf("GET /papi/forges returned HTTP %d", forgesResp.Status))}
+		return append([]point{skip(label, fmt.Sprintf("GET /papi/forges returned HTTP %d", forgesResp.Status))}, canonicalPts...)
 	}
 	forges, err := decodeForgeEntries(forgesResp.Body)
 	if err != nil {
-		return []point{skip(label, "decode /papi/forges: "+err.Error())}
-	}
-	repos, _, err := c.Repos(ctx)
-	if err != nil {
-		return []point{skip(label, "GET /papi/repos failed: "+err.Error())}
-	}
-	if len(repos) == 0 {
-		return []point{skip(label, "no repositories to reconcile")}
+		return append([]point{skip(label, "decode /papi/forges: "+err.Error())}, canonicalPts...)
 	}
 
 	byID := make(map[string]forgeEntry, len(forges))
@@ -70,8 +74,7 @@ func projectionChecks(ctx context.Context, c *papi.Client) []point {
 	} else {
 		pts = append(pts, ok("projections: every /papi/repos entry joins a clone channel (FDR-0011, papi#50)"))
 	}
-	pts = append(pts, repoCanonicalChecks(repos)...)
-	return pts
+	return append(pts, canonicalPts...)
 }
 
 // cloneChannelReachable reports whether a flattened repo can be joined to a git clone

@@ -100,3 +100,54 @@ func TestProjectionUnreachableClone(t *testing.T) {
 		t.Errorf("want the clone-channel verdict:\n%s", descs(pts))
 	}
 }
+
+// TestProjectionCanonicalMissingMarker: a dual-homed repo (same owner/name on two forges)
+// with no canonical:true is a MUST failure from the canonical check, even if the
+// FDR-0011 projection checks pass.
+func TestProjectionCanonicalMissingMarker(t *testing.T) {
+	srv := projectionServer(
+		`[{"id":"fj","kind":"forgejo","base_url":"https://forge.example.com","ssh_clone":"ssh://git@forge.example.com:2222"},
+		  {"id":"gh","kind":"github","base_url":"https://github.com","ssh_clone":"ssh://git@github.com"}]`,
+		`[{"name":"a","owner":"o","forge":"fj","url":"https://forge.example.com/o/a"},
+		  {"name":"a","owner":"o","forge":"gh","url":"https://github.com/o/a"}]`,
+	)
+	defer srv.Close()
+	c, err := papi.NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pts := projectionChecks(context.Background(), c)
+	if !hasMustFail(pts) {
+		t.Fatalf("dual-homed repo without canonical:true must be a MUST failure:\n%s", descs(pts))
+	}
+	if !strings.Contains(descs(pts), "canonical marker") {
+		t.Errorf("want the canonical-marker verdict in output:\n%s", descs(pts))
+	}
+}
+
+// TestProjectionCanonicalSuppressedByForgesFailure: the canonical-marker MUST check must
+// run and emit a result even when /papi/forges is unavailable.
+func TestProjectionCanonicalSuppressedByForgesFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Two entries for the same owner/name with no canonical marker — a MUST violation.
+		io.WriteString(w, `{"data":[
+			{"name":"a","owner":"o","forge":"fj","url":"https://forge.example.com/o/a"},
+			{"name":"a","owner":"o","forge":"gh","url":"https://github.com/o/a"}
+		],"meta":{"type":"repos","visibility":"public"}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c, err := papi.NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pts := projectionChecks(context.Background(), c)
+	if !hasMustFail(pts) {
+		t.Fatalf("canonical MUST violation must be reported even when /papi/forges is down:\n%s", descs(pts))
+	}
+}

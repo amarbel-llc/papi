@@ -295,19 +295,22 @@ func repoCanonicalChecks(repos []papi.Repo) []point {
 	type counts struct{ total, canonical int }
 	byName := make(map[string]counts)
 	for _, r := range repos {
-		c := byName[r.Name]
+		key := r.Owner + "/" + r.Name
+		c := byName[key]
 		c.total++
 		if r.Canonical {
 			c.canonical++
 		}
-		byName[r.Name] = c
+		byName[key] = c
 	}
 
+	var multiCount int
 	var zeroMarked, multiMarked []string
 	for name, c := range byName {
 		if c.total <= 1 {
 			continue
 		}
+		multiCount++
 		switch {
 		case c.canonical == 0:
 			zeroMarked = append(zeroMarked, name)
@@ -316,6 +319,9 @@ func repoCanonicalChecks(repos []papi.Repo) []point {
 		}
 	}
 
+	if multiCount == 0 {
+		return []point{skip(label, "no multi-forge repos to validate")}
+	}
 	if len(zeroMarked) == 0 && len(multiMarked) == 0 {
 		return []point{ok(label + ": all multi-forge repos have exactly one canonical marker")}
 	}
