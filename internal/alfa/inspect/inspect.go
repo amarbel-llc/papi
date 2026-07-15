@@ -61,12 +61,6 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 
 	pts = append(pts, conformanceChecks(ctx, c, disc)...)
 	pts = append(pts, projectionChecks(ctx, c)...)
-	if repos, _, err := c.Repos(ctx); err == nil {
-		pts = append(pts, repoCanonicalChecks(repos)...)
-	} else {
-		pts = append(pts, skip("conformance: /papi/repos canonical marker (§1.1, Amendment 22)",
-			"GET /papi/repos failed: "+err.Error()))
-	}
 	pts = append(pts, unknownSessionPoint(ctx, c))
 	if opts.authed() {
 		pts = append(pts, authenticatedChecks(ctx, c, opts)...)

@@ -292,27 +292,26 @@ func hasKey(m map[string]json.RawMessage, k string) bool {
 func repoCanonicalChecks(repos []papi.Repo) []point {
 	const label = "conformance: /papi/repos canonical marker (§1.1, Amendment 22)"
 
-	// Group entries by name; only names with >1 entry need a canonical marker.
-	byName := make(map[string][]papi.Repo)
+	type counts struct{ total, canonical int }
+	byName := make(map[string]counts)
 	for _, r := range repos {
-		byName[r.Name] = append(byName[r.Name], r)
+		c := byName[r.Name]
+		c.total++
+		if r.Canonical {
+			c.canonical++
+		}
+		byName[r.Name] = c
 	}
 
 	var zeroMarked, multiMarked []string
-	for name, entries := range byName {
-		if len(entries) <= 1 {
+	for name, c := range byName {
+		if c.total <= 1 {
 			continue
 		}
-		count := 0
-		for _, e := range entries {
-			if e.Canonical {
-				count++
-			}
-		}
 		switch {
-		case count == 0:
+		case c.canonical == 0:
 			zeroMarked = append(zeroMarked, name)
-		case count > 1:
+		case c.canonical > 1:
 			multiMarked = append(multiMarked, name)
 		}
 	}

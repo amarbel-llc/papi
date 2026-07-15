@@ -70,6 +70,7 @@ func projectionChecks(ctx context.Context, c *papi.Client) []point {
 	} else {
 		pts = append(pts, ok("projections: every /papi/repos entry joins a clone channel (FDR-0011, papi#50)"))
 	}
+	pts = append(pts, repoCanonicalChecks(repos)...)
 	return pts
 }
 
