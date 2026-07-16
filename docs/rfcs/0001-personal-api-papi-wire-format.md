@@ -298,7 +298,9 @@ shapes are the `data` payload (§5).
 
 The `text/plain` endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`, and
 the OPTIONAL `/papi/bootstrap`) MUST NOT use the envelope; they return a raw body
-with `Content-Type: text/plain`. Clients MUST NOT assume every PAPI response is
+with `Content-Type: text/plain`. The OPTIONAL `/papi/pigpen` (§14), whose
+`Content-Type: text/vnd.pigpen` payload is likewise unenveloped, similarly
+returns a raw, non-JSON body. Clients MUST NOT assume every PAPI response is
 the JSON envelope.
 
 - `/papi/piggy-ids` MUST emit a piggy-ids file: comment lines beginning with `#`,
@@ -1245,6 +1247,76 @@ MUST return a `200` with an empty `data` array (`count: 0`), not a `404`. The
 discovery document (§4.1) MUST list `profiles` in `resources` (absolute URL to
 `/papi/profiles`) only when the public projection of `profiles[]` is non-empty;
 an all-gated `profiles[]` MUST NOT be advertised (§4.1).
+
+### 14. Self-Signed Encryption-Recipient Pigpen Document
+
+A PAPI server MAY additionally serve the operator's visible encryption
+recipients and slot-9A auth ids — the same data `/papi/piggy-ids` (§4.2)
+already emits as plain text — as a **payload-less pigpen document** (piggy
+RFC 0008 §2.2), so a cached or offline copy is tamper-evident independent
+of the host that served it. Like every OPTIONAL feature in this RFC, a
+server that does not implement `/papi/pigpen` is fully conformant; a
+document without it is unchanged for existing clients.
+
+#### 14.1. `GET /papi/pigpen`
+
+When implemented, `GET /papi/pigpen` MUST return the projected visible
+recipients and slot-9A auth ids — identical in content and projection rule
+to `/papi/piggy-ids` (§4.2) — encoded as a `pigpen-v1` payload-less hyphence
+document (piggy RFC 0008 §2.2, §2.3) with `Content-Type: text/vnd.pigpen`.
+Like `/papi/piggy-ids`, this endpoint MUST NOT use the §4.2 JSON envelope.
+
+#### 14.2. Self-signature (RESERVED pending piggy ratification)
+
+A served `/papi/pigpen` document SHOULD carry a self-signature binding the
+document to the same published slot-9A key that signs the JSON document
+(§10): a signature over the document's canonical hyphence bytes (hyphence
+already mandates canonical line ordering in its Encoder Behavior — no
+JCS-equivalent canonicalization step is needed, unlike §10.2's JSON case),
+excluding the signature itself from the signed bytes (strip-self, mirroring
+§10.2 and piggy RFC 0008 §4.6's "as if the value were empty" recipe).
+
+**The exact in-document placement of this signature — which hyphence
+metadata line and lock carries it, and under what markl purpose — is
+piggy's to decide (piggy RFC 0008/0009), not this RFC's.** hyphence RFC
+0001 grants "the latitude ... to the type identified by the `!` line" for
+how existing prefixes are populated within a given type; `pigpen-v1` is
+piggy's type. This section is intentionally non-normative on that point
+until piggy ratifies it, mirroring the posture `docs/rfcs/0002-piggy-mgmt-constraints.md`
+already takes toward piggy-owned protocol decisions.
+
+**"Client" here means whatever entity fetches this HTTP endpoint directly —
+e.g. a resolver such as `papi pigpen resolve` — not necessarily the final
+consumer of the recipient set.** In the pointer/resolver architecture this
+RFC does not otherwise define (piggy's to pin), a consumer like piggy never
+calls this endpoint itself; it invokes a resolver, which fetches
+`/papi/pigpen` and hands back already-resolved bytes. That resolver SHOULD
+pin the signing slot-9A key on first fetch (trust-on-first-use) and verify
+it on every subsequent fetch, exactly as an operator would trust any other
+self-published key in this RFC. This RFC makes no claim about what a
+downstream consumer receiving already-resolved bytes from a resolver does
+or does not re-verify — that is the resolver-dispatch contract's concern,
+not this endpoint's.
+
+#### 14.3. Worked examples
+
+A bare (unsigned) payload-less pigpen document — permitted, since the
+self-signature is SHOULD not MUST:
+
+    ---
+    - piggy-recipient-v1@pivy_ecdh_p256_pub-<blech32>  # primary yubikey (9D)
+    - piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<blech32>
+    ! pigpen-v1
+    ---
+
+A self-signed variant — shown with a placeholder lock, since the exact
+markl purpose is RESERVED per §14.2:
+
+    ---
+    - piggy-recipient-v1@pivy_ecdh_p256_pub-<blech32>  # primary yubikey (9D)
+    - piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<blech32>
+    ! pigpen-v1@<RESERVED-self-signature-markl-id>
+    ---
 
 ## Security Considerations
 
