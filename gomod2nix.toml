@@ -11,6 +11,16 @@ schema = 3
     hash = 'sha256-ZyZNwjoJjDNB3pVJnHXomcQ5EYNOoLVSQu2X1Tj3CCY='
     goVersion = '1.26'
 
+  [mod.'github.com/amarbel-llc/hyphence/go']
+    version = 'v0.2.0'
+    hash = 'sha256-MUI7bEdFr6OMHwzxs/DIjyin+37B4pfs3ICzEWaQwyw='
+    goVersion = '1.26'
+
+  [mod.'github.com/amarbel-llc/purse-first/libs/dewey']
+    version = 'v0.3.2'
+    hash = 'sha256-qCPYqLkjtbqAaCX3nPxP4cGTTjBbub6iIWiOJG8ejWk='
+    goVersion = '1.26'
+
   [mod.'github.com/atotto/clipboard']
     version = 'v0.1.4'
     hash = 'sha256-ZZ7U5X0gWOu8zcjZcWbcpzGOGdycwq0TjTFh/eZHjXk='
@@ -99,6 +109,11 @@ schema = 3
     version = 'v0.0.0-20211004153227-1c3628e74d0f'
     hash = 'sha256-OWSqN1+IoL73rWXWdbbcahZu8n2al90Y3eT5Z0vgHvU='
     goVersion = '1.16'
+
+  [mod.'github.com/google/go-cmp']
+    version = 'v0.7.0'
+    hash = 'sha256-JbxZFBFGCh/Rj5XZ1vG94V2x7c18L8XKB0N9ZD5F2rM='
+    goVersion = '1.21'
 
   [mod.'github.com/gowebpki/jcs']
     version = 'v1.0.1'
@@ -189,7 +204,17 @@ schema = 3
     hash = 'sha256-NzRXMSEk6upeudJvUEPVnw6clJ3d8UdC/vdfANWAc8g='
     goVersion = '1.25.0'
 
+  [mod.'golang.org/x/term']
+    version = 'v0.44.0'
+    hash = 'sha256-nzbvOgvGRbx1qpq1rbk7b6zNsNeNj8mOGoyZLtnzq3w='
+    goVersion = '1.25.0'
+
   [mod.'golang.org/x/text']
     version = 'v0.38.0'
     hash = 'sha256-PzREcn7yzTAJ0WBvyYL/2/r+tfoeKTY/E5HVXi/CJsU='
     goVersion = '1.25.0'
+
+  [mod.'golang.org/x/xerrors']
+    version = 'v0.0.0-20240903120638-7835f813f4da'
+    hash = 'sha256-bE7CcrnAvryNvM26ieJGXqbAtuLwHaGcmtVMsVnksqo='
+    goVersion = '1.18'
