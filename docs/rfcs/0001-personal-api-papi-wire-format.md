@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-07-05
-amendments: 22
+amended: 2026-07-15
+amendments: 23
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -227,6 +227,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/caches`              | projected `caches[]`, JSON                  | projected          |
 | GET    | `/papi/profiles`            | projected `profiles[]`, JSON                | projected          |
 | GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids file (recipients + auth ids) | projected          |
+| GET    | `/papi/pigpen`              | `text/vnd.pigpen` self-signed payload-less pigpen doc (OPTIONAL) | projected          |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
 | GET    | `/papi/bootstrap`           | `text/plain` self-bootstrap shim (OPTIONAL) | no                 |
 | POST   | `/papi/auth/challenge`      | challenge JSON (§5)                         | no                 |
