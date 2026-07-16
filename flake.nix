@@ -4,13 +4,13 @@
   inputs = {
     # conformist provides the linter/formatter multiplexer, its Nix module
     # library (conformist.lib), and the eng-convention presets.
-    conformist.url = "git+https://github.com/amarbel-llc/conformist.git";
+    conformist.url = "git+https://code.linenisgreat.com/conformist.git";
     # igloo's legacyPackages carries the gomod2nix overlay's buildGoApplication /
     # mkGoEnv and the shared pkgs.go; the fork's buildGoApplication auto-injects
     # `-X main.version` from version.env and `-X main.commit` from src.rev
     # (eng-versioning(7)). Follow conformist's nixpkgs-master so the closure is
     # shared rather than duplicated.
-    igloo.url = "git+https://github.com/amarbel-llc/igloo.git";
+    igloo.url = "git+https://code.linenisgreat.com/igloo.git";
     igloo.inputs.nixpkgs-master.follows = "nixpkgs";
     nixpkgs.follows = "conformist/nixpkgs-master";
     nixpkgs-master.url = "github:NixOS/nixpkgs/567a49d1913ce81ac6e9582e3553dd90a955875f";
@@ -21,7 +21,7 @@
     # is on the devShell PATH for `just codemod-reposition`; its nix package
     # also installs dagnabit(1). Follow the shared inputs to collapse the lock.
     purse-first = {
-      url = "git+https://github.com/amarbel-llc/purse-first.git";
+      url = "git+https://code.linenisgreat.com/purse-first.git";
       inputs.igloo.follows = "igloo";
       inputs.nixpkgs-master.follows = "nixpkgs";
       inputs.utils.follows = "utils";
