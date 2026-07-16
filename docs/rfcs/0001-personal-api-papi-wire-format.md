@@ -249,7 +249,8 @@ unauthenticated request, the registered principal for an authenticated one.
   non-empty, §7) `/papi/templates`, (when its public projection is non-empty,
   §9) `/papi/proofs`, (when its public projection is non-empty, §11)
   `/papi/caches`, (when its public projection is non-empty, §13)
-  `/papi/profiles`, (when the document serves a self-bootstrap shim, §4.2)
+  `/papi/profiles`, (when its public projection is non-empty, §14)
+  `/papi/pigpen`, (when the document serves a self-bootstrap shim, §4.2)
   `/papi/bootstrap`, and
 - `auth` — `{scheme, challenge, response, present_session_as}`, where
 `challenge`/`response` are absolute URLs and `scheme` is the §5 scheme the server
@@ -266,13 +267,14 @@ discovery response without first fetching `/papi`.
 The discovery document MUST always be public (it is not projected).
 
 Because discovery is always public, a resource link for a **projectable** section
-— `templates` (§7), `proofs` (§9), `caches` (§11), `profiles` (§13), and
-`co_location` (§9.6) where a server serves it — MUST be listed in `resources` only
-when that section's **public projection** (the anonymous principal's view, §4.2) is
-non-empty. A section all of whose entries are gated MUST NOT be advertised, and its
-empty public projection SHOULD be omitted from the anonymous `GET /papi` rather than
-served as an empty array, so the always-public discovery surface never reveals the
-existence of a section the projection hides. The `signatures` member (§10) is
+— `templates` (§7), `proofs` (§9), `caches` (§11), `profiles` (§13), `pigpen`
+(§14), and `co_location` (§9.6) where a server serves it — MUST be listed in
+`resources` only when that section's **public projection** (the anonymous
+principal's view, §4.2) is non-empty. A section all of whose entries are gated
+MUST NOT be advertised, and its empty public projection SHOULD be omitted from
+the anonymous `GET /papi` rather than served as an empty array, so the
+always-public discovery surface never reveals the existence of a section the
+projection hides. The `signatures` member (§10) is
 exempt: it binds the public document and a §10.3 verifier reads it from the
 discovery response, so it is exposed whenever the document carries it.
 
