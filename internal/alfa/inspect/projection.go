@@ -11,41 +11,47 @@ import (
 	"github.com/amarbel-llc/papi/internal/0/papi"
 )
 
-// projectionChecks reconciles a domain's projected views of its repository set
-// (FDR-0011) and validates the RFC-0001 Amendment 22 canonical-marker invariant
-// and the Amendment 24 flake_url fetchability check. The FDR-0011 assertions
-// (dangling provenance, unreachable clone channel) are SHOULD verdicts pending an
-// RFC amendment. The canonical-marker check is a MUST. All checks share the repos
-// fetch so /papi/repos is only called once per validate run.
+// projectionChecks reconciles a domain's projected views of its repository set.
+// Three independent concerns share a single /papi/repos fetch: the FDR-0011
+// dangling-provenance / clone-channel check, the Amendment 22 canonical-marker
+// invariant, and the Amendment 24 flake_url fetchability check. Each concern
+// handles its own early-exit; all three are merged at the end.
 func projectionChecks(ctx context.Context, c *papi.Client) []point {
-	const label = "projections: /papi/repos ⟷ /papi/forges (FDR-0011)"
-
 	repos, _, err := c.Repos(ctx)
 	if err != nil {
+		reason := "GET /papi/repos failed: " + err.Error()
 		return []point{
-			skip(label, "GET /papi/repos failed: "+err.Error()),
-			skip("conformance: /papi/repos canonical marker (§1.1, Amendment 22)", "GET /papi/repos failed: "+err.Error()),
-			skip("conformance: /papi/repos flake_url fetchability (Amendment 24)", "GET /papi/repos failed: "+err.Error()),
+			skip("projections: /papi/repos ⟷ /papi/forges (FDR-0011)", reason),
+			skip("conformance: /papi/repos canonical marker (§1.1, Amendment 22)", reason),
+			skip("conformance: /papi/repos flake_url fetchability (Amendment 24)", reason),
 		}
 	}
-
+	fdrPts := fdr0011Points(ctx, c, repos)
 	canonicalPts := repoCanonicalChecks(repos)
 	flakePts := flakeURLChecks(ctx, c, repos)
+	return append(append(fdrPts, canonicalPts...), flakePts...)
+}
+
+// fdr0011Points checks that every /papi/repos entry's forge resolves to a
+// /papi/forges id and that every entry joins a clone channel (FDR-0011). Returns
+// a single skip when repos is empty or forges cannot be fetched.
+func fdr0011Points(ctx context.Context, c *papi.Client, repos []papi.Repo) []point {
+	const label = "projections: /papi/repos ⟷ /papi/forges (FDR-0011)"
 
 	if len(repos) == 0 {
-		return append(append([]point{skip(label, "no repositories to reconcile")}, canonicalPts...), flakePts...)
+		return []point{skip(label, "no repositories to reconcile")}
 	}
 
 	forgesResp, err := c.Fetch(ctx, "/papi/forges")
 	if err != nil {
-		return append(append([]point{skip(label, "GET /papi/forges failed: "+err.Error())}, canonicalPts...), flakePts...)
+		return []point{skip(label, "GET /papi/forges failed: "+err.Error())}
 	}
 	if forgesResp.Status != http.StatusOK {
-		return append(append([]point{skip(label, fmt.Sprintf("GET /papi/forges returned HTTP %d", forgesResp.Status))}, canonicalPts...), flakePts...)
+		return []point{skip(label, fmt.Sprintf("GET /papi/forges returned HTTP %d", forgesResp.Status))}
 	}
 	forges, err := decodeForgeEntries(forgesResp.Body)
 	if err != nil {
-		return append(append([]point{skip(label, "decode /papi/forges: "+err.Error())}, canonicalPts...), flakePts...)
+		return []point{skip(label, "decode /papi/forges: "+err.Error())}
 	}
 
 	byID := make(map[string]forgeEntry, len(forges))
@@ -79,7 +85,7 @@ func projectionChecks(ctx context.Context, c *papi.Client) []point {
 	} else {
 		pts = append(pts, ok("projections: every /papi/repos entry joins a clone channel (FDR-0011, papi#50)"))
 	}
-	return append(append(pts, canonicalPts...), flakePts...)
+	return pts
 }
 
 // flakeURLChecks validates the Amendment 24 flake_url fetchability contract on
@@ -88,8 +94,6 @@ func projectionChecks(ctx context.Context, c *papi.Client) []point {
 // Link rel="immutable" header whose target is itself anonymously fetchable. This
 // check makes outbound HTTP requests; on network failure it degrades to a skip.
 func flakeURLChecks(ctx context.Context, c *papi.Client, repos []papi.Repo) []point {
-	const skipLabel = "conformance: /papi/repos flake_url fetchability (Amendment 24)"
-
 	entries := canonicalRepoEntries(repos)
 	var pts []point
 	for _, r := range entries {
@@ -99,14 +103,15 @@ func flakeURLChecks(ctx context.Context, c *papi.Client, repos []papi.Repo) []po
 		pts = append(pts, checkFlakeURL(ctx, c, r)...)
 	}
 	if len(pts) == 0 {
-		return []point{skip(skipLabel, "no canonical entries declare flake_url")}
+		return []point{skip("conformance: /papi/repos flake_url fetchability (Amendment 24)", "no canonical entries declare flake_url")}
 	}
 	return pts
 }
 
 // canonicalRepoEntries returns the repos that should carry flake_url: entries
 // with canonical:true, plus all entries for repos that appear only once by bare
-// name (single-entry repos are implicitly canonical per Amendment 22).
+// name (single-entry repos are implicitly canonical per Amendment 22). The
+// bare-name grouping mirrors repoCanonicalChecks in check.go — keep them in sync.
 func canonicalRepoEntries(repos []papi.Repo) []papi.Repo {
 	nameCount := make(map[string]int, len(repos))
 	for _, r := range repos {
@@ -126,28 +131,20 @@ func canonicalRepoEntries(repos []papi.Repo) []papi.Repo {
 func checkFlakeURL(ctx context.Context, c *papi.Client, r papi.Repo) []point {
 	label := fmt.Sprintf("conformance: %s flake_url %q (Amendment 24)", r.Name, r.FlakeURL)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.FlakeURL, nil)
-	if err != nil {
-		return []point{skip(label, "invalid URL: "+err.Error())}
+	status, linkHeaders, skipReason := fetchExternalURL(ctx, c, r.FlakeURL)
+	if skipReason != "" {
+		return []point{skip(label, skipReason)}
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return []point{skip(label, "network unavailable: "+err.Error())}
-	}
-	// Drain enough to release the connection; we only need status and headers.
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	_ = resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		return []point{mustFail(
 			label+": MUST be anonymously fetchable (HTTP 200)",
-			map[string]any{"flake_url": r.FlakeURL, "status": resp.StatusCode},
+			map[string]any{"flake_url": r.FlakeURL, "status": status},
 		)}
 	}
 
 	pts := []point{ok(label + ": anonymously fetchable (HTTP 200)")}
 
-	immURL := parseLinkImmutable(resp.Header["Link"])
+	immURL := parseLinkImmutable(linkHeaders)
 	if immURL == "" {
 		pts = append(pts, shouldFail(
 			label+`: SHOULD carry Link rel="immutable" header`,
@@ -156,7 +153,6 @@ func checkFlakeURL(ctx context.Context, c *papi.Client, r papi.Repo) []point {
 		return pts
 	}
 	pts = append(pts, ok(fmt.Sprintf("%s: carries Link rel=%q → %q", label, "immutable", immURL)))
-
 	pts = append(pts, checkImmutableTarget(ctx, c, label, immURL))
 	return pts
 }
@@ -165,24 +161,35 @@ func checkFlakeURL(ctx context.Context, c *papi.Client, r papi.Repo) []point {
 // itself anonymously fetchable (HTTP 200). A SHOULD verdict — the immutable
 // pin is optional but when present the fixed-revision archive must exist.
 func checkImmutableTarget(ctx context.Context, c *papi.Client, label, immURL string) point {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, immURL, nil)
-	if err != nil {
-		return skip(label+": Link immutable target fetchable", "invalid URL: "+err.Error())
+	status, _, skipReason := fetchExternalURL(ctx, c, immURL)
+	if skipReason != "" {
+		return skip(label+": Link immutable target fetchable", skipReason)
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return skip(label+": Link immutable target fetchable", "network unavailable: "+err.Error())
-	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
-	_ = resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
+	if status != http.StatusOK {
 		return shouldFail(
 			label+": Link immutable target SHOULD be anonymously fetchable (HTTP 200)",
-			map[string]any{"immutable": immURL, "status": resp.StatusCode},
+			map[string]any{"immutable": immURL, "status": status},
 		)
 	}
 	return ok(fmt.Sprintf("%s: Link immutable target %q fetchable (HTTP 200)", label, immURL))
+}
+
+// fetchExternalURL GETs an arbitrary URL using the papi client's HTTP transport,
+// drains the body (to release the connection), and returns the status code and
+// Link response headers. On an invalid URL or network error, returns a non-empty
+// skipReason for the caller to emit a skip point instead of a verdict.
+func fetchExternalURL(ctx context.Context, c *papi.Client, rawURL string) (status int, linkHeaders []string, skipReason string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return 0, nil, "invalid URL: " + err.Error()
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return 0, nil, "network unavailable: " + err.Error()
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	_ = resp.Body.Close()
+	return resp.StatusCode, resp.Header["Link"], ""
 }
 
 // parseLinkImmutable extracts the first target URL from Link header values
