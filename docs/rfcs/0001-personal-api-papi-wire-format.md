@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-07-15
-amendments: 23
+amended: 2026-07-16
+amendments: 24
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface
@@ -1837,3 +1837,23 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   placement is left RESERVED pending piggy RFC 0008/0009 ratification — this
   RFC states the requirement, not the wire bytes. Additive and OPTIONAL — no
   version bump. papi#54.
+- **2026-07-16, Amendment 24 — `/papi/repos` `flake_url` member (§1.1).** Added
+  the OPTIONAL string member `flake_url` to each `/papi/repos` entry: when
+  present, it is the URL a nix-flake consumer passes VERBATIM as the input ref
+  — the branch-archive tarball form (e.g.
+  `https://code.linenisgreat.com/crap/archive/master.tar.gz`), so
+  `nix flake update` tracks the branch while the archive's
+  `Link rel="immutable"` header does the pinning to a fixed revision.
+  `url` remains the published web URL and is unchanged by this amendment. A
+  declared `flake_url` MUST be anonymously fetchable (HTTP 200, no auth); it
+  SHOULD also respond with a `Link rel="immutable"` header whose target is
+  itself anonymously fetchable. The declared value is used verbatim — no
+  derivation from `url` or `default_branch` — so the server's intent is
+  unambiguous even when the vanity/forge URL forms would yield the same result:
+  **declared beats derived**. `papi validate` checks fetchability on canonical
+  entries (i.e. those carrying `canonical: true` per Amendment 22, or
+  single-entry repos that are implicitly canonical); the Link immutable check
+  degrades to a skip rather than a hard error when the network is unavailable.
+  `papi repos` JSON output passes the field through (`omitempty`) so consumers
+  such as doppelgang can use it verbatim. Additive and OPTIONAL — no version
+  bump. papi#56.

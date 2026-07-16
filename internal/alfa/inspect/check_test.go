@@ -223,3 +223,153 @@ func TestRunNonConformantACLLeak(t *testing.T) {
 		t.Errorf("acl-leak HARD FAIL not reported in the stream:\n%s", buf.String())
 	}
 }
+
+func TestParseLinkImmutable(t *testing.T) {
+	cases := []struct {
+		headers []string
+		want    string
+	}{
+		{nil, ""},
+		{[]string{""}, ""},
+		{[]string{`<https://example.com/a.tar.gz>; rel="immutable"`}, "https://example.com/a.tar.gz"},
+		{[]string{`<https://example.com/a.tar.gz>; rel=immutable`}, "https://example.com/a.tar.gz"},
+		{[]string{`<https://example.com/a.tar.gz>; rel="prefetch"`}, ""},
+		// Multiple entries in one header: pick the immutable one.
+		{
+			[]string{`<https://example.com/latest.tar.gz>; rel="latest", <https://example.com/pin.tar.gz>; rel="immutable"`},
+			"https://example.com/pin.tar.gz",
+		},
+		// Multiple Link headers: find it in the second.
+		{
+			[]string{`<https://example.com/latest.tar.gz>; rel="latest"`, `<https://example.com/pin.tar.gz>; rel="immutable"`},
+			"https://example.com/pin.tar.gz",
+		},
+	}
+	for _, c := range cases {
+		got := parseLinkImmutable(c.headers)
+		if got != c.want {
+			t.Errorf("parseLinkImmutable(%v) = %q, want %q", c.headers, got, c.want)
+		}
+	}
+}
+
+func TestCanonicalRepoEntries(t *testing.T) {
+	// Single-entry repo: implicitly canonical.
+	repos := []papi.Repo{{Name: "foo", Owner: "alice", Forge: "fj"}}
+	got := canonicalRepoEntries(repos)
+	if len(got) != 1 || got[0].Name != "foo" {
+		t.Errorf("single-entry repo not included: %v", got)
+	}
+
+	// Multi-entry: only the one with canonical:true is included.
+	multi := []papi.Repo{
+		{Name: "bar", Owner: "alice", Forge: "fj", Canonical: true},
+		{Name: "bar", Owner: "bob", Forge: "gh"},
+	}
+	got = canonicalRepoEntries(multi)
+	if len(got) != 1 || !got[0].Canonical {
+		t.Errorf("multi-entry: expected only canonical entry, got %v", got)
+	}
+
+	// Multi-entry with no canonical marker: no entries returned.
+	none := []papi.Repo{
+		{Name: "baz", Owner: "alice", Forge: "fj"},
+		{Name: "baz", Owner: "bob", Forge: "gh"},
+	}
+	if got := canonicalRepoEntries(none); len(got) != 0 {
+		t.Errorf("multi-entry with no canonical: expected empty, got %v", got)
+	}
+}
+
+func TestFlakeURLChecks(t *testing.T) {
+	// Stub tarball server: /good.tar.gz returns 200 + Link immutable pointing to
+	// /pinned.tar.gz; /noimm.tar.gz returns 200 with no Link header;
+	// /missing.tar.gz returns 404; /pinned.tar.gz returns 200.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/good.tar.gz":
+			pinURL := "http://" + r.Host + "/pinned.tar.gz"
+			w.Header().Set("Link", fmt.Sprintf(`<%s>; rel="immutable"`, pinURL))
+			w.WriteHeader(http.StatusOK)
+		case "/noimm.tar.gz":
+			w.WriteHeader(http.StatusOK)
+		case "/pinned.tar.gz":
+			w.WriteHeader(http.StatusOK)
+		case "/missing.tar.gz":
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := papi.NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	t.Run("no flake_url", func(t *testing.T) {
+		repos := []papi.Repo{{Name: "foo", Owner: "alice", Forge: "fj"}}
+		pts := flakeURLChecks(ctx, c, repos)
+		if !hasSkip(pts) || hasMustFail(pts) {
+			t.Error("no flake_url should produce a skip, not a failure")
+		}
+	})
+
+	t.Run("non-canonical multi-entry skipped", func(t *testing.T) {
+		// Two entries for "bar", neither canonical — no canonical entry to check.
+		repos := []papi.Repo{
+			{Name: "bar", Owner: "alice", Forge: "fj", FlakeURL: srv.URL + "/missing.tar.gz"},
+			{Name: "bar", Owner: "bob", Forge: "gh", FlakeURL: srv.URL + "/good.tar.gz"},
+		}
+		pts := flakeURLChecks(ctx, c, repos)
+		if !hasSkip(pts) || hasMustFail(pts) {
+			t.Error("non-canonical multi-entry with flake_url should skip, not MUST-fail")
+		}
+	})
+
+	t.Run("fetchable with Link immutable", func(t *testing.T) {
+		repos := []papi.Repo{{Name: "foo", Owner: "alice", Forge: "fj", FlakeURL: srv.URL + "/good.tar.gz"}}
+		pts := flakeURLChecks(ctx, c, repos)
+		if hasMustFail(pts) || hasSkip(pts) {
+			t.Errorf("good flake_url with Link immutable should pass: %+v", pts)
+		}
+	})
+
+	t.Run("fetchable without Link immutable is shouldFail", func(t *testing.T) {
+		repos := []papi.Repo{{Name: "foo", Owner: "alice", Forge: "fj", FlakeURL: srv.URL + "/noimm.tar.gz"}}
+		pts := flakeURLChecks(ctx, c, repos)
+		if hasMustFail(pts) {
+			t.Error("missing Link immutable should be SHOULD-fail, not MUST-fail")
+		}
+		hasShouldFail := false
+		for _, p := range pts {
+			if !p.ok && !p.must && p.reason == "" {
+				hasShouldFail = true
+			}
+		}
+		if !hasShouldFail {
+			t.Errorf("missing Link immutable header should produce a shouldFail: %+v", pts)
+		}
+	})
+
+	t.Run("non-200 is mustFail", func(t *testing.T) {
+		repos := []papi.Repo{{Name: "foo", Owner: "alice", Forge: "fj", FlakeURL: srv.URL + "/missing.tar.gz"}}
+		pts := flakeURLChecks(ctx, c, repos)
+		if !hasMustFail(pts) {
+			t.Error("non-200 flake_url should produce a MUST-fail")
+		}
+	})
+
+	t.Run("canonical entry in dual-homed repo is checked", func(t *testing.T) {
+		repos := []papi.Repo{
+			{Name: "bar", Owner: "alice", Forge: "fj", Canonical: true, FlakeURL: srv.URL + "/good.tar.gz"},
+			{Name: "bar", Owner: "bob", Forge: "gh"},
+		}
+		pts := flakeURLChecks(ctx, c, repos)
+		if hasMustFail(pts) || hasSkip(pts) {
+			t.Errorf("canonical entry with good flake_url should pass: %+v", pts)
+		}
+	})
+}
