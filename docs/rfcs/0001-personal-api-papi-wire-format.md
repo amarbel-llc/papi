@@ -1248,7 +1248,7 @@ discovery document (§4.1) MUST list `profiles` in `resources` (absolute URL to
 `/papi/profiles`) only when the public projection of `profiles[]` is non-empty;
 an all-gated `profiles[]` MUST NOT be advertised (§4.1).
 
-### 14. Self-Signed Encryption-Recipient Pigpen Document
+### 14. Self-Signed Pigpen Document
 
 A PAPI server MAY additionally serve the operator's visible encryption
 recipients and slot-9A auth ids — the same data `/papi/piggy-ids` (§4.2)
@@ -1829,3 +1829,11 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   grouping is by bare `name`, not `owner`/`name` — a dual-homed repo's `owner`
   differs per forge entry, so an owner-scoped check cannot see the migration
   case; the validator briefly shipped owner-scoped and was corrected.
+- **2026-07-15, Amendment 23 — self-signed pigpen document endpoint.** Added
+  the OPTIONAL `GET /papi/pigpen` endpoint (§14): the same visible
+  recipients and slot-9A auth ids `/papi/piggy-ids` already serves, encoded
+  as a `pigpen-v1` payload-less hyphence document (piggy RFC 0008), so a
+  cached/offline copy is tamper-evident. The in-document self-signature
+  placement is left RESERVED pending piggy RFC 0008/0009 ratification — this
+  RFC states the requirement, not the wire bytes. Additive and OPTIONAL — no
+  version bump. papi#54.
