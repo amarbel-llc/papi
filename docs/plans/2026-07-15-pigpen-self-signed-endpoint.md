@@ -127,10 +127,18 @@ piggy's type. This section is intentionally non-normative on that point
 until piggy ratifies it, mirroring the posture `docs/rfcs/0002-piggy-mgmt-constraints.md`
 already takes toward piggy-owned protocol decisions.
 
-A client verifying a fetched `/papi/pigpen` document SHOULD pin the signing
-slot-9A key on first fetch (trust-on-first-use) and verify it on every
-subsequent fetch, exactly as an operator would trust any other
-self-published key in this RFC.
+**"Client" here means whatever entity fetches this HTTP endpoint directly —
+e.g. a resolver such as `papi pigpen resolve` — not necessarily the final
+consumer of the recipient set.** In the pointer/resolver architecture this
+RFC does not otherwise define (piggy's to pin), a consumer like piggy never
+calls this endpoint itself; it invokes a resolver, which fetches
+`/papi/pigpen` and hands back already-resolved bytes. That resolver SHOULD
+pin the signing slot-9A key on first fetch (trust-on-first-use) and verify
+it on every subsequent fetch, exactly as an operator would trust any other
+self-published key in this RFC. This RFC makes no claim about what a
+downstream consumer receiving already-resolved bytes from a resolver does
+or does not re-verify — that is the resolver-dispatch contract's concern,
+not this endpoint's.
 
 #### 14.3. Worked examples
 
