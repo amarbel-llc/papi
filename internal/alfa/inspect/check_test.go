@@ -234,6 +234,8 @@ func TestParseLinkImmutable(t *testing.T) {
 		{[]string{`<https://example.com/a.tar.gz>; rel="immutable"`}, "https://example.com/a.tar.gz"},
 		{[]string{`<https://example.com/a.tar.gz>; rel=immutable`}, "https://example.com/a.tar.gz"},
 		{[]string{`<https://example.com/a.tar.gz>; rel="prefetch"`}, ""},
+		// Unquoted rel=immutable-archive must NOT match.
+		{[]string{`<https://example.com/a.tar.gz>; rel=immutable-archive`}, ""},
 		// Multiple entries in one header: pick the immutable one.
 		{
 			[]string{`<https://example.com/latest.tar.gz>; rel="latest", <https://example.com/pin.tar.gz>; rel="immutable"`},

@@ -205,8 +205,16 @@ func parseLinkImmutable(linkHeaders []string) string {
 			}
 			target := entry[1:end]
 			rest := strings.ToLower(entry[end+1:])
-			if strings.Contains(rest, `rel="immutable"`) || strings.Contains(rest, "rel=immutable") {
+			if strings.Contains(rest, `rel="immutable"`) {
 				return target
+			}
+			// Unquoted form: rel=immutable must not be followed by more word characters
+			// (e.g. rel=immutable-archive must not match).
+			if idx := strings.Index(rest, "rel=immutable"); idx >= 0 {
+				after := rest[idx+len("rel=immutable"):]
+				if after == "" || after[0] == ';' || after[0] == ' ' || after[0] == '\t' {
+					return target
+				}
 			}
 		}
 	}
