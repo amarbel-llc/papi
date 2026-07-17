@@ -389,7 +389,7 @@ tag $message:
     git tag -v "$tag"
 
 # Full release from master (eng-versioning(7)): changelog -> idempotent
-# bump+commit -> signed tag -> gh release.
+# bump+commit -> signed tag -> fj release.
 [group("maintenance")]
 release new_version:
     #!/usr/bin/env bash
@@ -416,4 +416,4 @@ release new_version:
         gum log --level info "version.env already at {{new_version}}; skipping bump/commit"
     fi
     just tag "$msg"
-    gh release create "v{{new_version}}" --title "$header" --notes "$msg"
+    fj release create "$header" --tag "v{{new_version}}" --body "$msg"
