@@ -15,6 +15,7 @@ package inspect
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -125,6 +126,127 @@ func pigpenStripSelfBytes(lines []hyphence.MetadataLine) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
+// Sentinel errors returned by verifyPigpenSelfSignature, letting callers
+// (pigpenSignaturePoints below, and later ResolvePigpen, papi#54 Task C2)
+// branch on which trust-verdict class occurred via errors.Is/errors.As
+// instead of parsing error strings. Each corresponds to one of §14.2's
+// distinguishable outcomes short of a valid signature.
+var (
+	// errPigpenUnsigned: no lock on the `! pigpen-v1` type line at all. The
+	// self-signature is SHOULD, not MUST (RFC-0001 §14.2), so on its own this
+	// is never a failure.
+	errPigpenUnsigned = errors.New("pigpen: no self-signature lock on the `! pigpen-v1` line")
+
+	// errPigpenLockMalformed: the lock is present but doesn't parse as the
+	// expected papi-pigpen-self-sig-v1@ecdsa_p256_sig markl-id (papi's
+	// provisional, piggy-unratified scheme) — unverifiable, not a failure.
+	errPigpenLockMalformed = errors.New("pigpen: lock is not a " + purposePigpenSelfSig + "@ecdsa_p256_sig markl-id")
+
+	// errPigpenNoAuthKey: no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line in
+	// the document to verify the lock against — unverifiable, not a failure.
+	errPigpenNoAuthKey = errors.New("pigpen: no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line to verify the lock against")
+
+	// errPigpenKeyNotPublished: the signing key is present in-document but
+	// isn't advertised on /papi/piggy-ids — unverifiable (falls back to
+	// unsigned), not a failure.
+	errPigpenKeyNotPublished = errors.New("pigpen: signing key is not published (piggy-ids)")
+
+	// errPigpenSigInvalid: the ECDSA verification itself returned false — a
+	// MUST failure (signed-but-invalid).
+	errPigpenSigInvalid = errors.New("pigpen: signature invalid")
+)
+
+// errPigpenKeyMalformed wraps a p256FromCompressed decode failure: the
+// published key point itself doesn't decode to a valid P-256 public key.
+// Reporting-wise this belongs to the same "signed-but-invalid" MUST-failure
+// class as errPigpenSigInvalid (a key was found and published, but
+// verification still can't succeed), but it's kept as its own error type
+// (rather than folding into errPigpenSigInvalid) so the caller can recover
+// the underlying decode error via Unwrap for its diagnostic map, exactly as
+// the pre-refactor inline code did.
+type errPigpenKeyMalformed struct{ err error }
+
+func (e *errPigpenKeyMalformed) Error() string {
+	return "pigpen: signing key point malformed: " + e.err.Error()
+}
+
+func (e *errPigpenKeyMalformed) Unwrap() error { return e.err }
+
+// errPigpenStripBytes wraps a pigpenStripSelfBytes failure: reconstructing
+// the canonicalized strip-self signing input from the parsed lines failed.
+// This is an internal encoding failure, not a trust verdict about the
+// document (it doesn't fit "unsigned", "unverifiable", or "invalid" — the
+// document may well be validly signed, hyphence just couldn't re-encode it),
+// so it gets its own error type rather than folding into
+// errPigpenLockMalformed; the pre-refactor code likewise reported it under
+// the bare label, distinct from the "unverifiable" and "unsigned" skips.
+type errPigpenStripBytes struct{ err error }
+
+func (e *errPigpenStripBytes) Error() string {
+	return "pigpen: reconstruct strip-self bytes: " + e.err.Error()
+}
+
+func (e *errPigpenStripBytes) Unwrap() error { return e.err }
+
+// verifyPigpenSelfSignature performs the trust-critical core of §14.2
+// self-signature verification (papi#54): parse the lock, locate and check
+// publication of the signing key, and run the ECDSA verification — from
+// "parse the lock" through "ecdsa verify". It makes no HTTP calls itself
+// (the caller supplies already-parsed lines), so it's reusable by both
+// `papi validate` (pigpenSignaturePoints) and a future resolver
+// (ResolvePigpen, Task C2) without duplicating the crypto-critical logic.
+//
+// fetchAuthIDs is called at most once, and only once the lock has parsed and
+// an auth-key line has been found — mirroring the pre-refactor inline code's
+// call timing exactly. This matters: /papi/piggy-ids is a live network fetch
+// (fetchPiggyAuthIDs), and the common case §14.2 explicitly expects — a
+// present-but-unsigned document, or a document with no lock/auth-key line at
+// all — must resolve without ever touching the network. Callers typically
+// pass a closure wrapping fetchPiggyAuthIDs; tests can pass one returning a
+// static slice with no server involved.
+//
+// On success it returns the signing key's markl-id and a nil error; on any
+// of the distinguishable failure/skip outcomes it returns a sentinel or
+// wrapped error from the errPigpen* family above (see each for what it
+// means), along with the signing key's markl-id when one was found before
+// the failure occurred.
+func verifyPigpenSelfSignature(lines []hyphence.MetadataLine, fetchAuthIDs func() []string) (keyID string, err error) {
+	lock, hasLock := extractPigpenTypeLock(lines)
+	if !hasLock {
+		return "", errPigpenUnsigned
+	}
+
+	sigID, err := markl.Parse(lock)
+	if err != nil || sigID.Purpose != purposePigpenSelfSig || sigID.Format != markl.FormatEcdsaP256Sig {
+		return "", errPigpenLockMalformed
+	}
+
+	keyID, keyPoint, hasKey := findPigpenAuthKey(lines)
+	if !hasKey {
+		return "", errPigpenNoAuthKey
+	}
+
+	if !keyPublishedMarkl(keyID, keyPoint, nil, fetchAuthIDs()) {
+		return keyID, errPigpenKeyNotPublished
+	}
+
+	pub, perr := p256FromCompressed(keyPoint)
+	if perr != nil {
+		return keyID, &errPigpenKeyMalformed{err: perr}
+	}
+
+	input, serr := pigpenStripSelfBytes(lines)
+	if serr != nil {
+		return keyID, &errPigpenStripBytes{err: serr}
+	}
+
+	if !ecdsaVerifyRaw(pub, input, sigID.Payload) {
+		return keyID, errPigpenSigInvalid
+	}
+
+	return keyID, nil
+}
+
 // pigpenSignaturePoints verifies the /papi/pigpen document's self-signature
 // (RFC-0001 §14.2, papi#54) against papi's PROVISIONAL, piggy-unratified
 // scheme (the "papi-pigpen-self-sig-v1" purpose is papi's own placeholder —
@@ -139,6 +261,12 @@ func pigpenStripSelfBytes(lines []hyphence.MetadataLine) ([]byte, error) {
 // self-signature is SHOULD, not MUST) is a skip. Only a present, well-formed,
 // published-key lock that fails cryptographic verification is a MUST
 // failure — mirroring signaturePoints' signed-but-invalid handling.
+//
+// The fetch, status-check, and metadata parse stay here (I/O, not
+// crypto-critical); everything from "parse the lock" through "ecdsa verify"
+// is delegated to verifyPigpenSelfSignature, whose returned error is mapped
+// back to the exact skip/mustFail/ok points this function has always
+// produced.
 func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
 	const label = "pigpen: §14.2 self-signature (experimental, provisional scheme, papi#54)"
 
@@ -158,43 +286,39 @@ func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
 		return []point{skip(label, "parse hyphence metadata: "+err.Error())}
 	}
 
-	lock, hasLock := extractPigpenTypeLock(lines)
-	if !hasLock {
+	keyID, verr := verifyPigpenSelfSignature(lines, func() []string {
+		return fetchPiggyAuthIDs(ctx, c)
+	})
+
+	var keyMalformed *errPigpenKeyMalformed
+	var stripBytes *errPigpenStripBytes
+	switch {
+	case verr == nil:
+		return []point{ok(label + ": signed-and-valid")}
+	case errors.Is(verr, errPigpenUnsigned):
 		return []point{skip("pigpen: unsigned (§14.2 SHOULD, experimental)",
 			"no self-signature lock on the `! pigpen-v1` line")}
-	}
-
-	sigID, err := markl.Parse(lock)
-	if err != nil || sigID.Purpose != purposePigpenSelfSig || sigID.Format != markl.FormatEcdsaP256Sig {
+	case errors.Is(verr, errPigpenLockMalformed):
 		return []point{skip(label+" unverifiable",
 			"lock is not a "+purposePigpenSelfSig+"@ecdsa_p256_sig markl-id")}
-	}
-
-	keyID, keyPoint, hasKey := findPigpenAuthKey(lines)
-	if !hasKey {
+	case errors.Is(verr, errPigpenNoAuthKey):
 		return []point{skip(label+" unverifiable",
 			"no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line to verify the lock against")}
-	}
-
-	authIDs := fetchPiggyAuthIDs(ctx, c)
-	if !keyPublishedMarkl(keyID, keyPoint, nil, authIDs) {
+	case errors.Is(verr, errPigpenKeyNotPublished):
 		return []point{skip(label+" unverifiable -> unsigned",
 			"signing key is not published (piggy-ids)")}
-	}
-
-	pub, err := p256FromCompressed(keyPoint)
-	if err != nil {
+	case errors.As(verr, &keyMalformed):
 		return []point{mustFail(label+": signed-but-invalid",
-			map[string]any{"error": err.Error(), "key": keyID})}
-	}
-
-	input, err := pigpenStripSelfBytes(lines)
-	if err != nil {
-		return []point{skip(label, "reconstruct strip-self bytes: "+err.Error())}
-	}
-
-	if !ecdsaVerifyRaw(pub, input, sigID.Payload) {
+			map[string]any{"error": keyMalformed.err.Error(), "key": keyID})}
+	case errors.As(verr, &stripBytes):
+		return []point{skip(label, "reconstruct strip-self bytes: "+stripBytes.err.Error())}
+	case errors.Is(verr, errPigpenSigInvalid):
 		return []point{mustFail(label+": signed-but-invalid", map[string]any{"key": keyID})}
+	default:
+		// Unreachable given verifyPigpenSelfSignature's documented contract
+		// (it only ever returns nil or one of the errPigpen* values above),
+		// but fail closed rather than silently reporting success.
+		return []point{mustFail(label+": signed-but-invalid",
+			map[string]any{"error": verr.Error(), "key": keyID})}
 	}
-	return []point{ok(label + ": signed-and-valid")}
 }

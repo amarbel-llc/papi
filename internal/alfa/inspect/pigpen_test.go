@@ -221,6 +221,71 @@ func TestPigpenSignatureVerification(t *testing.T) {
 	})
 }
 
+// TestPigpenSignatureVerificationLazyAuthFetch pins that pigpenSignaturePoints
+// (via verifyPigpenSelfSignature) never touches /papi/piggy-ids for the three
+// outcomes that are decided before a signing key is ever looked up for
+// publication: no lock (unsigned), a lock that doesn't parse (malformed), and
+// a parseable lock with no auth-key line to check. This is the common,
+// §14.2-expected-to-be-fast "document is simply unsigned" path, and it must
+// resolve without any network I/O beyond the initial /papi/pigpen fetch. A
+// prior version of this refactor fetched piggy-ids unconditionally,
+// regressing this — see papi#54.
+func TestPigpenSignatureVerificationLazyAuthFetch(t *testing.T) {
+	unsignedDoc := buildPigpenDoc(t, newPigpenSigner(t), false, false)
+
+	malformedLockDoc := renderPigpenDoc(t, []hyphence.MetadataLine{
+		{Prefix: '!', Value: "pigpen-v1@not-a-valid-markl-lock"},
+	})
+
+	wellFormedSig, err := markl.Build(purposePigpenSelfSig, markl.FormatEcdsaP256Sig, make([]byte, 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	noAuthKeyDoc := renderPigpenDoc(t, []hyphence.MetadataLine{
+		{Prefix: '!', Value: "pigpen-v1@" + wellFormedSig},
+	})
+
+	cases := []struct {
+		name string
+		doc  []byte
+	}{
+		{"unsigned", unsignedDoc},
+		{"malformed lock", malformedLockDoc},
+		{"well-formed lock, no auth key", noAuthKeyDoc},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var piggyIDsHits int
+			mux := http.NewServeMux()
+			mux.HandleFunc("/papi/pigpen", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/vnd.pigpen")
+				_, _ = w.Write(tc.doc)
+			})
+			mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
+				piggyIDsHits++
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				_, _ = w.Write([]byte("# piggy-ids\n"))
+			})
+			srv := httptest.NewServer(mux)
+			t.Cleanup(srv.Close)
+			c, err := papi.NewClient(srv.URL)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			pts := pigpenSignaturePoints(context.Background(), c)
+			if len(pts) != 1 || pts[0].reason == "" {
+				t.Fatalf("expected a skip verdict for %q, got: %+v", tc.name, pts)
+			}
+			if piggyIDsHits != 0 {
+				t.Fatalf("%q: /papi/piggy-ids fetched %d time(s); want 0 (lazy fetch, only after lock+key found)",
+					tc.name, piggyIDsHits)
+			}
+		})
+	}
+}
+
 // pigpenConformantServer mirrors conformantServer (inspect_test.go) route for
 // route — a domain that already passes every RFC-0001 MUST — and additionally
 // publishes s's slot-9A key on /papi/piggy-ids and serves a signed pigpen doc
