@@ -218,10 +218,10 @@
         ]
       },
       "locked": {
-        "lastModified": 1784254433,
-        "narHash": "sha256-6oKbo88/toaSJv0HalleGsOFoBM2mTIkSjwfkiA3pW4=",
+        "lastModified": 1784286927,
+        "narHash": "sha256-lArHiQAMImp4mh78y/+XwhX6wy7m3qhq4QWxFpaRfUw=",
         "type": "tarball",
-        "url": "https://code.linenisgreat.com/piggy/archive/a963e31ad90399d8d7a14073a63d538019ba8ce4.tar.gz"
+        "url": "https://code.linenisgreat.com/piggy/archive/c4d412ad2d033ec9b728bea196f2cb9b24a8c345.tar.gz"
       },
       "original": {
         "type": "tarball",
