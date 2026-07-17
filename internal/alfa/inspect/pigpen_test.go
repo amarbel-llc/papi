@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -137,10 +138,12 @@ func buildPigpenDoc(t *testing.T, s pigpenSigner, sign, corrupt bool) []byte {
 	return renderPigpenDoc(t, lines)
 }
 
-// pigpenPointsFor runs pigpenSignaturePoints against a test server serving
-// data at /papi/pigpen (or a 404 when notFound) and, when authIDs is
-// non-nil, those ids at /papi/piggy-ids.
-func pigpenPointsFor(t *testing.T, data []byte, notFound bool, authIDs []string) []point {
+// newPigpenFixtureServer builds a test server serving data at /papi/pigpen
+// (or a 404 when notFound) and, when authIDs is non-nil, those ids at
+// /papi/piggy-ids. Shared by pigpenPointsFor (pigpenSignaturePoints, the
+// `papi validate` check) and pigpenResolveFor (ResolvePigpen, the resolver,
+// papi#54 Task C2) so both exercise the identical fixture shape.
+func newPigpenFixtureServer(t *testing.T, data []byte, notFound bool, authIDs []string) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/papi/pigpen", func(w http.ResponseWriter, _ *http.Request) {
@@ -159,11 +162,32 @@ func pigpenPointsFor(t *testing.T, data []byte, notFound bool, authIDs []string)
 	}
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	return srv
+}
+
+// pigpenPointsFor runs pigpenSignaturePoints against a fixture server built
+// by newPigpenFixtureServer.
+func pigpenPointsFor(t *testing.T, data []byte, notFound bool, authIDs []string) []point {
+	t.Helper()
+	srv := newPigpenFixtureServer(t, data, notFound, authIDs)
 	c, err := papi.NewClient(srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return pigpenSignaturePoints(context.Background(), c)
+}
+
+// pigpenResolveFor runs ResolvePigpen against a fixture server built by
+// newPigpenFixtureServer — the resolver-side counterpart to pigpenPointsFor
+// (papi#54 Task C2).
+func pigpenResolveFor(t *testing.T, data []byte, notFound bool, authIDs []string) ([]byte, error) {
+	t.Helper()
+	srv := newPigpenFixtureServer(t, data, notFound, authIDs)
+	c, err := papi.NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ResolvePigpen(context.Background(), c)
 }
 
 func TestPigpenSignatureVerification(t *testing.T) {
@@ -219,6 +243,124 @@ func TestPigpenSignatureVerification(t *testing.T) {
 			t.Fatalf("bare (unsigned) pigpen doc should be a skip, never a fail: %+v", pts)
 		}
 	})
+}
+
+// --- ResolvePigpen (§14.2, papi#54 Task C2) ---
+//
+// Mirrors TestPigpenSignatureVerification's structure (same fixtures via
+// pigpenResolveFor/newPigpenFixtureServer), but asserts on (bytes, error)
+// instead of a validator point. Two outcomes the validator treats as a
+// graceful skip are hard errors here: the resolver has no skip concept.
+func TestResolvePigpen(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		doc := buildPigpenDoc(t, s, true, false)
+		got, err := pigpenResolveFor(t, doc, false, []string{s.keyID})
+		if err != nil {
+			t.Fatalf("ResolvePigpen on a validly-signed doc: unexpected error: %v", err)
+		}
+		// Pins passthrough, not just verification success: the returned
+		// bytes must be the ORIGINAL fetched bytes, not a re-encode.
+		if !bytes.Equal(got, doc) {
+			t.Fatalf("ResolvePigpen must return the original fetched bytes unmodified:\ngot:  %q\nwant: %q", got, doc)
+		}
+	})
+
+	t.Run("invalid signature", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		doc := buildPigpenDoc(t, s, true, true) // corrupt=true flips a sig byte
+		srv := newPigpenFixtureServer(t, doc, false, []string{s.keyID})
+		c, cerr := papi.NewClient(srv.URL)
+		if cerr != nil {
+			t.Fatal(cerr)
+		}
+		got, err := ResolvePigpen(context.Background(), c)
+		if err == nil {
+			t.Fatalf("ResolvePigpen on a tampered signature must fail, got bytes: %q", got)
+		}
+		if !errors.Is(err, errPigpenSigInvalid) {
+			t.Errorf("want errors.Is(err, errPigpenSigInvalid), got: %v", err)
+		}
+		// Pins the non-doubled message format: ResolvePigpen's own
+		// "pigpen: resolve <locator>/papi/pigpen: ..." prefix must appear
+		// exactly once — errPigpen* sentinels must not carry their own
+		// leading "pigpen: " (that duplicated when wrapped here, and again
+		// when piggy wraps ResolvePigpen's stderr with its own
+		// kind="papi-http"/locator="..." context).
+		want := "pigpen: resolve " + c.BaseURL + "/papi/pigpen: signature invalid"
+		if err.Error() != want {
+			t.Errorf("unexpected error message:\ngot:  %q\nwant: %q", err.Error(), want)
+		}
+	})
+
+	t.Run("unpublished key", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		doc := buildPigpenDoc(t, s, true, false)
+		// The signing key is never advertised on /papi/piggy-ids.
+		got, err := pigpenResolveFor(t, doc, false, []string{})
+		if err == nil {
+			t.Fatalf("ResolvePigpen with an unpublished signing key must fail, got bytes: %q", got)
+		}
+		if !errors.Is(err, errPigpenKeyNotPublished) {
+			t.Errorf("want errors.Is(err, errPigpenKeyNotPublished), got: %v", err)
+		}
+	})
+
+	t.Run("malformed lock", func(t *testing.T) {
+		lines := []hyphence.MetadataLine{{Prefix: '!', Value: "pigpen-v1@not-a-valid-markl-lock"}}
+		doc := renderPigpenDoc(t, lines)
+		got, err := pigpenResolveFor(t, doc, false, nil)
+		if err == nil {
+			t.Fatalf("ResolvePigpen on a malformed lock must fail, got bytes: %q", got)
+		}
+		if !errors.Is(err, errPigpenLockMalformed) {
+			t.Errorf("want errors.Is(err, errPigpenLockMalformed), got: %v", err)
+		}
+	})
+
+	t.Run("404/absent endpoint", func(t *testing.T) {
+		got, err := pigpenResolveFor(t, nil, true, nil)
+		if err == nil {
+			t.Fatalf("ResolvePigpen against a 404 /papi/pigpen must fail (a resolver has no skip concept), got bytes: %q", got)
+		}
+		if !strings.Contains(err.Error(), "404") {
+			t.Errorf("want the error to mention HTTP 404, got: %v", err)
+		}
+	})
+
+	t.Run("unsigned", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		doc := buildPigpenDoc(t, s, false, false)
+		got, err := pigpenResolveFor(t, doc, false, []string{s.keyID})
+		// Unlike the validator (which skips an unsigned document as
+		// SHOULD-not-MUST), the resolver hard-requires a signature.
+		if err == nil {
+			t.Fatalf("ResolvePigpen on an unsigned doc must fail (resolver policy, unlike the validator's skip), got bytes: %q", got)
+		}
+		if !errors.Is(err, errPigpenUnsigned) {
+			t.Errorf("want errors.Is(err, errPigpenUnsigned), got: %v", err)
+		}
+	})
+}
+
+// TestResolvePigpenErrorsEmbedLocator pins that every ResolvePigpen error
+// embeds the origin's locator (c.BaseURL), so a bare human-run invocation of
+// the resolver binary is self-sufficient without piggy's own
+// kind="papi-http"/locator="..." wrapping context (papi#54 Task C2 design).
+func TestResolvePigpenErrorsEmbedLocator(t *testing.T) {
+	srv := newPigpenFixtureServer(t, nil, true, nil)
+	c, err := papi.NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, rerr := ResolvePigpen(context.Background(), c)
+	if rerr == nil {
+		t.Fatal("want an error against a 404 /papi/pigpen")
+	}
+	if !strings.Contains(rerr.Error(), srv.URL) {
+		t.Errorf("error must embed the locator %q, got: %v", srv.URL, rerr)
+	}
 }
 
 // TestPigpenSignatureVerificationLazyAuthFetch pins that pigpenSignaturePoints

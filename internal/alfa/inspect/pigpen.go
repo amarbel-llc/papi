@@ -135,25 +135,25 @@ var (
 	// errPigpenUnsigned: no lock on the `! pigpen-v1` type line at all. The
 	// self-signature is SHOULD, not MUST (RFC-0001 §14.2), so on its own this
 	// is never a failure.
-	errPigpenUnsigned = errors.New("pigpen: no self-signature lock on the `! pigpen-v1` line")
+	errPigpenUnsigned = errors.New("no self-signature lock on the `! pigpen-v1` line")
 
 	// errPigpenLockMalformed: the lock is present but doesn't parse as the
 	// expected papi-pigpen-self-sig-v1@ecdsa_p256_sig markl-id (papi's
 	// provisional, piggy-unratified scheme) — unverifiable, not a failure.
-	errPigpenLockMalformed = errors.New("pigpen: lock is not a " + purposePigpenSelfSig + "@ecdsa_p256_sig markl-id")
+	errPigpenLockMalformed = errors.New("lock is not a " + purposePigpenSelfSig + "@ecdsa_p256_sig markl-id")
 
 	// errPigpenNoAuthKey: no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line in
 	// the document to verify the lock against — unverifiable, not a failure.
-	errPigpenNoAuthKey = errors.New("pigpen: no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line to verify the lock against")
+	errPigpenNoAuthKey = errors.New("no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line to verify the lock against")
 
 	// errPigpenKeyNotPublished: the signing key is present in-document but
 	// isn't advertised on /papi/piggy-ids — unverifiable (falls back to
 	// unsigned), not a failure.
-	errPigpenKeyNotPublished = errors.New("pigpen: signing key is not published (piggy-ids)")
+	errPigpenKeyNotPublished = errors.New("signing key is not published (piggy-ids)")
 
 	// errPigpenSigInvalid: the ECDSA verification itself returned false — a
 	// MUST failure (signed-but-invalid).
-	errPigpenSigInvalid = errors.New("pigpen: signature invalid")
+	errPigpenSigInvalid = errors.New("signature invalid")
 )
 
 // errPigpenKeyMalformed wraps a p256FromCompressed decode failure: the
@@ -167,7 +167,7 @@ var (
 type errPigpenKeyMalformed struct{ err error }
 
 func (e *errPigpenKeyMalformed) Error() string {
-	return "pigpen: signing key point malformed: " + e.err.Error()
+	return "signing key point malformed: " + e.err.Error()
 }
 
 func (e *errPigpenKeyMalformed) Unwrap() error { return e.err }
@@ -183,7 +183,7 @@ func (e *errPigpenKeyMalformed) Unwrap() error { return e.err }
 type errPigpenStripBytes struct{ err error }
 
 func (e *errPigpenStripBytes) Error() string {
-	return "pigpen: reconstruct strip-self bytes: " + e.err.Error()
+	return "reconstruct strip-self bytes: " + e.err.Error()
 }
 
 func (e *errPigpenStripBytes) Unwrap() error { return e.err }
@@ -321,4 +321,61 @@ func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
 		return []point{mustFail(label+": signed-but-invalid",
 			map[string]any{"error": verr.Error(), "key": keyID})}
 	}
+}
+
+// ResolvePigpen fetches, verifies, and returns papi's self-signed pigpen
+// document (RFC-0001 §14.2, papi#54 Task C2): GET /papi/pigpen, verify the
+// self-signature against the live /papi/piggy-ids key list via
+// verifyPigpenSelfSignature — the same crypto-critical core
+// pigpenSignaturePoints uses — and on success return the original fetched
+// bytes unmodified (verify-then-passthrough, not a re-encode). This is
+// deliberate: pigpenStripSelfBytes/FormatBodyEmitter reconstructs a *signing
+// input*, not a guaranteed byte-identical round-trip of whatever the origin
+// served, and piggy is explicitly indifferent to whether the returned doc
+// still carries the lock (RFC-0010 §6). Passthrough avoids a second,
+// unnecessary dependency on hyphence's encoder being lossless, and preserves
+// an audit trail: a later reader can see the doc *was* self-signed.
+//
+// Unlike pigpenSignaturePoints (a `papi validate` check, where
+// /papi/pigpen is OPTIONAL per RFC-0001 §14.1 and a present-but-unsigned
+// document is a graceful skip since the self-signature is SHOULD not MUST),
+// ResolvePigpen is a resolver: it has no skip concept. Every failure —
+// fetch error, non-200 status (including 404/not-implemented), a malformed
+// hyphence document, or an unsigned document — is a hard error. Treating an
+// unsigned document as a hard failure here is papi's own policy choice for
+// this resolver, stricter than the RFC's SHOULD-not-MUST; it is documented
+// as such, not exposed as a flag.
+//
+// Every returned error embeds c.BaseURL (the locator) so a bare, human-run
+// invocation of the resolver binary is self-sufficient: piggy already adds
+// kind="papi-http"/locator="..." context of its own when it wraps the
+// resolver's stderr, so these messages don't repeat that, just distinguish
+// *which* failure occurred (fetch failed, 404/not-implemented, unexpected
+// status, malformed document, or one of verifyPigpenSelfSignature's
+// distinguishable errPigpen* verdicts — unsigned, malformed lock, no
+// auth-key line, key not published, signature invalid).
+func ResolvePigpen(ctx context.Context, c *papi.Client) ([]byte, error) {
+	resp, err := c.Fetch(ctx, "/papi/pigpen")
+	if err != nil {
+		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: fetch failed: %w", c.BaseURL, err)
+	}
+	if resp.Status == http.StatusNotFound {
+		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: not implemented (HTTP 404)", c.BaseURL)
+	}
+	if resp.Status != http.StatusOK {
+		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: unexpected HTTP %d", c.BaseURL, resp.Status)
+	}
+
+	lines, err := parsePigpenMetadataLines(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: parse hyphence metadata: %w", c.BaseURL, err)
+	}
+
+	if _, verr := verifyPigpenSelfSignature(lines, func() []string {
+		return fetchPiggyAuthIDs(ctx, c)
+	}); verr != nil {
+		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: %w", c.BaseURL, verr)
+	}
+
+	return resp.Body, nil
 }
