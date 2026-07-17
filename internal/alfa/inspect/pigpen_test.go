@@ -9,6 +9,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -216,4 +219,97 @@ func TestPigpenSignatureVerification(t *testing.T) {
 			t.Fatalf("bare (unsigned) pigpen doc should be a skip, never a fail: %+v", pts)
 		}
 	})
+}
+
+// pigpenConformantServer mirrors conformantServer (inspect_test.go) route for
+// route — a domain that already passes every RFC-0001 MUST — and additionally
+// publishes s's slot-9A key on /papi/piggy-ids and serves a signed pigpen doc
+// at /papi/pigpen, so a Run-level test can assert the pigpen verdict appears
+// alongside the rest of `papi validate`'s checklist without tripping any
+// unrelated MUST failure.
+func pigpenConformantServer(t *testing.T, s pigpenSigner, doc []byte) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/papi", func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"data":{"version":"papi/v0","handle":"tester",
+			"resources":{"document":%q,"piggy_ids":%q,"ssh_authorized_keys":%q},
+			"auth":{"scheme":"piggy-challenge-response"}},"meta":{"type":"papi-discovery","count":3}}`,
+			base+"/papi", base+"/papi/piggy-ids", base+"/papi/ssh-authorized-keys")
+	})
+	mux.HandleFunc("/papi", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":{"version":"papi/v0",
+			"person":{"handle":"tester","name":"Test User"},
+			"piggy":{"encryption_recipients":[{"id":"r1"}],"ssh_authorized_keys":[{"key":"k1"},{"key":"k2"}]},
+			"forges":[{"id":"gh","kind":"github","repos":[{},{}]}],
+			"sitemap":{"domains":{"visibility":"public"},"visibility":"public"},
+			"templates":[{"id":"eng","flakeref":"github:x/y#eng"}],
+			"caches":[{"id":"krone","url":"http://krone:8080","trusted_public_keys":["krone:AAAApub"]}]},
+			"meta":{"type":"papi","version":"papi/v0","visibility":"public"}}`)
+	})
+	mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, "# piggy-ids\npiggy-recipient-v1@pivy_ecdh_p256_pub-aaa\n"+s.keyID+"\n")
+	})
+	mux.HandleFunc("/papi/ssh-authorized-keys", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		io.WriteString(w, "ecdsa-sha2-nistp256 AAAAfake tester\n")
+	})
+	mux.HandleFunc("/papi/auth/challenge", func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&m)
+		if v, _ := m["recipient"].(string); v != "" {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	mux.HandleFunc("/papi/auth/response", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	})
+	mux.HandleFunc("/papi/pigpen", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/vnd.pigpen")
+		_, _ = w.Write(doc)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestRunIncludesPigpenCheck (papi#54, Task B4) pins that Run's checklist
+// actually calls pigpenSignaturePoints: a conformant domain serving a signed,
+// verifiable /papi/pigpen document must surface the pigpen "signed-and-valid"
+// verdict in `papi validate`'s ndjson-crap stream, end to end (a real
+// httptest.Server, a real HTTP fetch, real ECDSA verification) — not just via
+// the pigpenSignaturePoints unit tests above, which never go through Run.
+func TestRunIncludesPigpenCheck(t *testing.T) {
+	s := newPigpenSigner(t)
+	doc := buildPigpenDoc(t, s, true, false)
+	srv := pigpenConformantServer(t, s, doc)
+
+	var buf bytes.Buffer
+	if err := Run(context.Background(), &buf, srv.URL, Options{}); err != nil {
+		t.Fatalf("Run against a pigpen-signed conformant fixture: %v", err)
+	}
+
+	var descriptions []string
+	for i, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %d is not JSON: %v\n%s", i, err, line)
+		}
+		if rec["type"] != "test" {
+			continue
+		}
+		if d, ok := rec["description"].(string); ok {
+			descriptions = append(descriptions, d)
+		}
+	}
+
+	joined := strings.Join(descriptions, "\n")
+	if !strings.Contains(joined, "pigpen") || !strings.Contains(joined, "signed-and-valid") {
+		t.Fatalf("Run's ndjson-crap stream is missing the pigpen signed-and-valid verdict:\n%s", joined)
+	}
 }
