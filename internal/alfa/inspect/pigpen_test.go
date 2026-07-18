@@ -485,6 +485,121 @@ func pigpenConformantServer(t *testing.T, s pigpenSigner, doc []byte) *httptest.
 	return srv
 }
 
+// --- SignPigpen (§14.2, papi#54 Task D1) ---
+
+// pigpenTestSigner adapts a pigpenSigner test fixture's private key to the
+// PigpenSigner interface, doing REAL ECDSA signing exactly like a production
+// PiggySignBytesSigner would: msg is the bare preimage, hashed SHA-256
+// internally before signing (see PigpenSigner's doc comment and
+// enroll.PiggySignBytesSigner.SignSlot9A's).
+type pigpenTestSigner struct {
+	priv *ecdsa.PrivateKey
+}
+
+func (s pigpenTestSigner) SignSlot9A(_ context.Context, _ string, msg []byte) ([]byte, error) {
+	digest := sha256.Sum256(msg)
+	r, ss, err := ecdsa.Sign(rand.Reader, s.priv, digest[:])
+	if err != nil {
+		return nil, err
+	}
+	raw := make([]byte, 64)
+	r.FillBytes(raw[:32])
+	ss.FillBytes(raw[32:])
+	return raw, nil
+}
+
+// erroringPigpenSigner is a PigpenSigner whose SignSlot9A always fails,
+// pinning that SignPigpen propagates a signer error rather than swallowing
+// or wrapping it unrecognizably.
+type erroringPigpenSigner struct{ err error }
+
+func (s erroringPigpenSigner) SignSlot9A(context.Context, string, []byte) ([]byte, error) {
+	return nil, s.err
+}
+
+func TestSignPigpen(t *testing.T) {
+	t.Run("round-trip", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		unsigned := buildPigpenDoc(t, s, false, false)
+
+		signed, err := SignPigpen(context.Background(), pigpenTestSigner{priv: s.priv}, "test-guid", unsigned)
+		if err != nil {
+			t.Fatalf("SignPigpen: %v", err)
+		}
+
+		// The proof: run the signed output through the EXISTING verification
+		// path (pigpenSignaturePoints -> verifyPigpenSelfSignature), not a
+		// second, parallel verification path written just for this test.
+		pts := pigpenPointsFor(t, signed, false, []string{s.keyID})
+		if len(pts) != 1 || !pts[0].ok || pts[0].reason != "" {
+			t.Fatalf("SignPigpen output failed EXISTING verification (pigpenSignaturePoints): %+v", pts)
+		}
+	})
+
+	t.Run("already signed is rejected", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		signed := buildPigpenDoc(t, s, true, false)
+
+		_, err := SignPigpen(context.Background(), pigpenTestSigner{priv: s.priv}, "test-guid", signed)
+		if err == nil {
+			t.Fatal("SignPigpen on an already-signed document must fail, not silently clobber the existing lock")
+		}
+		if !errors.Is(err, errPigpenAlreadySigned) {
+			t.Errorf("want errors.Is(err, errPigpenAlreadySigned), got: %v", err)
+		}
+	})
+
+	t.Run("no auth-key line is rejected", func(t *testing.T) {
+		lines := []hyphence.MetadataLine{{Prefix: '!', Value: "pigpen-v1"}}
+		doc := renderPigpenDoc(t, lines)
+
+		s := newPigpenSigner(t)
+		_, err := SignPigpen(context.Background(), pigpenTestSigner{priv: s.priv}, "test-guid", doc)
+		if err == nil {
+			t.Fatal("SignPigpen on a document with no auth-key line must fail (nothing for a verifier to check against)")
+		}
+		if !errors.Is(err, errPigpenNoAuthKey) {
+			t.Errorf("want errors.Is(err, errPigpenNoAuthKey), got: %v", err)
+		}
+	})
+
+	t.Run("signer failure propagates", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		unsigned := buildPigpenDoc(t, s, false, false)
+
+		wantErr := errors.New("piv card removed")
+		_, err := SignPigpen(context.Background(), erroringPigpenSigner{err: wantErr}, "test-guid", unsigned)
+		if err == nil {
+			t.Fatal("SignPigpen must propagate a signer error")
+		}
+		if !errors.Is(err, wantErr) {
+			t.Errorf("want errors.Is(err, wantErr), got: %v", err)
+		}
+	})
+
+	// errPigpenNoTypeLine pins a genuinely reachable (not merely defensive)
+	// case: a document with a well-formed auth-key `-` line but NO `!` line
+	// anywhere at all — malformed/truncated input distinct from "unsigned"
+	// (a bare `! pigpen-v1` line, which is what "no auth-key line is
+	// rejected" above and extractPigpenTypeLock's hasLock==false actually
+	// cover). findPigpenAuthKey succeeding says nothing about whether a `!`
+	// line exists elsewhere in the document, so SignPigpen must check for
+	// this independently.
+	t.Run("no type line at all is rejected", func(t *testing.T) {
+		s := newPigpenSigner(t)
+		lines := []hyphence.MetadataLine{{Prefix: '-', Value: s.keyID}}
+		doc := renderPigpenDoc(t, lines)
+
+		_, err := SignPigpen(context.Background(), pigpenTestSigner{priv: s.priv}, "test-guid", doc)
+		if err == nil {
+			t.Fatal("SignPigpen on a document with no `!` type line at all must fail")
+		}
+		if !errors.Is(err, errPigpenNoTypeLine) {
+			t.Errorf("want errors.Is(err, errPigpenNoTypeLine), got: %v", err)
+		}
+	})
+}
+
 // TestRunIncludesPigpenCheck (papi#54, Task B4) pins that Run's checklist
 // actually calls pigpenSignaturePoints: a conformant domain serving a signed,
 // verifiable /papi/pigpen document must surface the pigpen "signed-and-valid"

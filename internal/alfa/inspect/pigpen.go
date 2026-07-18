@@ -140,6 +140,13 @@ func pigpenStripSelfBytes(lines []hyphence.MetadataLine) ([]byte, error) {
 // branch on which trust-verdict class occurred via errors.Is/errors.As
 // instead of parsing error strings. Each corresponds to one of §14.2's
 // distinguishable outcomes short of a valid signature.
+//
+// errPigpenNoAuthKey is also returned directly by SignPigpen (papi#54 Task
+// D1, below): it calls findPigpenAuthKey itself rather than going through
+// verifyPigpenSelfSignature, but the underlying condition — and what a
+// caller should do about it — is identical on both the sign and verify
+// sides, so it's shared rather than duplicated. See its own comment for why
+// its wording is direction-neutral.
 var (
 	// errPigpenUnsigned: no lock on the `! pigpen-v1` type line at all. The
 	// self-signature is SHOULD, not MUST (RFC-0001 §14.2), so on its own this
@@ -152,8 +159,14 @@ var (
 	errPigpenLockMalformed = errors.New("lock is not a " + purposePigpenSelfSig + "@ecdsa_p256_sig markl-id")
 
 	// errPigpenNoAuthKey: no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line in
-	// the document to verify the lock against — unverifiable, not a failure.
-	errPigpenNoAuthKey = errors.New("no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line to verify the lock against")
+	// the document. On the verify side (verifyPigpenSelfSignature) this means
+	// there's no key to check an existing lock against — unverifiable, not a
+	// failure. On the sign side (SignPigpen) it means there'd be nothing for
+	// a FUTURE verifier to check the about-to-be-produced lock against, so
+	// SignPigpen refuses outright. The wording below is deliberately
+	// direction-neutral (doesn't say "the lock", singular/existing) so it
+	// reads correctly from both call sites.
+	errPigpenNoAuthKey = errors.New("no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line for a self-signature to be verified against")
 
 	// errPigpenKeyNotPublished: the signing key is present in-document but
 	// isn't advertised on /papi/piggy-ids — unverifiable (falls back to
@@ -391,4 +404,129 @@ func ResolvePigpen(ctx context.Context, c *papi.Client) ([]byte, error) {
 	}
 
 	return resp.Body, nil
+}
+
+// --- Signing (producer side, papi#54 Task D1) ---
+
+// errPigpenAlreadySigned: SignPigpen was asked to sign a document whose `!
+// pigpen-v1` type line already carries a lock. Refusing (rather than
+// silently overwriting) means a caller can't accidentally destroy an
+// existing self-signature by re-running SignPigpen on already-signed input.
+var errPigpenAlreadySigned = errors.New("pigpen document already has a self-signature lock; refusing to overwrite")
+
+// errPigpenNoTypeLine: SignPigpen was asked to sign a document with no `!`
+// line at all — a malformed/truncated pigpen document, not just an unsigned
+// one. This is genuinely reachable: extractPigpenTypeLock's hasLock==false
+// (checked first, above findPigpenAuthKey in SignPigpen) can't distinguish
+// "no `!` line exists" from "a bare `! pigpen-v1` line with no lock", and
+// findPigpenAuthKey's ok==true says nothing about whether a `!` line is
+// present anywhere else in the document — a document can publish a
+// well-formed auth-key `-` line while missing its `!` line entirely. There'd
+// be nowhere to embed the produced lock, so SignPigpen checks for this and
+// refuses before ever invoking the signer (no point spending a card
+// signature on input that can't be completed).
+var errPigpenNoTypeLine = errors.New("no `! pigpen-v1` type line to embed the self-signature lock into")
+
+// PigpenSigner signs message bytes with the slot-9A key of the card
+// identified by guid, returning the raw 64-byte r‖s ECDSA P-256 signature —
+// structurally identical to signchallenge.Signer (same method, same
+// contract: msg is the bare preimage, NOT a pre-hash, since the card hashes
+// SHA-256 internally). Defined locally rather than imported from
+// signchallenge: Go's structural typing means any value already satisfying
+// signchallenge.Signer's method set (e.g. enroll.PiggySignBytesSigner,
+// enroll.AgentSignBytesSigner) also satisfies this interface with zero
+// adapter code, so there's no reason to import that package just for its
+// interface declaration.
+type PigpenSigner interface {
+	SignSlot9A(ctx context.Context, guid string, msg []byte) (rs []byte, err error)
+}
+
+// SignPigpen produces a self-signed pigpen document (RFC-0001 §14.2,
+// papi#54 Task D1): the producer-side inverse of verifyPigpenSelfSignature.
+// data is an unsigned (or not-yet-self-signed) hyphence pigpen document; on
+// success SignPigpen returns the same document with the `! pigpen-v1` type
+// line's lock replaced by a fresh papi-pigpen-self-sig-v1@ecdsa_p256_sig
+// markl-id.
+//
+// SignPigpen refuses three malformed inputs rather than silently producing a
+// document a verifier can't check or worse, clobbering an existing
+// signature:
+//
+//   - The type line already carries a lock (extractPigpenTypeLock reports
+//     ok=true): errPigpenAlreadySigned. Signing over an existing lock would
+//     either silently discard a legitimate prior signature or (since the
+//     strip-self input only ever clears the CURRENT `!` line, not other
+//     document state) leave the document in a confusing partially-resigned
+//     state; either way the caller almost certainly didn't intend it.
+//   - No piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line is present
+//     (findPigpenAuthKey reports ok=false): errPigpenNoAuthKey, the same
+//     sentinel verifyPigpenSelfSignature returns for the identical
+//     condition on the verify side — there is nothing in the document for a
+//     future verifier to check the signature against.
+//   - No `!` line exists anywhere in the document at all (distinct from the
+//     first case above, and not implied by either check above having
+//     passed — see errPigpenNoTypeLine's own comment): errPigpenNoTypeLine.
+//     Checked before the signer is ever invoked, since there'd be nowhere
+//     to embed the resulting lock regardless of what the signer returns.
+//
+// The signing input is pigpenStripSelfBytes(lines) — the same canonicalized,
+// still-unsigned-at-this-point strip-self bytes verifyPigpenSelfSignature
+// reconstructs on the verify side, so a valid signature from here is
+// guaranteed to verify there. signer.SignSlot9A is called with that input
+// directly, UN-hashed: piggy (and any PigpenSigner satisfying this
+// interface) hashes SHA-256 internally, per PiggySignBytesSigner's own doc
+// comment (internal/alfa/enroll/card.go).
+//
+// Any error returned by signer.SignSlot9A is propagated (wrapped, so
+// errors.Is/errors.As against the underlying error still works).
+func SignPigpen(ctx context.Context, signer PigpenSigner, guid string, data []byte) ([]byte, error) {
+	lines, err := parsePigpenMetadataLines(data)
+	if err != nil {
+		return nil, fmt.Errorf("pigpen: sign: parse hyphence metadata: %w", err)
+	}
+
+	if _, hasLock := extractPigpenTypeLock(lines); hasLock {
+		return nil, errPigpenAlreadySigned
+	}
+
+	if _, _, hasKey := findPigpenAuthKey(lines); !hasKey {
+		return nil, errPigpenNoAuthKey
+	}
+
+	typeLineIdx := -1
+	for i, l := range lines {
+		if l.Prefix == '!' {
+			typeLineIdx = i
+			break
+		}
+	}
+	if typeLineIdx < 0 {
+		return nil, errPigpenNoTypeLine
+	}
+
+	input, err := pigpenStripSelfBytes(lines)
+	if err != nil {
+		return nil, fmt.Errorf("pigpen: sign: reconstruct strip-self bytes: %w", err)
+	}
+
+	raw, err := signer.SignSlot9A(ctx, guid, input)
+	if err != nil {
+		return nil, fmt.Errorf("pigpen: sign: %w", err)
+	}
+
+	lock, err := markl.Build(purposePigpenSelfSig, markl.FormatEcdsaP256Sig, raw)
+	if err != nil {
+		return nil, fmt.Errorf("pigpen: sign: build lock: %w", err)
+	}
+
+	lines[typeLineIdx].Value = "pigpen-v1@" + lock
+
+	doc := &hyphence.Document{Metadata: lines}
+	var buf bytes.Buffer
+	emitter := &hyphence.FormatBodyEmitter{Doc: doc, Out: &buf}
+	if _, err := emitter.ReadFrom(strings.NewReader("")); err != nil {
+		return nil, fmt.Errorf("pigpen: sign: re-encode signed document: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
