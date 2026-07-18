@@ -225,10 +225,13 @@ func canonicalSigningInput(doc map[string]json.RawMessage) ([]byte, error) {
 }
 
 // fetchPiggyAuthIDs returns the bare ids advertised on /papi/piggy-ids (one per
-// line, comments dropped) — the canonical markl-id representation of a subject's
-// keys, against which an Amendment 9 signature's `key` is string-matched. Best
-// effort: an unreachable endpoint yields no ids and verification falls back to
-// the ssh_authorized_keys[] point-match.
+// line, whole-line `#` comments dropped and any trailing `  # <label>` on an id
+// line stripped to its first field) — the canonical markl-id representation of
+// a subject's keys, against which an Amendment 9 signature's `key` is
+// string-matched. Mirrors papi.FilterRecipients' identical first-field
+// extraction for the same piggy-ids line format. Best effort: an unreachable
+// endpoint yields no ids and verification falls back to the
+// ssh_authorized_keys[] point-match.
 func fetchPiggyAuthIDs(ctx context.Context, c *papi.Client) []string {
 	body, status, err := c.PiggyIDs(ctx)
 	if err != nil || status != 200 {
@@ -240,7 +243,7 @@ func fetchPiggyAuthIDs(ctx context.Context, c *papi.Client) []string {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		ids = append(ids, line)
+		ids = append(ids, strings.Fields(line)[0])
 	}
 	return ids
 }

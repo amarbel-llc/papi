@@ -20,6 +20,48 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// TestFetchPiggyAuthIDsStripsInlineComments reproduces a real production bug
+// (papi#54 follow-up, found independently by two sessions testing against
+// api.linenisgreat.com's live /papi/piggy-ids): a documented, normal RFC 0003
+// piggy-ids line carries a trailing `  # <label>` comment
+// (e.g. `piggy-piv_auth-v1@...  # yubikey-9a-55c3439d`), but
+// fetchPiggyAuthIDs only skipped whole-line `#` comments, not this inline
+// form — so every id it returned still carried the trailing comment text and
+// could never string-equal the bare markl-id keyPublishedMarkl compares
+// against, making both the §10 JSON-document signature check and the pigpen
+// self-signature check silently fail to recognize a genuinely published key.
+func TestFetchPiggyAuthIDsStripsInlineComments(t *testing.T) {
+	const body = "# piggy-ids\n" +
+		"piggy-recipient-v1@pivy_ecdh_p256_pub-aaa  # primary yubikey (9D)\n" +
+		"piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-bbb  # yubikey-9a-55c3439d\n" +
+		"piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-ccc\n" // a bare id with no comment, must still pass through unchanged
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	c, err := papi.NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := fetchPiggyAuthIDs(context.Background(), c)
+	want := []string{
+		"piggy-recipient-v1@pivy_ecdh_p256_pub-aaa",
+		"piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-bbb",
+		"piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-ccc",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("fetchPiggyAuthIDs returned %d ids, want %d: %v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("id %d: got %q, want %q (inline comment not stripped)", i, got[i], want[i])
+		}
+	}
+}
+
 // signDoc builds a §10.4 ssh-9a-signed PAPI document around doc (a map without a
 // signature member), signing the same way piggy does: full SSH-wire blob
 // string(alg) || string(r,s) over the RFC 8785 JCS bytes. It publishes the
