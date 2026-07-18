@@ -51,11 +51,20 @@ func parsePigpenMetadataLines(data []byte) ([]hyphence.MetadataLine, error) {
 
 // purposePigpenSelfSig is the markl purpose for the pigpen `!`-line
 // self-signature lock (RFC-0001 §14.2). THIS IS A PROVISIONAL,
-// PAPI-INVENTED PLACEHOLDER — piggy has not ratified a purpose name for this
-// lock (piggy RFC 0008/0009, still draft). Expect this constant to be
-// renamed the moment piggy ratifies the real one; do not treat it as stable
-// wire format. See docs/plans/2026-07-15-pigpen-self-signed-resolver-design.md
-// ("Tuning levers").
+// PAPI-INVENTED PLACEHOLDER. piggy RFC 0008 (pigpen wire format), RFC 0009
+// (production cutover), and RFC 0010 (resolver-dispatch protocol) have since
+// landed and piggy#216 is closed — but none of the three defines, reserves,
+// or even mentions a self-signature scheme for a payload-less pigpen
+// document: RFC 0008 §2.2's three documented faces (recipient set, sealed,
+// pointer) assign the `!`-line lock only to a sealed document's header MAC,
+// and §5's markl-registration table has no purpose resembling this one. So
+// this isn't "still draft, awaiting the real name" — it's "outside what
+// piggy's pigpen RFCs address at all." Expect this constant to be renamed or
+// restructured if piggy ever does standardize a self-signature face; do not
+// treat it as stable wire format. See
+// docs/features/0013-pigpen-resolver-papi-http.md (Limitations) and
+// docs/plans/2026-07-15-pigpen-self-signed-resolver-design.md ("Tuning
+// levers").
 const purposePigpenSelfSig = "papi-pigpen-self-sig-v1"
 
 // extractPigpenTypeLock finds the `!`-prefixed type-line MetadataLine and
@@ -248,11 +257,15 @@ func verifyPigpenSelfSignature(lines []hyphence.MetadataLine, fetchAuthIDs func(
 }
 
 // pigpenSignaturePoints verifies the /papi/pigpen document's self-signature
-// (RFC-0001 §14.2, papi#54) against papi's PROVISIONAL, piggy-unratified
+// (RFC-0001 §14.2, papi#54) against papi's PROVISIONAL, piggy-unaddressed
 // scheme (the "papi-pigpen-self-sig-v1" purpose is papi's own placeholder —
-// see docs/plans/2026-07-15-pigpen-self-signed-resolver-design.md). This
-// WILL need rework once piggy RFC 0008/0009 pins the real lock-line
-// semantics; do not treat this as a stable wire-format check.
+// see purposePigpenSelfSig's doc comment above and
+// docs/features/0013-pigpen-resolver-papi-http.md). piggy RFC 0008/0009/0010
+// have since landed (piggy#216 closed) but never defined a self-signature
+// face for a payload-less pigpen document, so there is nothing yet for this
+// scheme to "graduate" into; it WILL need rework only if/when a future piggy
+// RFC standardizes one. Until then, do not treat this as a stable
+// wire-format check.
 //
 // /papi/pigpen is entirely OPTIONAL (RFC-0001 §14.1): a 404, any other
 // non-200 status, or a fetch error is always a skip, never a fail, so this
