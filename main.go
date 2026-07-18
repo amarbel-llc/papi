@@ -331,18 +331,19 @@ func newPiggyIDsCmd() *cobra.Command {
 	return cmd
 }
 
-// newPigpenCmd is the parent of the pigpen-related subcommands (currently
-// just `resolve`), giving future pigpen affordances a home under `papi
-// pigpen ...`.
+// newPigpenCmd is the parent of the pigpen-related subcommands (`resolve`,
+// the consumer side, and `sign`, the producer side), giving pigpen
+// affordances a home under `papi pigpen ...`.
 func newPigpenCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "pigpen",
 		Short:         "Commands for a domain's self-signed PAPI pigpen document",
-		Long:          "Subcommands that fetch and verify a domain's self-signed /papi/pigpen document (RFC-0001 §14, papi#54).",
+		Long:          "Subcommands that fetch, verify, and produce a domain's self-signed /papi/pigpen document (RFC-0001 §14, papi#54).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	cmd.AddCommand(newPigpenResolveCmd())
+	cmd.AddCommand(newPigpenSignCmd())
 	return cmd
 }
 
@@ -376,6 +377,60 @@ func newPigpenResolveCmd() *cobra.Command {
 			return err
 		},
 	}
+}
+
+// newPigpenSignCmd is the producer counterpart of newPigpenResolveCmd: it
+// self-signs an unsigned pigpen document rather than verifying one. Its
+// signer resolution logic (behind the pigpenSignSignerFn seam, mirroring
+// signChallengeSignerFn) IS signChallengeSigner (papi's other
+// document-signing producer, sign-challenge, already established that
+// pattern — see inspect.SignPigpen's doc comment) rather than inventing a
+// second one; unlike sign-challenge the signature is document-bound, not
+// domain-bound, so there is no --domain flag and no §4.2 envelope handling —
+// stdin is the document's own bytes, verbatim.
+func newPigpenSignCmd() *cobra.Command {
+	var guid, pin, signerMode string
+	cmd := &cobra.Command{
+		Use:   "sign",
+		Short: "Self-sign an unsigned PAPI pigpen document with slot-9A, emitting the signed document",
+		Long: "Read an unsigned (or not-yet-self-signed) hyphence /papi/pigpen document on stdin, " +
+			"sign its RFC-0001 §14.2 strip-self bytes with the caller's PIV slot-9A key (ECDSA " +
+			"P-256, via `piggy sign-bytes --slot 9a` — the card must be physically present; no " +
+			"agent), and print the same document on stdout with the `! pigpen-v1` type line's " +
+			"lock replaced by a fresh papi-pigpen-self-sig-v1@ecdsa_p256_sig markl id. Refuses an " +
+			"input that is already self-signed (won't clobber an existing lock) or that carries no " +
+			"`-`-prefixed piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub key line to embed the lock " +
+			"against. Unlike sign-challenge this signature is document-bound, not domain-bound: " +
+			"there is no --domain flag, and the input is the document's own bytes verbatim (no " +
+			"§4.2 {data,meta} envelope to unwrap). With no --guid the sole provisioned card is " +
+			"used; --pin passes the slot-9A PIN to piggy. `papi pigpen resolve` is the consumer-side " +
+			"inverse: it verifies this signature against the domain's live /papi/piggy-ids.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			ctx := cmd.Context()
+			raw, err := io.ReadAll(cmd.InOrStdin())
+			if err != nil {
+				return fmt.Errorf("read pigpen document from stdin: %w", err)
+			}
+			signer, signGUID, err := pigpenSignSignerFn(ctx, signerMode, guid, pin, "")
+			if err != nil {
+				return err
+			}
+			signed, err := inspect.SignPigpen(ctx, signer, signGUID, raw)
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(signed)
+			return err
+		},
+	}
+	cmd.Flags().StringVar(&guid, "guid", "",
+		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
+	cmd.Flags().StringVar(&pin, "pin", "",
+		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
+	cmd.Flags().StringVar(&signerMode, "signer", "auto",
+		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
+	return cmd
 }
 
 func newBootstrapCmd() *cobra.Command {
@@ -1434,6 +1489,15 @@ func authedBody(ctx context.Context, c *papi.Client, opts inspect.Options, path 
 // signChallengeSignerFn is the slot-9A signer constructor behind a seam so CLI
 // tests can inject a fake card without a real PIV device (mirrors verifiedRecipientsFn).
 var signChallengeSignerFn = signChallengeSigner
+
+// pigpenSignSignerFn is newPigpenSignCmd's own instance of the same seam
+// pattern: signChallengeSigner behind a package-level var so TestPigpenSignCmd
+// can inject a fake card (signerFake) and stay hermetic, rather than depending
+// on whatever real signer resolution ("auto" mode) happens to succeed in
+// whatever environment `just test-go` runs in (a forwarded SSH agent here, but
+// not guaranteed elsewhere — see signChallengeSignerFn's own comment above for
+// the identical rationale).
+var pigpenSignSignerFn = signChallengeSigner
 
 // authFlags bundles the §5 handshake flags shared by the projected-endpoint
 // subcommands. The sign-challenge set (piggy-sign-challenge, RECOMMENDED §5.2) is

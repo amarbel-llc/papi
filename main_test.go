@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/amarbel-llc/crap/go-crap/v2/ndjsoncrap"
+	"github.com/amarbel-llc/hyphence/go/hyphence"
+	"github.com/amarbel-llc/papi/internal/0/markl"
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
@@ -2018,17 +2020,86 @@ func TestPigpenResolveCmdFailure(t *testing.T) {
 	}
 }
 
-// TestPigpenCmdTree confirms `papi pigpen` registers `resolve` as a child
-// subcommand (the parent+child home future pigpen affordances will share).
+// TestPigpenCmdTree confirms `papi pigpen` registers both `resolve` (the
+// consumer side) and `sign` (the producer side) as child subcommands.
 func TestPigpenCmdTree(t *testing.T) {
 	cmd := newPigpenCmd()
-	found := false
+	found := map[string]bool{"resolve": false, "sign": false}
 	for _, c := range cmd.Commands() {
-		if c.Name() == "resolve" {
-			found = true
+		if _, ok := found[c.Name()]; ok {
+			found[c.Name()] = true
 		}
 	}
-	if !found {
-		t.Errorf("papi pigpen should register a resolve subcommand, got: %v", cmd.Commands())
+	for name, ok := range found {
+		if !ok {
+			t.Errorf("papi pigpen should register a %s subcommand, got: %v", name, cmd.Commands())
+		}
+	}
+}
+
+// unsignedPigpenDoc builds a minimal unsigned pigpen-v1 document: a `-`-line
+// carrying a well-formed piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub key (its
+// private half is never used — SignPigpen never checks the key matches the
+// signer, only that a well-formed line exists to embed the lock against) and
+// a bare `! pigpen-v1` type line with no lock yet.
+func unsignedPigpenDoc(t *testing.T) []byte {
+	t.Helper()
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := elliptic.MarshalCompressed(elliptic.P256(), priv.X, priv.Y)
+	keyID, err := markl.Build(markl.PurposePIVAuth, markl.FormatSSHEcdsaNistp256Pub, compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pigpenfixture.RenderLines(t, []hyphence.MetadataLine{
+		{Prefix: '-', Value: keyID},
+		{Prefix: '!', Value: "pigpen-v1"},
+	})
+}
+
+// TestPigpenSignCmd exercises newPigpenSignCmd's RunE end-to-end against a
+// FAKE slot-9A signer, injected via the pigpenSignSignerFn seam (mirroring
+// signChallengeSignerFn/signerFake, already used by TestReposSignChallengeURL
+// and TestSignChallengeFromResponse in this file). This keeps the test fully
+// hermetic — no dependency on a forwarded SSH agent or a real PIV
+// card/piggy binary being present in whatever environment `just test-go`
+// runs in — while still exercising real ECDSA signing against a known key.
+// Given an unsigned pigpen-v1 document on stdin, it expects a signed document
+// carrying a fresh papi-pigpen-self-sig-v1@ecdsa_p256_sig lock. A second
+// invocation against that now-signed output confirms SignPigpen's
+// refuse-to-clobber error propagates through RunE unwrapped.
+func TestPigpenSignCmd(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := pigpenSignSignerFn
+	pigpenSignSignerFn = func(_ context.Context, _, guid, _, _ string) (signchallenge.Signer, string, error) {
+		return signerFake{priv}, guid, nil
+	}
+	defer func() { pigpenSignSignerFn = orig }()
+
+	unsigned := unsignedPigpenDoc(t)
+
+	cmd := newPigpenSignCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetIn(bytes.NewReader(unsigned))
+	cmd.SetOut(&out)
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("pigpen sign: %v", err)
+	}
+	if !strings.Contains(out.String(), "papi-pigpen-self-sig-v1@") {
+		t.Errorf("signed output missing a papi-pigpen-self-sig-v1@ lock:\n%s", out.String())
+	}
+
+	again := newPigpenSignCmd()
+	again.SilenceUsage, again.SilenceErrors = true, true
+	again.SetIn(bytes.NewReader(out.Bytes()))
+	again.SetOut(new(bytes.Buffer))
+	if err := again.ExecuteContext(context.Background()); err == nil {
+		t.Error("pigpen sign against an already-signed document should error, not silently re-sign")
 	}
 }
