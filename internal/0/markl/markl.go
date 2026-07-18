@@ -32,14 +32,39 @@ var ErrWrongSize = errors.New("markl: wrong payload size for format")
 // (RFC-0002 §5). Formats absent here are decoded without a size check — an
 // unknown format is the caller's to skip, not this package's to reject.
 var formatSizes = map[string]int{
-	FormatEcdsaP256Sig:        64, // ECDSA P-256 signature, raw r‖s fixed-width
-	FormatSSHEcdsaNistp256Pub: 33, // SEC1-compressed P-256 public key
+	FormatEcdsaP256Sig:           64, // ECDSA P-256 signature, raw r‖s fixed-width
+	FormatSSHEcdsaNistp256Pub:    33, // SEC1-compressed P-256 public key
+	FormatPigpenSelfSigEcdsaP256: 64, // ECDSA P-256 signature, raw r‖s fixed-width
 }
 
 // Known format identifiers papi consumes.
 const (
 	FormatEcdsaP256Sig        = "ecdsa_p256_sig"
 	FormatSSHEcdsaNistp256Pub = "ssh_ecdsa_nistp256_pub"
+
+	// FormatPigpenSelfSigEcdsaP256 is a single, atomic format tag for the
+	// pigpen `!`-line self-signature lock (RFC-0001 §14.2, papi#54) — used
+	// with an EMPTY purpose (Build("", FormatPigpenSelfSigEcdsaP256, raw)),
+	// producing a bare `format-payload` markl-id with no `@` at all.
+	//
+	// This is deliberately NOT the general `purpose@format-payload` shape
+	// papi uses for its own top-level JSON /papi document signatures
+	// (PurposeDocSig+FormatEcdsaP256Sig, etc.). That split genuinely earns
+	// its keep there, where many different purposes share a small set of
+	// interchangeable formats. It does NOT fit hyphence/pigpen documents:
+	// piggy's own lock-slot tags in the same document format — e.g.
+	// pigpen_header_mac, pigpen_wrap_p256, pigpen_wrap_x25519 — are each one
+	// atomic tag encoding both "what this is" and "what algorithm" together,
+	// never a purpose+format pair. papi's pigpen self-signature originally
+	// (papi#54 Tasks B3/C1/D1) copied the general two-field shape by habit;
+	// piggy's actual parser (crates/piggy-pigpen/src/document.rs,
+	// parse_type_line/decode_mac) only ever splits the `!`-line's value on
+	// ONE `@`, then blech32-decodes everything after it as a single tag —
+	// so a two-field lock's inner `@` broke the HRP piggy computed, and its
+	// blech32 checksum (which is computed over the HRP) failed outright.
+	// This format tag fixes that by following pigpen's own established
+	// one-tag-per-(meaning,algorithm) convention instead.
+	FormatPigpenSelfSigEcdsaP256 = "papi_pigpen_self_sig_ecdsa_p256_v1"
 )
 
 // Known purpose identifiers papi consumes (RFC-0002 §6.1).

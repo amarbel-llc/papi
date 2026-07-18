@@ -26,13 +26,13 @@ import (
 func TestExtractPigpenTypeLock(t *testing.T) {
 	lines := []hyphence.MetadataLine{
 		{Prefix: '-', Value: "piggy-recipient-v1@pivy_ecdh_p256_pub-qqq..."},
-		{Prefix: '!', Value: "pigpen-v1@papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>"},
+		{Prefix: '!', Value: "pigpen-v1@papi_pigpen_self_sig_ecdsa_p256_v1-<blech32>"},
 	}
 	lock, ok := extractPigpenTypeLock(lines)
 	if !ok {
 		t.Fatal("want a lock on the type line, got none")
 	}
-	if lock != "papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>" {
+	if lock != "papi_pigpen_self_sig_ecdsa_p256_v1-<blech32>" {
 		t.Errorf("unexpected lock value: %q", lock)
 	}
 
@@ -102,9 +102,8 @@ func renderPigpenDoc(t *testing.T, lines []hyphence.MetadataLine) []byte {
 // buildPigpenDoc assembles a payload-less pigpen document publishing s's
 // piv_auth key on a `-` line. When sign is true, it self-signs (strip-self,
 // §14.2): signs pigpenStripSelfBytes of the unsigned lines, then embeds the
-// resulting papi-pigpen-self-sig-v1@ecdsa_p256_sig lock on the `!` line.
-// corrupt flips a signature byte after signing, producing a well-formed but
-// invalid lock.
+// resulting bare pigpenSelfSigFormat lock on the `!` line. corrupt flips a
+// signature byte after signing, producing a well-formed but invalid lock.
 func buildPigpenDoc(t *testing.T, s pigpenSigner, sign, corrupt bool) []byte {
 	t.Helper()
 	lines := []hyphence.MetadataLine{
@@ -130,7 +129,7 @@ func buildPigpenDoc(t *testing.T, s pigpenSigner, sign, corrupt bool) []byte {
 	if corrupt {
 		raw[0] ^= 0xFF
 	}
-	sigID, err := markl.Build(purposePigpenSelfSig, markl.FormatEcdsaP256Sig, raw)
+	sigID, err := markl.Build("", pigpenSelfSigFormat, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +378,7 @@ func TestPigpenSignatureVerificationLazyAuthFetch(t *testing.T) {
 		{Prefix: '!', Value: "pigpen-v1@not-a-valid-markl-lock"},
 	})
 
-	wellFormedSig, err := markl.Build(purposePigpenSelfSig, markl.FormatEcdsaP256Sig, make([]byte, 64))
+	wellFormedSig, err := markl.Build("", pigpenSelfSigFormat, make([]byte, 64))
 	if err != nil {
 		t.Fatal(err)
 	}

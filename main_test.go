@@ -2067,7 +2067,7 @@ func unsignedPigpenDoc(t *testing.T) []byte {
 // card/piggy binary being present in whatever environment `just test-go`
 // runs in — while still exercising real ECDSA signing against a known key.
 // Given an unsigned pigpen-v1 document on stdin, it expects a signed document
-// carrying a fresh papi-pigpen-self-sig-v1@ecdsa_p256_sig lock. A second
+// carrying a fresh bare papi_pigpen_self_sig_ecdsa_p256_v1 lock. A second
 // invocation against that now-signed output confirms SignPigpen's
 // refuse-to-clobber error propagates through RunE unwrapped.
 func TestPigpenSignCmd(t *testing.T) {
@@ -2091,8 +2091,8 @@ func TestPigpenSignCmd(t *testing.T) {
 	if err := cmd.ExecuteContext(context.Background()); err != nil {
 		t.Fatalf("pigpen sign: %v", err)
 	}
-	if !strings.Contains(out.String(), "papi-pigpen-self-sig-v1@") {
-		t.Errorf("signed output missing a papi-pigpen-self-sig-v1@ lock:\n%s", out.String())
+	if !strings.Contains(out.String(), "papi_pigpen_self_sig_ecdsa_p256_v1-") {
+		t.Errorf("signed output missing a papi_pigpen_self_sig_ecdsa_p256_v1 lock:\n%s", out.String())
 	}
 
 	again := newPigpenSignCmd()

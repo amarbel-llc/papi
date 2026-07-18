@@ -42,13 +42,17 @@ import (
 	"github.com/amarbel-llc/papi/internal/0/markl"
 )
 
-// PurposeSelfSig mirrors internal/alfa/inspect's unexported
-// purposePigpenSelfSig constant — papi's provisional, piggy-unratified
-// self-signature purpose token (RFC-0001 §14.2). It is exported here since
-// this package IS the shared fixture; if inspect's constant is ever
-// renamed, a fixture built with this one will simply stop verifying against
-// a real resolver (fail loud, not silently pass).
-const PurposeSelfSig = "papi-pigpen-self-sig-v1"
+// SelfSigFormat mirrors internal/alfa/inspect's unexported
+// pigpenSelfSigFormat constant — papi's provisional, piggy-unratified
+// self-signature format tag (RFC-0001 §14.2), used with an empty markl
+// purpose (a bare `format-payload` lock, no `@` at all — see that
+// constant's doc comment for why: piggy's actual parser only splits the
+// `!`-line's value on ONE `@`, so a two-field purpose@format lock broke its
+// blech32 checksum). It is exported here since this package IS the shared
+// fixture; if inspect's constant is ever renamed, a fixture built with this
+// one will simply stop verifying against a real resolver (fail loud, not
+// silently pass).
+const SelfSigFormat = markl.FormatPigpenSelfSigEcdsaP256
 
 // RenderLines canonicalizes and serializes lines into hyphence document
 // bytes via FormatBodyEmitter — the same encode path a resolver's own parse
@@ -97,7 +101,7 @@ func NewServer(t testing.TB) (srv *httptest.Server, doc []byte) {
 	raw := make([]byte, 64)
 	r.FillBytes(raw[:32])
 	s.FillBytes(raw[32:])
-	sigID, err := markl.Build(PurposeSelfSig, markl.FormatEcdsaP256Sig, raw)
+	sigID, err := markl.Build("", SelfSigFormat, raw)
 	if err != nil {
 		t.Fatal(err)
 	}

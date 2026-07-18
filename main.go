@@ -397,7 +397,9 @@ func newPigpenSignCmd() *cobra.Command {
 			"sign its RFC-0001 §14.2 strip-self bytes with the caller's PIV slot-9A key (ECDSA " +
 			"P-256, via `piggy sign-bytes --slot 9a` — the card must be physically present; no " +
 			"agent), and print the same document on stdout with the `! pigpen-v1` type line's " +
-			"lock replaced by a fresh papi-pigpen-self-sig-v1@ecdsa_p256_sig markl id. Refuses an " +
+			"lock replaced by a fresh bare papi_pigpen_self_sig_ecdsa_p256_v1 markl id (no " +
+			"embedded purpose@ — piggy's parser only splits the type line's value on one `@`). " +
+			"Refuses an " +
 			"input that is already self-signed (won't clobber an existing lock) or that carries no " +
 			"`-`-prefixed piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub key line to embed the lock " +
 			"against. Unlike sign-challenge this signature is document-bound, not domain-bound: " +
