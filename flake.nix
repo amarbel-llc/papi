@@ -83,7 +83,16 @@
           src = self;
           pwd = ./.;
           modules = ./gomod2nix.toml;
-          subPackages = [ "." ];
+          # Two entries — this flake's first multi-binary subPackages output.
+          # piggy's RFC-0010 resolver-plugin discovery looks for a binary
+          # literally named `pigpen-resolver-papi-http` on $PATH; building it
+          # into this same derivation's bin/ gives it PATH parity with `papi`
+          # wherever a profile installs this package, with no separate install
+          # step (papi#54).
+          subPackages = [
+            "."
+            "cmd/pigpen-resolver-papi-http"
+          ];
           go = pkgs.go;
           GOTOOLCHAIN = "local";
           # Unit tests run via `just test-go` (some reach the network); keep the

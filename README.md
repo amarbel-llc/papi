@@ -588,6 +588,7 @@ internal/alfa/signchallenge/  the sign-challenge command: §5.2 preimage + slot-
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
 cmd/papi-client-wasm/  network-free RFC-0001 decode/verify core, built to js/wasm (FDR-0007)
 cmd/papi-installer/    staged host installer: RFC-0003 phase engine + crap TUI (FDR-0006)
+cmd/pigpen-resolver-papi-http/  piggy RFC 0010 resolver plugin (papi-http kind), experimental
 clients/ts/            TypeScript client wrapper over the js/wasm core (FDR-0007)
 internal/0/installer/  the RFC-0003 phase engine the installer drives (FDR-0006)
 nix/hm, nix/nixos/     the papi-ssh-sync home-manager + NixOS modules (FDR-0005)
