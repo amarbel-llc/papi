@@ -2,104 +2,13 @@ package main
 
 import (
 	"bytes"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/amarbel-llc/hyphence/go/hyphence"
-	"github.com/amarbel-llc/papi/internal/0/markl"
+	"github.com/amarbel-llc/papi/internal/alfa/pigpenfixture"
 )
-
-// purposePigpenSelfSig mirrors the unexported constant of the same name in
-// internal/alfa/inspect (pigpen.go) — papi's provisional, piggy-unratified
-// self-signature purpose token (RFC-0001 §14.2). Package main can't import
-// it directly, and duplicating the literal here (rather than exporting it
-// just for a test) keeps inspect's provisional-scheme warning contained to
-// one package. If that constant is ever renamed, this test fixture's
-// signature will simply stop verifying (fail loud, not silently pass).
-const purposePigpenSelfSig = "papi-pigpen-self-sig-v1"
-
-// renderPigpenLines canonicalizes and serializes lines into hyphence
-// document bytes via FormatBodyEmitter — mirrors
-// internal/alfa/inspect/pigpen_test.go's renderPigpenDoc, reimplemented here
-// since that helper is unexported in a different package.
-func renderPigpenLines(t *testing.T, lines []hyphence.MetadataLine) []byte {
-	t.Helper()
-	doc := &hyphence.Document{Metadata: append([]hyphence.MetadataLine(nil), lines...)}
-	var buf bytes.Buffer
-	emitter := &hyphence.FormatBodyEmitter{Doc: doc, Out: &buf}
-	if _, err := emitter.ReadFrom(strings.NewReader("")); err != nil {
-		t.Fatal(err)
-	}
-	return buf.Bytes()
-}
-
-// newSignedPigpenFixture starts an httptest.Server that serves a genuinely
-// self-signed /papi/pigpen document (RFC-0001 §14.2) plus the matching
-// /papi/piggy-ids publication, and returns the server and the exact document
-// bytes a successful resolve should echo to stdout unmodified.
-//
-// This duplicates the signing recipe from
-// internal/alfa/inspect/pigpen_test.go's buildPigpenDoc (strip-self bytes via
-// a bare `! pigpen-v1` line, sign, re-embed the lock) because that package's
-// crypto-critical core (verifyPigpenSelfSignature, pigpenStripSelfBytes) is
-// unexported and this is a different package (main). The crypto verification
-// logic itself is already exhaustively covered by
-// internal/alfa/inspect/pigpen_test.go (TestResolvePigpen and friends); this
-// fixture exists only to prove run()'s argv/stdout/stderr/exit-code plumbing
-// carries a real success end to end, not to re-prove the crypto.
-func newSignedPigpenFixture(t *testing.T) (srv *httptest.Server, doc []byte) {
-	t.Helper()
-
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	compressed := elliptic.MarshalCompressed(elliptic.P256(), priv.X, priv.Y)
-	keyID, err := markl.Build(markl.PurposePIVAuth, markl.FormatSSHEcdsaNistp256Pub, compressed)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	lines := []hyphence.MetadataLine{
-		{Prefix: '-', Value: keyID},
-		{Prefix: '!', Value: "pigpen-v1"},
-	}
-	stripped := renderPigpenLines(t, lines) // strip-self signing input (§14.2)
-
-	digest := sha256.Sum256(stripped)
-	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw := make([]byte, 64)
-	r.FillBytes(raw[:32])
-	s.FillBytes(raw[32:])
-	sigID, err := markl.Build(purposePigpenSelfSig, markl.FormatEcdsaP256Sig, raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines[1].Value = "pigpen-v1@" + sigID
-	doc = renderPigpenLines(t, lines)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/papi/pigpen", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/vnd.pigpen")
-		_, _ = w.Write(doc)
-	})
-	mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte("# piggy-ids\n" + keyID + "\n"))
-	})
-	srv = httptest.NewServer(mux)
-	t.Cleanup(srv.Close)
-	return srv, doc
-}
 
 func TestRunArgvValidation(t *testing.T) {
 	cases := []struct {
@@ -186,10 +95,12 @@ func TestRunResolveFailure(t *testing.T) {
 }
 
 // TestRunSuccess is the end-to-end happy path: correct argv against a
-// fixture serving a genuinely self-signed pigpen document -> exit 0, stdout
-// equal to the exact document bytes, stderr empty.
+// fixture (internal/alfa/pigpenfixture, shared with the root papi CLI's own
+// `pigpen resolve` test suite) serving a genuinely self-signed pigpen
+// document -> exit 0, stdout equal to the exact document bytes, stderr
+// empty.
 func TestRunSuccess(t *testing.T) {
-	srv, doc := newSignedPigpenFixture(t)
+	srv, doc := pigpenfixture.NewServer(t)
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"resolve", srv.URL}, &stdout, &stderr)
