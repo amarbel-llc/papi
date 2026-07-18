@@ -19,16 +19,19 @@ promotion-criteria: >
 piggy#216/#217 asked papi to serve a self-signed, payload-less pigpen
 document (RFC-0001 §14) so a cached or offline copy of the operator's
 encryption-recipient set is tamper-evident and verifiable without
-papi-specific logic. papi already ships the producer side of that ask (the
-`GET /papi/pigpen` endpoint and the experimental `papi validate` check that
-verifies it, `pigpenSignaturePoints` in `internal/alfa/inspect/pigpen.go`). One
-piece of that producer side was itself missing until papi#54 Task D2: papi had
-the endpoint and the verifier, but no command that actually produced a
-self-signed document for an operator to serve — `inspect.SignPigpen` and the
-`papi pigpen sign` CLI subcommand close that gap (read an unsigned pigpen-v1
-document on stdin, sign it with the operator's slot-9A key, print the signed
-document on stdout), so `papi pigpen resolve`/`pigpen-resolver-papi-http`
-below finally have a papi-native way to obtain something to verify.
+papi-specific logic. papi (this repo) is a client/conformance tool, not an
+HTTP server — `GET /papi/pigpen` itself is implemented by each PAPI-conformant
+operator's own server (e.g. linenisgreat's PHP API). What papi already
+shipped was the *wire-format spec* (RFC-0001 §14) and the experimental
+`papi validate` check that verifies a live server's implementation of it
+(`pigpenSignaturePoints` in `internal/alfa/inspect/pigpen.go`). One piece was
+itself missing until papi#54 Task D2: papi had the spec and the verifier, but
+no command that actually produced a self-signed document for an operator's
+own server to serve — `inspect.SignPigpen` and the `papi pigpen sign` CLI
+subcommand close that gap (read an unsigned pigpen-v1 document on stdin, sign
+it with the operator's slot-9A key, print the signed document on stdout), so
+an operator's server-side tooling finally has a papi-native way to produce
+something `papi pigpen resolve`/`pigpen-resolver-papi-http` below can verify.
 
 What was still missing was the **consumer** side piggy itself needs: piggy
 has since implemented and landed piggy RFC 0008 (the pigpen pointer format),
