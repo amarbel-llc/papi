@@ -87,8 +87,8 @@ return the original fetched bytes unmodified — verify-then-passthrough, not
 a re-encode. Passthrough is deliberate: reconstructing the signing input a
 second time via hyphence's encoder would add an unnecessary dependency on
 that encoder being lossless, and passthrough preserves an audit trail (a
-later reader can see the doc *was* self-signed, lock and all). RFC 0010 §6
-is explicit that piggy doesn't care either way.
+later reader can see the doc *was* self-signed, signature line and all).
+RFC 0010 §6 is explicit that piggy doesn't care either way.
 
 ### The human-facing convenience command — `papi pigpen resolve <locator>`
 
@@ -118,9 +118,10 @@ Successful resolution — a domain serving a valid, self-signed pigpen doc:
 
 ```
 $ pigpen-resolver-papi-http resolve example.com
-! pigpen-v1@papi_pigpen_self_sig_ecdsa_p256_v1-<...>
 - piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<...>
 - piggy-recipient-v1@<...>
+- papi-pigpen-self-sig-v1@ecdsa_p256_sig-<...>
+! pigpen-v1
 ...
 $ echo $?
 0
@@ -186,61 +187,54 @@ $ papi pigpen resolve example.com
   host-scoping rule exists to guard against. `papi.Client` doesn't enforce
   §8.1 anywhere today for any caller, so adding it only here would be
   inconsistent rather than protective.
-- **The self-signature scheme itself remains entirely papi's own invention
-  — unratified, and unaddressed, by piggy.** piggy RFC 0008 (pigpen wire
-  format), RFC 0009 (production cutover), and RFC 0010 (resolver-dispatch
-  protocol) have since landed and piggy#216 is closed, but checking piggy's
-  actual RFC text directly (not just its status) shows none of the three
-  defines, reserves, or even mentions a self-signature scheme for a
-  payload-less pigpen document. RFC 0008 §2.2 documents exactly three faces
-  — recipient set (no lock), sealed (wrap locks + a header-MAC lock on the
-  `!` line), and pointer (`kind=`/`locator=` tags) — and assigns the `!`-line
-  lock only to the sealed-document header MAC; §5's markl-registration table
-  has no purpose resembling papi's own tag. So this is not "still
-  draft, awaiting piggy's real name for the lock" (the wording used before
-  this FDR existed) — piggy's landed RFCs simply never address a self-signed
-  recipient-set document at all. `verifyPigpenSelfSignature` and
-  `pigpenSelfSigFormat` (`internal/alfa/inspect/pigpen.go`) remain a
-  papi-only convention that a strict piggy pigpen reader has no obligation
-  to recognize; whether piggy ever standardizes an equivalent concept (and
-  under what markl purpose) is an open question this FDR does not resolve.
-  Separately, and as of this writing (2026-07-18), RFC 0008/0009/0010's own
-  front matter still literally reads `status: draft` even though piggy#216's
-  resolver-dispatch protocol (RFC 0010) is implemented and exercised by
-  piggy's own end-to-end test suite — so "landed" above means "implemented
-  and in production use," not "promoted out of draft in piggy's own RFC
-  process."
-- **The lock is a bare, single-tag markl-id, NOT a `purpose@format-payload`
-  one — this was a real interop bug, not a stylistic choice, found by
-  actually running `piggy pass recipients sync` against a real signed
-  document.** The original scheme built the lock as
-  `papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>` — a full markl-id with
-  its own embedded `@`. papi's own `papi validate`/`papi pigpen resolve`
-  verified this fine (pure Go, symmetric with what it produced), but piggy's
-  actual parser (`crates/piggy-pigpen/src/document.rs`,
-  `parse_type_line`/`decode_mac`) splits the `!`-line's value on exactly ONE
-  `@` and blech32-decodes everything after it as a single tag — the lock's
-  own inner `@` was never re-split, so piggy computed the wrong
-  human-readable prefix and its blech32 checksum (computed over that prefix)
-  failed outright. Every one of an operator's real secrets failed to sync
-  the first time this was tried end-to-end, despite every papi-side test and
-  `papi validate`/`papi pigpen resolve` reporting success — those never
-  invoke piggy's Rust parser at all. The fix: fold "papi's self-signature
-  scheme" and "ECDSA P-256" into one atomic format tag
-  (`papi_pigpen_self_sig_ecdsa_p256_v1`) built with an EMPTY purpose
-  (`markl.Build("", ..., raw)`, producing a bare `format-payload` string, no
-  `@`) — matching the convention piggy's own lock-slot tags in this same
-  document format already use (`pigpen_header_mac`, `pigpen_wrap_p256`,
-  `pigpen_wrap_x25519` are each one atomic tag, never a purpose+format
-  pair). papi's own general `purpose@format-payload` markl-id shape remains
-  correct and unchanged for its top-level JSON `/papi` document signatures,
-  where many purposes genuinely do share a small set of formats — it just
-  never fit hyphence/pigpen documents' own, narrower, single-tag convention.
-  **Operational lesson:** `papi validate`/`papi pigpen resolve` succeeding is
-  not sufficient evidence piggy can actually consume a signed document —
-  neither path touches piggy's Rust parser. The only real end-to-end check
-  is a real `piggy pass recipients sync`/`list` against a pointer-backed
-  `piggy-ids`.
+- **The self-signature *purpose name* remains papi's own invention; piggy
+  has not standardized a dedicated self-signature concept.** piggy RFC 0008
+  §2.2 documents exactly three pigpen faces — recipient set (no lock),
+  sealed (wrap locks + a header-MAC lock on the `!` line), and pointer
+  (`kind=`/`locator=` tags) — and none of them names anything resembling
+  `papi-pigpen-self-sig-v1`. What IS now grounded, rather than assumed
+  (see the next two bullets for how this was found and fixed), is that
+  piggy's real recipient-set parser tolerates an unrecognized-purpose `-`
+  line by design: an identifier the type system can't resolve degrades to a
+  plain tag, not a decode error (hyphence content grammar §6.6,
+  [linenisgreat/hyphence#6](https://code.linenisgreat.com/linenisgreat/hyphence/issues/6);
+  piggy RFC 0008 §2.3/§10 as of commit `ff4eb12`, which added an explicit
+  test and fixed a conformance-section bug that had said the opposite).
+  Whether piggy ever standardizes an equivalent concept (and under what
+  markl purpose) is still an open question this FDR does not resolve.
+- **Superseded history: two earlier lock-shaped schemes, both abandoned —
+  not because either shape was wrong, but because the `!`-line lock slot
+  itself has no wire position for a payload-less self-signature at all.**
+  The original scheme embedded the signature as a lock on the `!`-line
+  (`! pigpen-v1@<markl-id>`), first as a full `purpose@format-payload`
+  markl-id, then (after a real interop failure — piggy's
+  `parse_type_line`/`decode_mac` only splits the `!`-line's value on ONE
+  `@`, so the lock's own inner `@` broke its blech32 checksum) as a single
+  atomic format tag (`papi_pigpen_self_sig_ecdsa_p256_v1`, empty purpose).
+  Both were abandoned once piggy's RFC 0008 §2.6 was read closely: that
+  section reserves the `!`-line lock *exclusively* for a sealed document's
+  header MAC — the lock's mere presence there means "this document has
+  ciphertext," which a payload-less self-signed document deliberately does
+  not have. No `!`-line lock shape could have worked; the slot itself was
+  wrong. See the next bullet for the scheme that replaced both.
+- **Current scheme: the self-signature lives on its own `-` line, not the
+  `!`-line, as an ordinary `purpose@format-payload` markl-id.** A fresh
+  `papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>` markl-id is inserted as
+  its own `-` line (immediately before the always-bare `! pigpen-v1` type
+  line), the same shape as the recipient/auth-key lines already in the
+  document — see `findPigpenSelfSig`/`SignPigpen`
+  (`internal/alfa/inspect/pigpen.go`). This shape was verified, not assumed:
+  piggy's real recipient-set parser required no production code change at
+  all to tolerate it (see the first bullet above), confirmed by a
+  piggy-side session reading `crates/piggy-pigpen/src/document.rs` directly
+  and adding a test (`unrecognized_purpose_dash_line_tolerated`, commit
+  `ff4eb12`) rather than by inspection alone.
+  **Operational lesson (carried forward from the earlier interop bug that
+  motivated this whole redesign):** `papi validate`/`papi pigpen resolve`
+  succeeding is not sufficient evidence piggy can actually consume a signed
+  document — neither path touches piggy's Rust parser. The only real
+  end-to-end check is a real `piggy pass recipients sync`/`list` against a
+  pointer-backed `piggy-ids`.
 
 ## More Information
 

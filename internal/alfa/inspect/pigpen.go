@@ -49,49 +49,33 @@ func parsePigpenMetadataLines(data []byte) ([]hyphence.MetadataLine, error) {
 	return doc.Metadata, nil
 }
 
-// pigpenSelfSigFormat is the markl format tag for the pigpen `!`-line
-// self-signature lock (RFC-0001 §14.2), used with an EMPTY purpose — a bare
-// `format-payload` markl-id, no `@` at all. THIS IS A PROVISIONAL,
-// PAPI-INVENTED PLACEHOLDER; piggy has never defined a self-signature scheme
-// for a payload-less pigpen document (RFC 0008 §2.2/§5 assign the `!`-line
-// lock only to a sealed document's header MAC, with no purpose resembling
-// this one) — expect this to be renamed or restructured if piggy ever does
-// standardize one.
+// findPigpenSelfSig returns the first `-`-prefixed line whose value carries
+// papi's pigpen self-signature purpose (RFC-0001 §14.2, papi#54) — an
+// ordinary purpose@format-payload markl-id
+// (papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>), placed as a bare `-`
+// line's whole value, same shape as the recipient/auth-key lines already in
+// the document. ok is false when no such line exists at all (the common,
+// SHOULD-not-MUST unsigned case, which must resolve without ever parsing
+// the value as a markl-id); ok is true and value is returned as-is — still
+// unparsed — when a line with the purpose prefix exists but may or may not
+// otherwise be well-formed, mirroring findPigpenAuthKey's found-vs-missing
+// split.
 //
-// This WAS a two-field purpose@format markl-id
-// (papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>) until a real
-// interop failure against piggy's actual parser: piggy's
-// crates/piggy-pigpen/src/document.rs (parse_type_line/decode_mac) splits
-// the `!`-line's value on exactly ONE `@`, then blech32-decodes the
-// remainder as a single atomic tag. A two-field lock's OWN inner `@`
-// doesn't get split again, so piggy computed the wrong HRP and its blech32
-// checksum (computed over the HRP) failed outright — not a trust/policy
-// rejection, a hard parse failure. piggy's own lock-slot tags in this same
-// document format (pigpen_header_mac, pigpen_wrap_p256, pigpen_wrap_x25519)
-// are each already exactly one atomic tag encoding both "what this is" and
-// "what algorithm" — this format tag now follows that same convention
-// instead of reusing papi's separate purpose@format-payload shape (which
-// remains correct and unchanged for papi's own top-level JSON /papi
-// document signatures, where it genuinely earns its keep). See
-// docs/features/0013-pigpen-resolver-papi-http.md (Limitations).
-const pigpenSelfSigFormat = markl.FormatPigpenSelfSigEcdsaP256
-
-// extractPigpenTypeLock finds the `!`-prefixed type-line MetadataLine and
-// splits its Value on the first `@` into the type identifier (`pigpen-v1`)
-// and the lock that follows it — the self-signature markl-id, when present
-// (RFC-0001 §14.2). ok is false when there is no type line at all, or the
-// type line carries no lock (a bare `pigpen-v1`, permitted since the
-// self-signature is SHOULD not MUST).
-func extractPigpenTypeLock(lines []hyphence.MetadataLine) (lock string, ok bool) {
+// This scheme replaces an earlier one that embedded the signature as a lock
+// on the pigpen `!`-line: piggy's RFC 0008 §2.6 reserves that lock slot
+// exclusively for a sealed document's header MAC, so a payload-less
+// self-signature never had a wire position there at all. Verified against
+// piggy's real recipient-set parser, which already tolerates an
+// unrecognized-purpose `-` line by design (hyphence content grammar §6.6:
+// an identifier the type system can't resolve degrades to a plain tag, not
+// a decode error) — see linenisgreat/hyphence#6 and piggy commit ff4eb12.
+func findPigpenSelfSig(lines []hyphence.MetadataLine) (value string, ok bool) {
+	prefix := markl.PurposePigpenSelfSig + "@"
 	for _, l := range lines {
-		if l.Prefix != '!' {
+		if l.Prefix != '-' || !strings.HasPrefix(l.Value, prefix) {
 			continue
 		}
-		i := strings.IndexByte(l.Value, '@')
-		if i < 0 {
-			return "", false
-		}
-		return l.Value[i+1:], true
+		return l.Value, true
 	}
 	return "", false
 }
@@ -115,24 +99,25 @@ func findPigpenAuthKey(lines []hyphence.MetadataLine) (keyMarklID string, keyPoi
 	return "", nil, false
 }
 
-// pigpenStripSelfBytes reconstructs the §14.2 strip-self signing input: lines
-// with the `!` type-line's lock removed (as if it were empty, mirroring
-// §10.2's JSON strip-and-canonicalize recipe), canonicalized and re-encoded
-// via hyphence's own FormatBodyEmitter — the same canonicalization a signer
-// applies before signing — so a verifier reconstructing these bytes from a
-// parsed document lands on identical bytes regardless of the source line
-// order.
+// pigpenStripSelfBytes reconstructs the §14.2 strip-self signing input:
+// lines with the self-signature `-` line omitted entirely (as if it were
+// never added, mirroring §10.2's JSON strip-and-canonicalize recipe),
+// canonicalized and re-encoded via hyphence's own FormatBodyEmitter — the
+// same canonicalization a signer applies before signing — so a verifier
+// reconstructing these bytes from a parsed document lands on identical
+// bytes regardless of the source line order. Unlike the earlier `!`-line
+// lock scheme (which always kept the type line, only clearing its lock
+// suffix), the self-signature now has no "present but empty" state of its
+// own on the wire — an unsigned document simply has no such line, so
+// omitting it entirely from the signing input is the exact analogue.
 func pigpenStripSelfBytes(lines []hyphence.MetadataLine) ([]byte, error) {
-	stripped := make([]hyphence.MetadataLine, len(lines))
-	copy(stripped, lines)
-	for i, l := range stripped {
-		if l.Prefix != '!' {
+	prefix := markl.PurposePigpenSelfSig + "@"
+	stripped := make([]hyphence.MetadataLine, 0, len(lines))
+	for _, l := range lines {
+		if l.Prefix == '-' && strings.HasPrefix(l.Value, prefix) {
 			continue
 		}
-		if idx := strings.IndexByte(l.Value, '@'); idx >= 0 {
-			l.Value = l.Value[:idx]
-		}
-		stripped[i] = l
+		stripped = append(stripped, l)
 	}
 
 	doc := &hyphence.Document{Metadata: stripped}
@@ -157,24 +142,25 @@ func pigpenStripSelfBytes(lines []hyphence.MetadataLine) ([]byte, error) {
 // sides, so it's shared rather than duplicated. See its own comment for why
 // its wording is direction-neutral.
 var (
-	// errPigpenUnsigned: no lock on the `! pigpen-v1` type line at all. The
-	// self-signature is SHOULD, not MUST (RFC-0001 §14.2), so on its own this
-	// is never a failure.
-	errPigpenUnsigned = errors.New("no self-signature lock on the `! pigpen-v1` line")
+	// errPigpenUnsigned: no papi-pigpen-self-sig-v1 `-` line in the document
+	// at all. The self-signature is SHOULD, not MUST (RFC-0001 §14.2), so on
+	// its own this is never a failure.
+	errPigpenUnsigned = errors.New("no " + markl.PurposePigpenSelfSig + " markl-id line in the document")
 
-	// errPigpenLockMalformed: the lock is present but doesn't parse as the
-	// expected bare pigpenSelfSigFormat markl-id (papi's provisional,
-	// piggy-unratified scheme) — unverifiable, not a failure.
-	errPigpenLockMalformed = errors.New("lock is not a bare " + pigpenSelfSigFormat + " markl-id")
+	// errPigpenLockMalformed: a line with the self-signature purpose prefix
+	// exists but doesn't parse as a well-formed
+	// papi-pigpen-self-sig-v1@ecdsa_p256_sig markl-id — unverifiable, not a
+	// failure.
+	errPigpenLockMalformed = errors.New("self-signature line is not a well-formed " + markl.PurposePigpenSelfSig + "@" + markl.FormatEcdsaP256Sig + " markl-id")
 
 	// errPigpenNoAuthKey: no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line in
 	// the document. On the verify side (verifyPigpenSelfSignature) this means
-	// there's no key to check an existing lock against — unverifiable, not a
-	// failure. On the sign side (SignPigpen) it means there'd be nothing for
-	// a FUTURE verifier to check the about-to-be-produced lock against, so
-	// SignPigpen refuses outright. The wording below is deliberately
-	// direction-neutral (doesn't say "the lock", singular/existing) so it
-	// reads correctly from both call sites.
+	// there's no key to check an existing signature against — unverifiable,
+	// not a failure. On the sign side (SignPigpen) it means there'd be
+	// nothing for a FUTURE verifier to check the about-to-be-produced
+	// signature against, so SignPigpen refuses outright. The wording below
+	// is deliberately direction-neutral (doesn't say "the signature",
+	// singular/existing) so it reads correctly from both call sites.
 	errPigpenNoAuthKey = errors.New("no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line for a self-signature to be verified against")
 
 	// errPigpenKeyNotPublished: the signing key is present in-document but
@@ -220,21 +206,22 @@ func (e *errPigpenStripBytes) Error() string {
 func (e *errPigpenStripBytes) Unwrap() error { return e.err }
 
 // verifyPigpenSelfSignature performs the trust-critical core of §14.2
-// self-signature verification (papi#54): parse the lock, locate and check
-// publication of the signing key, and run the ECDSA verification — from
-// "parse the lock" through "ecdsa verify". It makes no HTTP calls itself
-// (the caller supplies already-parsed lines), so it's reusable by both
-// `papi validate` (pigpenSignaturePoints) and a future resolver
-// (ResolvePigpen, Task C2) without duplicating the crypto-critical logic.
+// self-signature verification (papi#54): parse the self-signature `-` line,
+// locate and check publication of the signing key, and run the ECDSA
+// verification — from "parse the self-signature" through "ecdsa verify". It
+// makes no HTTP calls itself (the caller supplies already-parsed lines), so
+// it's reusable by both `papi validate` (pigpenSignaturePoints) and a
+// resolver (ResolvePigpen) without duplicating the crypto-critical logic.
 //
-// fetchAuthIDs is called at most once, and only once the lock has parsed and
-// an auth-key line has been found — mirroring the pre-refactor inline code's
-// call timing exactly. This matters: /papi/piggy-ids is a live network fetch
-// (fetchPiggyAuthIDs), and the common case §14.2 explicitly expects — a
-// present-but-unsigned document, or a document with no lock/auth-key line at
-// all — must resolve without ever touching the network. Callers typically
-// pass a closure wrapping fetchPiggyAuthIDs; tests can pass one returning a
-// static slice with no server involved.
+// fetchAuthIDs is called at most once, and only once a self-signature line
+// has been found and an auth-key line has been found — mirroring the
+// pre-refactor inline code's call timing exactly. This matters:
+// /papi/piggy-ids is a live network fetch (fetchPiggyAuthIDs), and the
+// common case §14.2 explicitly expects — a present-but-unsigned document,
+// or a document with no self-signature/auth-key line at all — must resolve
+// without ever touching the network. Callers typically pass a closure
+// wrapping fetchPiggyAuthIDs; tests can pass one returning a static slice
+// with no server involved.
 //
 // On success it returns the signing key's markl-id and a nil error; on any
 // of the distinguishable failure/skip outcomes it returns a sentinel or
@@ -242,13 +229,13 @@ func (e *errPigpenStripBytes) Unwrap() error { return e.err }
 // means), along with the signing key's markl-id when one was found before
 // the failure occurred.
 func verifyPigpenSelfSignature(lines []hyphence.MetadataLine, fetchAuthIDs func() []string) (keyID string, err error) {
-	lock, hasLock := extractPigpenTypeLock(lines)
-	if !hasLock {
+	value, hasSig := findPigpenSelfSig(lines)
+	if !hasSig {
 		return "", errPigpenUnsigned
 	}
 
-	sigID, err := markl.Parse(lock)
-	if err != nil || sigID.Purpose != "" || sigID.Format != pigpenSelfSigFormat {
+	sigID, err := markl.Parse(value)
+	if err != nil || sigID.Purpose != markl.PurposePigpenSelfSig || sigID.Format != markl.FormatEcdsaP256Sig {
 		return "", errPigpenLockMalformed
 	}
 
@@ -279,30 +266,31 @@ func verifyPigpenSelfSignature(lines []hyphence.MetadataLine, fetchAuthIDs func(
 }
 
 // pigpenSignaturePoints verifies the /papi/pigpen document's self-signature
-// (RFC-0001 §14.2, papi#54) against papi's PROVISIONAL, piggy-unaddressed
-// scheme (pigpenSelfSigFormat is papi's own placeholder — see its doc
-// comment above and docs/features/0013-pigpen-resolver-papi-http.md). piggy RFC 0008/0009/0010
-// have since landed (piggy#216 closed) but never defined a self-signature
-// face for a payload-less pigpen document, so there is nothing yet for this
-// scheme to "graduate" into; it WILL need rework only if/when a future piggy
-// RFC standardizes one. Until then, do not treat this as a stable
-// wire-format check.
+// (RFC-0001 §14.2, papi#54): a papi-pigpen-self-sig-v1@ecdsa_p256_sig
+// markl-id on its own `-` line (see findPigpenSelfSig's doc comment for why
+// it lives there rather than as a `!`-line lock). The purpose itself
+// (papi-pigpen-self-sig-v1) remains papi's own invention — piggy has not
+// standardized a dedicated self-signature concept — but the *shape* is
+// verified against piggy's real recipient-set parser, which tolerates an
+// unrecognized-purpose `-` line by design (linenisgreat/hyphence#6, piggy
+// RFC 0008 §2.3/§10 as of commit ff4eb12), so this is no longer a guess
+// about undocumented behavior.
 //
 // /papi/pigpen is entirely OPTIONAL (RFC-0001 §14.1): a 404, any other
 // non-200 status, or a fetch error is always a skip, never a fail, so this
 // check never trips `papi validate`'s exit code against a server that simply
 // doesn't implement it. Likewise a present-but-unsigned document (the
 // self-signature is SHOULD, not MUST) is a skip. Only a present, well-formed,
-// published-key lock that fails cryptographic verification is a MUST
-// failure — mirroring signaturePoints' signed-but-invalid handling.
+// published-key self-signature that fails cryptographic verification is a
+// MUST failure — mirroring signaturePoints' signed-but-invalid handling.
 //
 // The fetch, status-check, and metadata parse stay here (I/O, not
-// crypto-critical); everything from "parse the lock" through "ecdsa verify"
-// is delegated to verifyPigpenSelfSignature, whose returned error is mapped
-// back to the exact skip/mustFail/ok points this function has always
-// produced.
+// crypto-critical); everything from "parse the self-signature" through
+// "ecdsa verify" is delegated to verifyPigpenSelfSignature, whose returned
+// error is mapped back to the exact skip/mustFail/ok points this function
+// has always produced.
 func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
-	const label = "pigpen: §14.2 self-signature (experimental, provisional scheme, papi#54)"
+	const label = "pigpen: §14.2 self-signature (papi#54)"
 
 	resp, err := c.Fetch(ctx, "/papi/pigpen")
 	if err != nil {
@@ -330,14 +318,14 @@ func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
 	case verr == nil:
 		return []point{ok(label + ": signed-and-valid")}
 	case errors.Is(verr, errPigpenUnsigned):
-		return []point{skip("pigpen: unsigned (§14.2 SHOULD, experimental)",
-			"no self-signature lock on the `! pigpen-v1` line")}
+		return []point{skip("pigpen: unsigned (§14.2 SHOULD)",
+			"no "+markl.PurposePigpenSelfSig+" markl-id line in the document")}
 	case errors.Is(verr, errPigpenLockMalformed):
 		return []point{skip(label+" unverifiable",
-			"lock is not a bare "+pigpenSelfSigFormat+" markl-id")}
+			"self-signature line is not a well-formed "+markl.PurposePigpenSelfSig+"@"+markl.FormatEcdsaP256Sig+" markl-id")}
 	case errors.Is(verr, errPigpenNoAuthKey):
 		return []point{skip(label+" unverifiable",
-			"no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line to verify the lock against")}
+			"no piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line to verify the self-signature against")}
 	case errors.Is(verr, errPigpenKeyNotPublished):
 		return []point{skip(label+" unverifiable -> unsigned",
 			"signing key is not published (piggy-ids)")}
@@ -366,9 +354,10 @@ func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
 // deliberate: pigpenStripSelfBytes/FormatBodyEmitter reconstructs a *signing
 // input*, not a guaranteed byte-identical round-trip of whatever the origin
 // served, and piggy is explicitly indifferent to whether the returned doc
-// still carries the lock (RFC-0010 §6). Passthrough avoids a second,
-// unnecessary dependency on hyphence's encoder being lossless, and preserves
-// an audit trail: a later reader can see the doc *was* self-signed.
+// still carries the self-signature line (RFC-0010 §6). Passthrough avoids a
+// second, unnecessary dependency on hyphence's encoder being lossless, and
+// preserves an audit trail: a later reader can see the doc *was*
+// self-signed.
 //
 // Unlike pigpenSignaturePoints (a `papi validate` check, where
 // /papi/pigpen is OPTIONAL per RFC-0001 §14.1 and a present-but-unsigned
@@ -386,8 +375,8 @@ func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
 // resolver's stderr, so these messages don't repeat that, just distinguish
 // *which* failure occurred (fetch failed, 404/not-implemented, unexpected
 // status, malformed document, or one of verifyPigpenSelfSignature's
-// distinguishable errPigpen* verdicts — unsigned, malformed lock, no
-// auth-key line, key not published, signature invalid).
+// distinguishable errPigpen* verdicts — unsigned, malformed self-signature,
+// no auth-key line, key not published, signature invalid).
 func ResolvePigpen(ctx context.Context, c *papi.Client) ([]byte, error) {
 	resp, err := c.Fetch(ctx, "/papi/pigpen")
 	if err != nil {
@@ -416,24 +405,23 @@ func ResolvePigpen(ctx context.Context, c *papi.Client) ([]byte, error) {
 
 // --- Signing (producer side, papi#54 Task D1) ---
 
-// errPigpenAlreadySigned: SignPigpen was asked to sign a document whose `!
-// pigpen-v1` type line already carries a lock. Refusing (rather than
+// errPigpenAlreadySigned: SignPigpen was asked to sign a document that
+// already has a papi-pigpen-self-sig-v1 `-` line. Refusing (rather than
 // silently overwriting) means a caller can't accidentally destroy an
 // existing self-signature by re-running SignPigpen on already-signed input.
-var errPigpenAlreadySigned = errors.New("pigpen document already has a self-signature lock; refusing to overwrite")
+var errPigpenAlreadySigned = errors.New("pigpen document already has a self-signature line; refusing to overwrite")
 
 // errPigpenNoTypeLine: SignPigpen was asked to sign a document with no `!`
 // line at all — a malformed/truncated pigpen document, not just an unsigned
-// one. This is genuinely reachable: extractPigpenTypeLock's hasLock==false
-// (checked first, above findPigpenAuthKey in SignPigpen) can't distinguish
-// "no `!` line exists" from "a bare `! pigpen-v1` line with no lock", and
-// findPigpenAuthKey's ok==true says nothing about whether a `!` line is
+// one. findPigpenAuthKey's ok==true says nothing about whether a `!` line is
 // present anywhere else in the document — a document can publish a
-// well-formed auth-key `-` line while missing its `!` line entirely. There'd
-// be nowhere to embed the produced lock, so SignPigpen checks for this and
-// refuses before ever invoking the signer (no point spending a card
-// signature on input that can't be completed).
-var errPigpenNoTypeLine = errors.New("no `! pigpen-v1` type line to embed the self-signature lock into")
+// well-formed auth-key `-` line while missing its `!` line entirely. The new
+// self-signature `-` line is inserted immediately before the `!` line to
+// keep canonical line order (RFC 0002 §"Canonical line order": `-` lines,
+// then `@`, then `!`), so SignPigpen needs that line's position and refuses
+// before ever invoking the signer if there isn't one (no point spending a
+// card signature on input that can't be completed).
+var errPigpenNoTypeLine = errors.New("no `! pigpen-v1` type line to insert the self-signature line before")
 
 // PigpenSigner signs message bytes with the slot-9A key of the card
 // identified by guid, returning the raw 64-byte r‖s ECDSA P-256 signature —
@@ -450,32 +438,32 @@ type PigpenSigner interface {
 }
 
 // SignPigpen produces a self-signed pigpen document (RFC-0001 §14.2,
-// papi#54 Task D1): the producer-side inverse of verifyPigpenSelfSignature.
-// data is an unsigned (or not-yet-self-signed) hyphence pigpen document; on
-// success SignPigpen returns the same document with the `! pigpen-v1` type
-// line's lock replaced by a fresh bare pigpenSelfSigFormat markl-id (no
-// purpose, no inner `@` — see pigpenSelfSigFormat's doc comment for why).
+// papi#54): the producer-side inverse of verifyPigpenSelfSignature. data is
+// an unsigned (or not-yet-self-signed) hyphence pigpen document; on success
+// SignPigpen returns the same document with a fresh
+// papi-pigpen-self-sig-v1@ecdsa_p256_sig markl-id inserted as a new `-`
+// line, immediately before the `! pigpen-v1` type line (see
+// findPigpenSelfSig's doc comment for why the signature lives on its own
+// line rather than as a `!`-line lock).
 //
 // SignPigpen refuses three malformed inputs rather than silently producing a
 // document a verifier can't check or worse, clobbering an existing
 // signature:
 //
-//   - The type line already carries a lock (extractPigpenTypeLock reports
-//     ok=true): errPigpenAlreadySigned. Signing over an existing lock would
-//     either silently discard a legitimate prior signature or (since the
-//     strip-self input only ever clears the CURRENT `!` line, not other
-//     document state) leave the document in a confusing partially-resigned
-//     state; either way the caller almost certainly didn't intend it.
+//   - A papi-pigpen-self-sig-v1 line already exists (findPigpenSelfSig
+//     reports ok=true): errPigpenAlreadySigned. Signing over an existing
+//     signature would either silently discard a legitimate prior signature
+//     or leave the document with two competing signature lines; either way
+//     the caller almost certainly didn't intend it.
 //   - No piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub line is present
 //     (findPigpenAuthKey reports ok=false): errPigpenNoAuthKey, the same
 //     sentinel verifyPigpenSelfSignature returns for the identical
 //     condition on the verify side — there is nothing in the document for a
 //     future verifier to check the signature against.
-//   - No `!` line exists anywhere in the document at all (distinct from the
-//     first case above, and not implied by either check above having
-//     passed — see errPigpenNoTypeLine's own comment): errPigpenNoTypeLine.
-//     Checked before the signer is ever invoked, since there'd be nowhere
-//     to embed the resulting lock regardless of what the signer returns.
+//   - No `!` line exists anywhere in the document at all: errPigpenNoTypeLine.
+//     Checked before the signer is ever invoked, since there'd be nowhere to
+//     insert the resulting signature line regardless of what the signer
+//     returns.
 //
 // The signing input is pigpenStripSelfBytes(lines) — the same canonicalized,
 // still-unsigned-at-this-point strip-self bytes verifyPigpenSelfSignature
@@ -493,7 +481,7 @@ func SignPigpen(ctx context.Context, signer PigpenSigner, guid string, data []by
 		return nil, fmt.Errorf("pigpen: sign: parse hyphence metadata: %w", err)
 	}
 
-	if _, hasLock := extractPigpenTypeLock(lines); hasLock {
+	if _, hasSig := findPigpenSelfSig(lines); hasSig {
 		return nil, errPigpenAlreadySigned
 	}
 
@@ -522,14 +510,17 @@ func SignPigpen(ctx context.Context, signer PigpenSigner, guid string, data []by
 		return nil, fmt.Errorf("pigpen: sign: %w", err)
 	}
 
-	lock, err := markl.Build("", pigpenSelfSigFormat, raw)
+	sigID, err := markl.Build(markl.PurposePigpenSelfSig, markl.FormatEcdsaP256Sig, raw)
 	if err != nil {
-		return nil, fmt.Errorf("pigpen: sign: build lock: %w", err)
+		return nil, fmt.Errorf("pigpen: sign: build self-signature markl-id: %w", err)
 	}
 
-	lines[typeLineIdx].Value = "pigpen-v1@" + lock
+	signed := make([]hyphence.MetadataLine, 0, len(lines)+1)
+	signed = append(signed, lines[:typeLineIdx]...)
+	signed = append(signed, hyphence.MetadataLine{Prefix: '-', Value: sigID})
+	signed = append(signed, lines[typeLineIdx:]...)
 
-	doc := &hyphence.Document{Metadata: lines}
+	doc := &hyphence.Document{Metadata: signed}
 	var buf bytes.Buffer
 	emitter := &hyphence.FormatBodyEmitter{Doc: doc, Out: &buf}
 	if _, err := emitter.ReadFrom(strings.NewReader("")); err != nil {

@@ -23,22 +23,27 @@ import (
 	"github.com/amarbel-llc/papi/internal/0/papi"
 )
 
-func TestExtractPigpenTypeLock(t *testing.T) {
+func TestFindPigpenSelfSig(t *testing.T) {
+	sigID, err := markl.Build(markl.PurposePigpenSelfSig, markl.FormatEcdsaP256Sig, make([]byte, 64))
+	if err != nil {
+		t.Fatal(err)
+	}
 	lines := []hyphence.MetadataLine{
 		{Prefix: '-', Value: "piggy-recipient-v1@pivy_ecdh_p256_pub-qqq..."},
-		{Prefix: '!', Value: "pigpen-v1@papi_pigpen_self_sig_ecdsa_p256_v1-<blech32>"},
+		{Prefix: '-', Value: sigID},
+		{Prefix: '!', Value: "pigpen-v1"},
 	}
-	lock, ok := extractPigpenTypeLock(lines)
+	value, ok := findPigpenSelfSig(lines)
 	if !ok {
-		t.Fatal("want a lock on the type line, got none")
+		t.Fatal("want a self-signature line, got none")
 	}
-	if lock != "papi_pigpen_self_sig_ecdsa_p256_v1-<blech32>" {
-		t.Errorf("unexpected lock value: %q", lock)
+	if value != sigID {
+		t.Errorf("unexpected self-signature value: %q", value)
 	}
 
-	noLock := []hyphence.MetadataLine{{Prefix: '!', Value: "pigpen-v1"}}
-	if _, ok := extractPigpenTypeLock(noLock); ok {
-		t.Error("bare type line (no @lock) must report ok=false")
+	noSig := []hyphence.MetadataLine{{Prefix: '!', Value: "pigpen-v1"}}
+	if _, ok := findPigpenSelfSig(noSig); ok {
+		t.Error("document with no self-signature line must report ok=false")
 	}
 }
 
@@ -101,9 +106,10 @@ func renderPigpenDoc(t *testing.T, lines []hyphence.MetadataLine) []byte {
 
 // buildPigpenDoc assembles a payload-less pigpen document publishing s's
 // piv_auth key on a `-` line. When sign is true, it self-signs (strip-self,
-// §14.2): signs pigpenStripSelfBytes of the unsigned lines, then embeds the
-// resulting bare pigpenSelfSigFormat lock on the `!` line. corrupt flips a
-// signature byte after signing, producing a well-formed but invalid lock.
+// §14.2): signs pigpenStripSelfBytes of the unsigned lines, then inserts the
+// resulting papi-pigpen-self-sig-v1@ecdsa_p256_sig markl-id as a new `-`
+// line before the `!` line. corrupt flips a signature byte after signing,
+// producing a well-formed but invalid signature.
 func buildPigpenDoc(t *testing.T, s pigpenSigner, sign, corrupt bool) []byte {
 	t.Helper()
 	lines := []hyphence.MetadataLine{
@@ -129,12 +135,12 @@ func buildPigpenDoc(t *testing.T, s pigpenSigner, sign, corrupt bool) []byte {
 	if corrupt {
 		raw[0] ^= 0xFF
 	}
-	sigID, err := markl.Build("", pigpenSelfSigFormat, raw)
+	sigID, err := markl.Build(markl.PurposePigpenSelfSig, markl.FormatEcdsaP256Sig, raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines[1].Value = "pigpen-v1@" + sigID
-	return renderPigpenDoc(t, lines)
+	signed := []hyphence.MetadataLine{lines[0], {Prefix: '-', Value: sigID}, lines[1]}
+	return renderPigpenDoc(t, signed)
 }
 
 // newPigpenFixtureServer builds a test server serving data at /papi/pigpen
@@ -219,11 +225,14 @@ func TestPigpenSignatureVerification(t *testing.T) {
 	})
 
 	t.Run("malformed", func(t *testing.T) {
-		lines := []hyphence.MetadataLine{{Prefix: '!', Value: "pigpen-v1@not-a-valid-markl-lock"}}
+		lines := []hyphence.MetadataLine{
+			{Prefix: '-', Value: markl.PurposePigpenSelfSig + "@not-a-valid-markl-id"},
+			{Prefix: '!', Value: "pigpen-v1"},
+		}
 		doc := renderPigpenDoc(t, lines)
 		pts := pigpenPointsFor(t, doc, false, nil)
 		if len(pts) != 1 || pts[0].reason == "" {
-			t.Fatalf("malformed lock should be a skip (unverifiable): %+v", pts)
+			t.Fatalf("malformed self-signature should be a skip (unverifiable): %+v", pts)
 		}
 	})
 
@@ -306,11 +315,14 @@ func TestResolvePigpen(t *testing.T) {
 	})
 
 	t.Run("malformed lock", func(t *testing.T) {
-		lines := []hyphence.MetadataLine{{Prefix: '!', Value: "pigpen-v1@not-a-valid-markl-lock"}}
+		lines := []hyphence.MetadataLine{
+			{Prefix: '-', Value: markl.PurposePigpenSelfSig + "@not-a-valid-markl-id"},
+			{Prefix: '!', Value: "pigpen-v1"},
+		}
 		doc := renderPigpenDoc(t, lines)
 		got, err := pigpenResolveFor(t, doc, false, nil)
 		if err == nil {
-			t.Fatalf("ResolvePigpen on a malformed lock must fail, got bytes: %q", got)
+			t.Fatalf("ResolvePigpen on a malformed self-signature must fail, got bytes: %q", got)
 		}
 		if !errors.Is(err, errPigpenLockMalformed) {
 			t.Errorf("want errors.Is(err, errPigpenLockMalformed), got: %v", err)
@@ -375,15 +387,17 @@ func TestPigpenSignatureVerificationLazyAuthFetch(t *testing.T) {
 	unsignedDoc := buildPigpenDoc(t, newPigpenSigner(t), false, false)
 
 	malformedLockDoc := renderPigpenDoc(t, []hyphence.MetadataLine{
-		{Prefix: '!', Value: "pigpen-v1@not-a-valid-markl-lock"},
+		{Prefix: '-', Value: markl.PurposePigpenSelfSig + "@not-a-valid-markl-id"},
+		{Prefix: '!', Value: "pigpen-v1"},
 	})
 
-	wellFormedSig, err := markl.Build("", pigpenSelfSigFormat, make([]byte, 64))
+	wellFormedSig, err := markl.Build(markl.PurposePigpenSelfSig, markl.FormatEcdsaP256Sig, make([]byte, 64))
 	if err != nil {
 		t.Fatal(err)
 	}
 	noAuthKeyDoc := renderPigpenDoc(t, []hyphence.MetadataLine{
-		{Prefix: '!', Value: "pigpen-v1@" + wellFormedSig},
+		{Prefix: '-', Value: wellFormedSig},
+		{Prefix: '!', Value: "pigpen-v1"},
 	})
 
 	cases := []struct {
@@ -580,10 +594,10 @@ func TestSignPigpen(t *testing.T) {
 	// case: a document with a well-formed auth-key `-` line but NO `!` line
 	// anywhere at all — malformed/truncated input distinct from "unsigned"
 	// (a bare `! pigpen-v1` line, which is what "no auth-key line is
-	// rejected" above and extractPigpenTypeLock's hasLock==false actually
-	// cover). findPigpenAuthKey succeeding says nothing about whether a `!`
-	// line exists elsewhere in the document, so SignPigpen must check for
-	// this independently.
+	// rejected" above and findPigpenSelfSig's ok==false actually cover).
+	// findPigpenAuthKey succeeding says nothing about whether a `!` line
+	// exists elsewhere in the document, so SignPigpen must check for this
+	// independently.
 	t.Run("no type line at all is rejected", func(t *testing.T) {
 		s := newPigpenSigner(t)
 		lines := []hyphence.MetadataLine{{Prefix: '-', Value: s.keyID}}
