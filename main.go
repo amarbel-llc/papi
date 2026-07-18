@@ -71,6 +71,7 @@ func main() {
 	}
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newPiggyIDsCmd())
+	root.AddCommand(newPigpenCmd())
 	root.AddCommand(newSSHKeysCmd())
 	root.AddCommand(newSSHCopyIDCmd())
 	root.AddCommand(newSSHSyncCmd())
@@ -328,6 +329,53 @@ func newPiggyIDsCmd() *cobra.Command {
 		"emit only slot-9D encryption recipients (drop comments and slot-9A auth ids)")
 	af.register(cmd)
 	return cmd
+}
+
+// newPigpenCmd is the parent of the pigpen-related subcommands (currently
+// just `resolve`), giving future pigpen affordances a home under `papi
+// pigpen ...`.
+func newPigpenCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:           "pigpen",
+		Short:         "Commands for a domain's self-signed PAPI pigpen document",
+		Long:          "Subcommands that fetch and verify a domain's self-signed /papi/pigpen document (RFC-0001 §14, papi#54).",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	cmd.AddCommand(newPigpenResolveCmd())
+	return cmd
+}
+
+func newPigpenResolveCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "resolve <locator>",
+		Short: "Fetch, verify, and print a domain's self-signed PAPI pigpen document",
+		Long: "Fetch <locator>'s GET /papi/pigpen, verify its RFC-0001 §14.2 self-signature " +
+			"against the domain's live /papi/piggy-ids key list, and — on success — print " +
+			"the original document bytes verbatim (verify-then-passthrough, not a re-encode). " +
+			"Every failure is a hard error: a fetch error, a non-200 status (including " +
+			"404/not-implemented), a malformed hyphence document, or a self-signature that is " +
+			"unsigned, unverifiable, or invalid. This is stricter than `papi validate`'s pigpen " +
+			"check, where the self-signature is SHOULD not MUST and an unsigned document is a " +
+			"skip — treating unsigned as a hard failure here is this resolver's own policy. " +
+			"This is a human-facing inspection command for manually resolving/inspecting a " +
+			"domain's pigpen document; it does not implement piggy RFC-0010's resolver argv " +
+			"contract — that's the separate pigpen-resolver-papi-http binary piggy shells out " +
+			"to.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			c, err := papi.NewClient(args[0])
+			if err != nil {
+				return err
+			}
+			body, err := inspect.ResolvePigpen(cmd.Context(), c)
+			if err != nil {
+				return err
+			}
+			_, err = cmd.OutOrStdout().Write(body)
+			return err
+		},
+	}
 }
 
 func newBootstrapCmd() *cobra.Command {

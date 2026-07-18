@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/amarbel-llc/crap/go-crap/v2/ndjsoncrap"
+	"github.com/amarbel-llc/hyphence/go/hyphence"
+	"github.com/amarbel-llc/papi/internal/0/markl"
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"
 	"github.com/amarbel-llc/papi/internal/alfa/inspect"
@@ -1966,5 +1968,154 @@ func TestSignChallengeServeValidation(t *testing.T) {
 		"--target", "https://api.example"); err == nil ||
 		!strings.Contains(err.Error(), "--target requires --domain") {
 		t.Errorf("target without domain = %v, want '--target requires --domain'", err)
+	}
+}
+
+// purposePigpenSelfSig mirrors the unexported constant of the same name in
+// internal/alfa/inspect (pigpen.go) — papi's provisional, piggy-unratified
+// self-signature purpose token (RFC-0001 §14.2). package main can't import
+// it directly, and duplicating the literal here (rather than exporting it
+// just for a test) keeps inspect's provisional-scheme warning contained to
+// one package. Mirrors cmd/pigpen-resolver-papi-http/main_test.go's fixture
+// of the same shape. If that constant is ever renamed, this test fixture's
+// signature will simply stop verifying (fail loud, not silently pass).
+const purposePigpenSelfSig = "papi-pigpen-self-sig-v1"
+
+// renderPigpenLines canonicalizes and serializes lines into hyphence document
+// bytes via FormatBodyEmitter — mirrors
+// internal/alfa/inspect/pigpen_test.go's renderPigpenDoc, reimplemented here
+// since that helper is unexported in a different package.
+func renderPigpenLines(t *testing.T, lines []hyphence.MetadataLine) []byte {
+	t.Helper()
+	doc := &hyphence.Document{Metadata: append([]hyphence.MetadataLine(nil), lines...)}
+	var buf bytes.Buffer
+	emitter := &hyphence.FormatBodyEmitter{Doc: doc, Out: &buf}
+	if _, err := emitter.ReadFrom(strings.NewReader("")); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// newSignedPigpenFixture starts an httptest.Server that serves a genuinely
+// self-signed /papi/pigpen document (RFC-0001 §14.2) plus the matching
+// /papi/piggy-ids publication, and returns the server and the exact document
+// bytes a successful `papi pigpen resolve` should print unmodified.
+//
+// This duplicates the signing recipe from
+// internal/alfa/inspect/pigpen_test.go's buildPigpenDoc (strip-self bytes via
+// a bare `! pigpen-v1` line, sign, re-embed the lock) because that package's
+// crypto-critical core (verifyPigpenSelfSignature, pigpenStripSelfBytes) is
+// unexported and this is a different package (main). The crypto verification
+// logic itself is already exhaustively covered by
+// internal/alfa/inspect/pigpen_test.go; this fixture exists only to prove
+// newPigpenResolveCmd's RunE carries a real success end to end (stdout ==
+// resolved bytes), not to re-prove the crypto.
+func newSignedPigpenFixture(t *testing.T) (srv *httptest.Server, doc []byte) {
+	t.Helper()
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compressed := elliptic.MarshalCompressed(elliptic.P256(), priv.X, priv.Y)
+	keyID, err := markl.Build(markl.PurposePIVAuth, markl.FormatSSHEcdsaNistp256Pub, compressed)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lines := []hyphence.MetadataLine{
+		{Prefix: '-', Value: keyID},
+		{Prefix: '!', Value: "pigpen-v1"},
+	}
+	stripped := renderPigpenLines(t, lines) // strip-self signing input (§14.2)
+
+	digest := sha256.Sum256(stripped)
+	r, s, err := ecdsa.Sign(rand.Reader, priv, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, 64)
+	r.FillBytes(raw[:32])
+	s.FillBytes(raw[32:])
+	sigID, err := markl.Build(purposePigpenSelfSig, markl.FormatEcdsaP256Sig, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines[1].Value = "pigpen-v1@" + sigID
+	doc = renderPigpenLines(t, lines)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/pigpen", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/vnd.pigpen")
+		_, _ = w.Write(doc)
+	})
+	mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("# piggy-ids\n" + keyID + "\n"))
+	})
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, doc
+}
+
+// TestPigpenResolveCmdSuccess exercises newPigpenResolveCmd's RunE against a
+// genuinely self-signed fixture: exit nil, stdout equal to the resolved
+// document bytes exactly.
+func TestPigpenResolveCmdSuccess(t *testing.T) {
+	srv, doc := newSignedPigpenFixture(t)
+
+	cmd := newPigpenResolveCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{srv.URL})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("pigpen resolve: %v", err)
+	}
+	if !bytes.Equal(out.Bytes(), doc) {
+		t.Errorf("stdout must equal the resolved document bytes exactly:\ngot:  %q\nwant: %q", out.Bytes(), doc)
+	}
+}
+
+// TestPigpenResolveCmdFailure exercises newPigpenResolveCmd's RunE against a
+// server with no /papi/pigpen route (404): ResolvePigpen's error must
+// propagate through RunE unwrapped (no extra prefixing — root's own "papi:
+// "+err handles that at the top level), embedding the locator.
+func TestPigpenResolveCmdFailure(t *testing.T) {
+	srv := httptest.NewServer(http.NewServeMux()) // no routes -> 404 on everything
+	defer srv.Close()
+
+	cmd := newPigpenResolveCmd()
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs([]string{srv.URL})
+	err := cmd.ExecuteContext(context.Background())
+	if err == nil {
+		t.Fatal("pigpen resolve against a domain with no /papi/pigpen should error")
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout must be empty on failure, got %q", out.String())
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error should mention the underlying HTTP 404, got %v", err)
+	}
+	if !strings.Contains(err.Error(), srv.URL) {
+		t.Errorf("error should embed the locator %q (from ResolvePigpen's own error), got %v", srv.URL, err)
+	}
+}
+
+// TestPigpenCmdTree confirms `papi pigpen` registers `resolve` as a child
+// subcommand (the parent+child home future pigpen affordances will share).
+func TestPigpenCmdTree(t *testing.T) {
+	cmd := newPigpenCmd()
+	found := false
+	for _, c := range cmd.Commands() {
+		if c.Name() == "resolve" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("papi pigpen should register a resolve subcommand, got: %v", cmd.Commands())
 	}
 }
