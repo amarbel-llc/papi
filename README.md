@@ -47,7 +47,9 @@ keys (FDR-0001); `verified-recipients` distils a batch of receipts into the
 verified slot-9D encryption-recipient set (FDR-0002); `sign-challenge` answers a
 §5 auth challenge by signing the server's nonce with your slot-9A key; `gh-check`
 reconciles your GitHub SSH keys against a domain's published keys; `gh-auth`
-grants gh the scopes those GitHub commands need; and `identity get` / `identity
+grants gh the scopes those GitHub commands need; `pigpen resolve` fetches,
+verifies, and prints a domain's self-signed `/papi/pigpen` document (RFC-0001
+§14, experimental — FDR-0013); and `identity get` / `identity
 domain` read scalar fields from the local `identity.toml` (the one command family
 that reads local config rather than a remote domain — FDR-0009).
 
