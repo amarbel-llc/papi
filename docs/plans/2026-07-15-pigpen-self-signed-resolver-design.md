@@ -1,5 +1,16 @@
 # Design: self-signed pigpen doc + local pointer/resolver (papi#54)
 
+> **Status update (2026-07-18):** The "Open, unresolved dependencies" section
+> below is now stale. piggy RFC 0008 (pigpen pointer format), RFC 0009
+> (production cutover), and RFC 0010 (resolver-dispatch protocol) are no
+> longer `draft` — they landed and piggy#216 is closed. `pigpen-resolver-papi-http`
+> (the actual resolver plugin RFC 0010 discovers and invokes) and the
+> `papi pigpen resolve` CLI subcommand are both implemented and merged. For
+> the current, accurate design and interface, see
+> `docs/features/0013-pigpen-resolver-papi-http.md`. This document is left
+> otherwise unchanged as a historical record of how the design evolved
+> before piggy's RFCs were ratified.
+
 ## Status
 
 Design approved by user 2026-07-15. Not yet implemented. Cross-repo
