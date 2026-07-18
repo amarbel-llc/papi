@@ -2,14 +2,18 @@
 
 > **Status update (2026-07-18):** The "Open, unresolved dependencies" section
 > below is now stale. piggy RFC 0008 (pigpen pointer format), RFC 0009
-> (production cutover), and RFC 0010 (resolver-dispatch protocol) are no
-> longer `draft` — they landed and piggy#216 is closed. `pigpen-resolver-papi-http`
-> (the actual resolver plugin RFC 0010 discovers and invokes) and the
-> `papi pigpen resolve` CLI subcommand are both implemented and merged. For
-> the current, accurate design and interface, see
-> `docs/features/0013-pigpen-resolver-papi-http.md`. This document is left
-> otherwise unchanged as a historical record of how the design evolved
-> before piggy's RFCs were ratified.
+> (production cutover), and RFC 0010 (resolver-dispatch protocol) have been
+> implemented and landed — the pointer sniff, PATH-discovery/dispatch, cache
+> TTL, and mutation-refusal are all real, merged Rust code wired into every
+> real recipient-read/write path in piggy, and piggy#216 is closed. (Their own
+> RFC documents' front matter still literally reads `status: draft` — that's
+> piggy's formal-promotion bookkeeping, not a signal that the feature is
+> unimplemented.) `pigpen-resolver-papi-http` (the actual resolver plugin RFC
+> 0010 discovers and invokes) and the `papi pigpen resolve` CLI subcommand are
+> both implemented and merged on papi's side too. For the current, accurate
+> design and interface, see `docs/features/0013-pigpen-resolver-papi-http.md`.
+> This document is left otherwise unchanged as a historical record of how the
+> design evolved before piggy's RFCs landed.
 
 ## Status
 
