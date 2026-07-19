@@ -80,11 +80,29 @@ build-installer:
 
 # --- test ---
 
-test: test-go test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module test-nix-verifier-module
+test: test-go test-grammar test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module test-nix-verifier-module
 
 # Hermetic Go test suite (httptest fixtures; no network, no card).
 test-go:
     nix develop --command go test ./...
+
+# Enforced pigpen grammar-conformance gate (papi#54/#58/#60): feed the
+# SignPigpen fixture's metadata lines through langlang's parse of hyphence's
+# canonical hyphence-content.peg. Hermetic — both the langlang binary and the
+# grammar .peg come from flake inputs (.#langlang / .#hyphence-content-grammar,
+# an SSH-auth git+ssh langlang fetch + the public hyphence tarball), so no
+# sibling ~/eng/repos checkout is needed. The test skips gracefully in plain
+# `test-go` (no env set); this recipe is what makes it fail on a real
+# regression.
+test-grammar:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    langlang_bin="$(nix build .#langlang --no-link --print-out-paths)/bin/langlang"
+    grammar="$(nix build .#hyphence-content-grammar --no-link --print-out-paths)"
+    nix develop --command env \
+      LANGLANG_BIN="$langlang_bin" \
+      PAPI_HYPHENCE_GRAMMAR="$grammar" \
+      go test ./internal/alfa/inspect/ -run TestPigpenGrammarConformance -v
 
 # Smoke-test the TypeScript client wrapper (clients/ts, FDR-0007): cross-build the
 # js/wasm core, then run its bun tests, which drive the wasm via Go's wasm_exec.js
@@ -168,6 +186,32 @@ test-nix-verifier-module:
         printf '%s\n' "$json" | jq -r '.failures[] | "FAIL: \(.name)\n  got: \(.result.got)"'
         exit 1
     fi
+
+# Explore: parse an arbitrary string against hyphence-content.peg with the
+# flake-pinned langlang, dumping the RAW bytes (piped through `cat -v`, so ANSI
+# escapes are visible) plus the exit code. This is the zero-power check for
+# `test-grammar` (hyphence#9's lesson): it shows whether a FAILED parse is
+# distinguishable from a successful one by the stdout prefix the test keys off.
+# e.g. `just debug-grammar-parse 'not a valid @@@ markl id'`
+[group("debug")]
+debug-grammar-parse content:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    langlang_bin="$(nix build .#langlang --no-link --print-out-paths)/bin/langlang"
+    grammar="$(nix build .#hyphence-content-grammar --no-link --print-out-paths)"
+    input="$(mktemp)"
+    printf '%s' '{{content}}' > "$input"
+    set +e
+    out="$("$langlang_bin" -grammar "$grammar" -disable-builtins -disable-spaces -input "$input" 2>&1)"
+    rc=$?
+    set -e
+    echo "--- exit code: $rc"
+    echo "--- input path: $input"
+    echo "--- raw output (cat -v):"
+    printf '%s' "$out" | cat -v
+    echo
+    echo "--- starts with '<input-path>:'? "
+    case "$out" in "$input":*) echo "YES (test would FAIL on this input)";; *) echo "NO (test would PASS on this input)";; esac
 
 # Regenerate the committed sample enrollment receipt fixture
 # (internal/alfa/enroll/testdata/) — a hand-off artifact for the deploy-side

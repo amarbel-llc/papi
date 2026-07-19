@@ -46,6 +46,42 @@
     piggy.inputs.conformist.follows = "conformist";
     piggy.inputs.purse-first.follows = "purse-first";
     purse-first.inputs.conformist.follows = "conformist";
+
+    # langlang: the PEG-grammar parser/validator behind the papi#54 pigpen
+    # grammar-conformance test (internal/alfa/inspect/pigpen_grammar_test.go),
+    # which parses each pigpen metadata line against hyphence's canonical
+    # hyphence-content.peg. No public mirror on code.linenisgreat.com — an
+    # SSH-auth GitHub fetch via the forwarded SSH agent, the same pattern piggy
+    # uses (piggy#220). `packages.${system}.default` is the `langlang` CLI
+    # (buildGoApplication over cmd/langlang), re-exposed below as `.#langlang`.
+    langlang = {
+      url = "git+ssh://git@github.com/amarbel-llc/langlang";
+      inputs.igloo.follows = "igloo";
+      inputs.nixpkgs-master.follows = "nixpkgs-master";
+      inputs.utils.follows = "utils";
+      inputs.bats.follows = "piggy/bats";
+    };
+    # langlang's own `tap` input transitively depends on purse-first too (the
+    # dagnabit provider papi's facade tooling runs). Without this follow, `nix
+    # flake lock` resolves langlang/tap/purse-first as an INDEPENDENT node, and
+    # nix's flake-lock node-naming collision handling reassigns which node the
+    # plain "purse-first" name (and so papi's own `purse-first` input) binds to,
+    # silently swapping which dagnabit build papi runs against. Collapse it to
+    # papi's own purse-first (piggy#220's diamond-dependency gotcha).
+    langlang.inputs.tap.inputs.purse-first.follows = "purse-first";
+
+    # hyphence: source-only input (flake = false) providing the single source
+    # of truth for the pigpen grammar — docs/rfcs/hyphence-content.peg. A
+    # pigpen document IS a hyphence-content document (papi#54/#60), so papi
+    # vendors no grammar copy of its own; the conformance test parses against
+    # hyphence's own .peg, materialized hermetically as
+    # `.#hyphence-content-grammar` below rather than reached for in a sibling
+    # ~/eng/repos/hyphence checkout. Only one file is needed, so this is a bare
+    # source input, not a flake — no dependency tree pulled in.
+    hyphence = {
+      url = "https://code.linenisgreat.com/hyphence/archive/master.tar.gz";
+      flake = false;
+    };
   };
 
   outputs =
@@ -57,6 +93,8 @@
       nixpkgs-master,
       purse-first,
       piggy,
+      langlang,
+      hyphence,
       utils,
     }:
     (utils.lib.eachDefaultSystem (
@@ -75,6 +113,19 @@
         # both by name, so the pinned package is burned onto the wrapped binary's
         # PATH (below) and added to the devShell.
         piggyPkg = piggy.packages.${system}.piggy;
+
+        # The langlang PEG parser/validator CLI (papi#58): the hermetic
+        # langlang binary the `just test-grammar` gate feeds the pigpen
+        # grammar-conformance test. `nix build .#langlang` → result/bin/langlang.
+        langlangPkg = langlang.packages.${system}.default;
+
+        # hyphence-content.peg (papi#60) lifted out of the hyphence source
+        # input into its own store path, so `just test-grammar` can
+        # `nix build .#hyphence-content-grammar` for the grammar file without
+        # encoding hyphence's internal directory layout at the recipe site.
+        hyphence-content-grammar = pkgs.runCommandLocal "hyphence-content.peg" { } ''
+          cp ${hyphence}/docs/rfcs/hyphence-content.peg "$out"
+        '';
 
         # The papi CLI. version/commit are injected by the fork's
         # buildGoApplication from version.env + self.rev — no ldflags here.
@@ -190,6 +241,11 @@
           papi = papi;
           papi-client-ts = papi-client-ts;
           papi-installer = papi-installer;
+          # The langlang CLI + hyphence's grammar .peg, the two hermetic inputs
+          # the `just test-grammar` gate feeds the pigpen conformance test
+          # (papi#58/#60).
+          langlang = langlangPkg;
+          hyphence-content-grammar = hyphence-content-grammar;
           conformist-impure-config = impureEval.config.build.configFile;
           # The store-pinned, toolchain-hermetic spinclass hook pair from the
           # pure eval (eng tier-B convergence, proven on madder): pre-commit

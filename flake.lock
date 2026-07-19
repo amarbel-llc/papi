@@ -2,6 +2,43 @@
   "nodes": {
     "bats": {
       "inputs": {
+        "igloo": [
+          "langlang",
+          "tap",
+          "igloo"
+        ],
+        "nixpkgs-master": [
+          "langlang",
+          "tap",
+          "nixpkgs-master"
+        ],
+        "treefmt-nix": [
+          "langlang",
+          "tap",
+          "treefmt-nix"
+        ],
+        "utils": [
+          "langlang",
+          "tap",
+          "utils"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783342831,
+        "narHash": "sha256-yLDuY0Zf6DIT1vlzlLFhoyvsDNcL2OOPPcRCym8BYJE=",
+        "owner": "amarbel-llc",
+        "repo": "bats",
+        "rev": "7f64db7d8905d0cef6410ec6689e3fbcb02f1fd5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "amarbel-llc",
+        "repo": "bats",
+        "type": "github"
+      }
+    },
+    "bats_2": {
+      "inputs": {
         "conformist": [
           "piggy",
           "conformist"
@@ -83,6 +120,21 @@
         "url": "https://code.linenisgreat.com/conformist/archive/master.tar.gz"
       }
     },
+    "crane": {
+      "locked": {
+        "lastModified": 1783203018,
+        "narHash": "sha256-G6R9IT/xwFuu+CYBWDUAok6AdC4ERC4ZfPPFtEpxnZE=",
+        "owner": "ipetkov",
+        "repo": "crane",
+        "rev": "80db5bdc391be8a1794f6d8a2d56e3a84ebcede2",
+        "type": "github"
+      },
+      "original": {
+        "owner": "ipetkov",
+        "repo": "crane",
+        "type": "github"
+      }
+    },
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
@@ -107,6 +159,33 @@
     "gomod2nix": {
       "inputs": {
         "flake-utils": [
+          "langlang",
+          "tap",
+          "utils"
+        ],
+        "nixpkgs-master": [
+          "langlang",
+          "tap",
+          "nixpkgs-master"
+        ]
+      },
+      "locked": {
+        "lastModified": 1782656014,
+        "narHash": "sha256-/JTvDNbl9p6rK7XfFib9cbYJB6a3Td0nLW33tGOZMmI=",
+        "owner": "amarbel-llc",
+        "repo": "gomod2nix",
+        "rev": "f2530333078779ff6565f2312ad891e82b233076",
+        "type": "github"
+      },
+      "original": {
+        "owner": "amarbel-llc",
+        "repo": "gomod2nix",
+        "type": "github"
+      }
+    },
+    "gomod2nix_2": {
+      "inputs": {
+        "flake-utils": [
           "purse-first",
           "utils"
         ],
@@ -124,6 +203,19 @@
       "original": {
         "type": "tarball",
         "url": "https://code.linenisgreat.com/gomod2nix/archive/master.tar.gz"
+      }
+    },
+    "hyphence": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1784424739,
+        "narHash": "sha256-KHllTXLKwFg+Ze9sG82HGTRZK3RCrlfK7BRCpLuqLMY=",
+        "type": "tarball",
+        "url": "https://code.linenisgreat.com/hyphence/archive/0dddbc0b5e76d93296ecf6393103ef43989f55c0.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://code.linenisgreat.com/hyphence/archive/master.tar.gz"
       }
     },
     "igloo": {
@@ -163,6 +255,37 @@
         "type": "github"
       }
     },
+    "langlang": {
+      "inputs": {
+        "bats": [
+          "piggy",
+          "bats"
+        ],
+        "igloo": [
+          "igloo"
+        ],
+        "nixpkgs-master": [
+          "nixpkgs-master"
+        ],
+        "tap": "tap",
+        "utils": [
+          "utils"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783344978,
+        "narHash": "sha256-6oSyTN563abHKnvaNmuhpodX6Xb0IGUfKWLWiyC5bXM=",
+        "ref": "refs/heads/master",
+        "rev": "5fbd00358572d7f0f34e20f00a05ee79e64ee04d",
+        "revCount": 1089,
+        "type": "git",
+        "url": "ssh://git@github.com/amarbel-llc/langlang"
+      },
+      "original": {
+        "type": "git",
+        "url": "ssh://git@github.com/amarbel-llc/langlang"
+      }
+    },
     "nixpkgs-master": {
       "locked": {
         "lastModified": 1781577229,
@@ -197,7 +320,7 @@
     },
     "piggy": {
       "inputs": {
-        "bats": "bats",
+        "bats": "bats_2",
         "conformist": [
           "conformist"
         ],
@@ -249,7 +372,7 @@
         "conformist": [
           "conformist"
         ],
-        "gomod2nix": "gomod2nix",
+        "gomod2nix": "gomod2nix_2",
         "igloo": [
           "igloo"
         ],
@@ -274,7 +397,9 @@
     "root": {
       "inputs": {
         "conformist": "conformist",
+        "hyphence": "hyphence",
         "igloo": "igloo",
+        "langlang": "langlang",
         "nixpkgs": [
           "conformist",
           "nixpkgs-master"
@@ -286,6 +411,28 @@
           "conformist",
           "utils"
         ]
+      }
+    },
+    "rust-overlay": {
+      "inputs": {
+        "nixpkgs": [
+          "langlang",
+          "tap",
+          "igloo"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783320166,
+        "narHash": "sha256-l7C/OsjcnWDOk2K3ssj+SBduwL67LashjBqis9+t468=",
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "rev": "20ee15370c9256669d66968b89ee20a4b0a4e673",
+        "type": "github"
+      },
+      "original": {
+        "owner": "oxalica",
+        "repo": "rust-overlay",
+        "type": "github"
       }
     },
     "systems": {
@@ -303,11 +450,70 @@
         "type": "github"
       }
     },
+    "tap": {
+      "inputs": {
+        "bats": "bats",
+        "crane": "crane",
+        "gomod2nix": "gomod2nix",
+        "igloo": [
+          "langlang",
+          "igloo"
+        ],
+        "nixpkgs-master": [
+          "langlang",
+          "nixpkgs-master"
+        ],
+        "purse-first": [
+          "purse-first"
+        ],
+        "rust-overlay": "rust-overlay",
+        "treefmt-nix": "treefmt-nix_2",
+        "utils": [
+          "langlang",
+          "utils"
+        ]
+      },
+      "locked": {
+        "lastModified": 1783344052,
+        "narHash": "sha256-ujU00AfXjb1R/rZ67eSA2RF9ROgaIB7m3NQ/4kOshyc=",
+        "owner": "amarbel-llc",
+        "repo": "tap",
+        "rev": "9ab6246c3faa5f36eb422050b48e875cd33e5e87",
+        "type": "github"
+      },
+      "original": {
+        "owner": "amarbel-llc",
+        "repo": "tap",
+        "type": "github"
+      }
+    },
     "treefmt-nix": {
       "inputs": {
         "nixpkgs": [
           "igloo",
           "nixpkgs-master"
+        ]
+      },
+      "locked": {
+        "lastModified": 1780220602,
+        "narHash": "sha256-eynAfOmbmxJnkp7YewvCEbShNnnYJ9gLLqkzsYtBPeM=",
+        "owner": "numtide",
+        "repo": "treefmt-nix",
+        "rev": "db947814a175b7ca6ded66e21383d938df01c227",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "treefmt-nix",
+        "type": "github"
+      }
+    },
+    "treefmt-nix_2": {
+      "inputs": {
+        "nixpkgs": [
+          "langlang",
+          "tap",
+          "igloo"
         ]
       },
       "locked": {
