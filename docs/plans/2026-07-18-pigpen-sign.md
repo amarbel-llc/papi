@@ -6,7 +6,7 @@
 
 **Architecture:** Two tasks. D1 adds the crypto/library core (`inspect.SignPigpen`, inverting the already-merged `verifyPigpenSelfSignature`) with a round-trip test proving signed output actually verifies against the existing verifier. D2 adds the CLI subcommand, reusing the existing `signChallengeSigner` helper (`sign-challenge`'s signer-resolution logic) as-is — no new signer-resolution code, since papi has never had a document-signing producer command before and `sign-challenge`'s pattern (read bytes → resolve slot-9A signer via agent-or-PCSC → sign → emit markl-id) is the established, reusable one. Full design rationale in the plan file's own Context/Architecture sections below.
 
-**Tech Stack:** Go 1.26, existing `internal/0/markl`, `internal/alfa/enroll` (signer implementations, unchanged), `github.com/amarbel-llc/hyphence/go/hyphence` (already a dependency). No new dependencies.
+**Tech Stack:** Go 1.26, existing `internal/0/markl`, `internal/alfa/enroll` (signer implementations, unchanged), `code.linenisgreat.com/hyphence/go/hyphence` (already a dependency). No new dependencies.
 
 **Rollback:** N/A — purely additive. The new interface, function, and CLI subcommand don't touch any existing behavior. Deleting the new code fully reverts this work.
 

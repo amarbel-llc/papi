@@ -6,7 +6,7 @@
 
 **Architecture:** Six tasks. C1 is a pure refactor (extract the crypto-critical verification core out of the already-merged `pigpenSignaturePoints` so it isn't duplicated). C2 adds the new `ResolvePigpen` library function reusing that core. C3 is the actual RFC-0010 binary artifact. C4 is a human-facing CLI subcommand sharing C2's logic. C5 is Nix packaging + doc-drift. C6 is an FDR documenting the design and its one deliberate v1 gap (no TOFU pinning yet). Full design rationale and the real RFC 0008/0009/0010 contract this was researched against: see the plan file's own Context/Architecture sections below — this supersedes `docs/plans/2026-07-15-pigpen-self-signed-resolver-design.md`, whose "Open, unresolved dependencies" are no longer blocking (piggy#216 is closed).
 
-**Tech Stack:** Go 1.26, existing `github.com/amarbel-llc/hyphence/go/hyphence` + `internal/0/markl` + `internal/0/papi` machinery (all already in the module graph from the earlier plan). No new dependencies.
+**Tech Stack:** Go 1.26, existing `code.linenisgreat.com/hyphence/go/hyphence` + `internal/0/markl` + `internal/0/papi` machinery (all already in the module graph from the earlier plan). No new dependencies.
 
 **Rollback:** N/A — purely additive. The new binary, CLI subcommand, and library function are all new surface area; nothing existing is modified except C1's refactor (behavior-preserving, guarded by the existing test suite) and C5's `flake.nix`/`README.md` edits (mechanical, easily reverted). Deleting the new files and reverting C1's refactor + C5's edits fully reverts this work.
 

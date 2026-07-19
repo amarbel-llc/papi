@@ -20,7 +20,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/amarbel-llc/hyphence/go/hyphence"
+	"code.linenisgreat.com/hyphence/go/hyphence"
 	"github.com/amarbel-llc/papi/internal/0/markl"
 	"github.com/amarbel-llc/papi/internal/0/papi"
 )

@@ -4,9 +4,9 @@
 
 **Goal:** Add RFC-0001 Amendment 23 (a new `GET /papi/pigpen` self-signed payload-less pigpen-document endpoint) and an experimental `papi validate` check that verifies the self-signature, against a provisional (piggy-unratified) wire scheme.
 
-**Architecture:** Two independent slices. Slice A is pure documentation (the RFC amendment prose, worked examples, changelog entry — no code). Slice B adds `github.com/amarbel-llc/hyphence/go/hyphence` as a dependency and a new `internal/alfa/inspect/pigpen.go` check, mirroring the existing `signature.go` §10 verification pattern (fetch → parse → verify against published slot-9A keys → report as a `point`), gated to skip (not fail) when the server doesn't implement the endpoint. Full design rationale, the cross-repo dependency chain, and why `papi pigpen resolve` is explicitly OUT of scope here: `docs/plans/2026-07-15-pigpen-self-signed-resolver-design.md`.
+**Architecture:** Two independent slices. Slice A is pure documentation (the RFC amendment prose, worked examples, changelog entry — no code). Slice B adds `code.linenisgreat.com/hyphence/go/hyphence` as a dependency and a new `internal/alfa/inspect/pigpen.go` check, mirroring the existing `signature.go` §10 verification pattern (fetch → parse → verify against published slot-9A keys → report as a `point`), gated to skip (not fail) when the server doesn't implement the endpoint. Full design rationale, the cross-repo dependency chain, and why `papi pigpen resolve` is explicitly OUT of scope here: `docs/plans/2026-07-15-pigpen-self-signed-resolver-design.md`.
 
-**Tech Stack:** Go 1.26, `github.com/amarbel-llc/hyphence/go/hyphence` (new dependency, no tagged release yet — pin a pseudo-version), existing `github.com/amarbel-llc/papi/internal/0/markl` machinery.
+**Tech Stack:** Go 1.26, `code.linenisgreat.com/hyphence/go/hyphence` (new dependency, no tagged release yet — pin a pseudo-version), existing `github.com/amarbel-llc/papi/internal/0/markl` machinery.
 
 **Rollback:** N/A — purely additive. The new endpoint, discovery entry, and validator check are all OPTIONAL; a server or client that doesn't implement them is unaffected. Deleting the new file and reverting the RFC prose fully reverts this work.
 
@@ -208,11 +208,11 @@ git commit -m "docs(rfc): Amendment 23 — changelog entry (papi#54)"
 
 **Step 1: Check for a tagged release**
 
-Run `go list -m -versions github.com/amarbel-llc/hyphence/go` — as of this design session the repo had 0 releases, so this will likely need a pseudo-version pinned to a specific commit rather than a tag. Note the resolved version for the commit message.
+Run `go list -m -versions code.linenisgreat.com/hyphence/go` — as of this design session the repo had 0 releases, so this will likely need a pseudo-version pinned to a specific commit rather than a tag. Note the resolved version for the commit message.
 
 **Step 2: Add the dependency**
 
-Run: `go get github.com/amarbel-llc/hyphence/go/hyphence@main` (or the resolved pseudo-version from Step 1)
+Run: `go get code.linenisgreat.com/hyphence/go/hyphence@main` (or the resolved pseudo-version from Step 1)
 
 **Step 3: Verify it builds**
 
@@ -230,16 +230,16 @@ git commit -m "chore: add hyphence dependency (experimental pigpen validator, pa
 
 ### Task B2: Research the hyphence metadata-decode API and write a minimal wrapper
 
-The hyphence package (`github.com/amarbel-llc/hyphence/go/hyphence`) does not expose a simple "parse bytes into a Document" function — its `Decoder[BLOB]`/`Reader` types are built around a streaming callback (`interfaces.DecoderFromBufferedReader[BLOB]`) that consumes metadata lines as they're read, not a one-shot parse-to-struct call. Do not guess at this API — read it directly from the now-vendored dependency before writing any code.
+The hyphence package (`code.linenisgreat.com/hyphence/go/hyphence`) does not expose a simple "parse bytes into a Document" function — its `Decoder[BLOB]`/`Reader` types are built around a streaming callback (`interfaces.DecoderFromBufferedReader[BLOB]`) that consumes metadata lines as they're read, not a one-shot parse-to-struct call. Do not guess at this API — read it directly from the now-vendored dependency before writing any code.
 
 **Files:**
-- Read (in the Go module cache, now that Task B1 added the dependency): the package source for `github.com/amarbel-llc/hyphence/go/hyphence` — specifically `document.go` (the `Document`/`MetadataLine` types), `decoder.go` (the `Decoder[BLOB]` type), and `coder_metadata.go` (`MetadataStreamer`, the concrete callback hyphence's own `hyphence meta` CLI command uses).
-- Also read `github.com/amarbel-llc/hyphence/go/commands_hyphence` (`validate.go`) for a second concrete usage example — it builds a small local type that implements the metadata-decode callback interface and inspects lines as they arrive (tracking `SawAtLine` etc.).
+- Read (in the Go module cache, now that Task B1 added the dependency): the package source for `code.linenisgreat.com/hyphence/go/hyphence` — specifically `document.go` (the `Document`/`MetadataLine` types), `decoder.go` (the `Decoder[BLOB]` type), and `coder_metadata.go` (`MetadataStreamer`, the concrete callback hyphence's own `hyphence meta` CLI command uses).
+- Also read `code.linenisgreat.com/hyphence/go/commands_hyphence` (`validate.go`) for a second concrete usage example — it builds a small local type that implements the metadata-decode callback interface and inspects lines as they arrive (tracking `SawAtLine` etc.).
 - Create: `internal/alfa/inspect/pigpen.go`
 
 **Step 1: Read the real API**
 
-Use `go doc github.com/amarbel-llc/hyphence/go/hyphence` and read the source files listed above (they're now in the local Go module cache after Task B1). Confirm: how to decode a `[]byte`/`io.Reader` hyphence document into a slice of `MetadataLine{Prefix, Value, LeadingComments}` — likely by implementing a small type satisfying whatever callback interface `Decoder.Metadata` expects (mirroring `MetadataStreamer`'s shape, but collecting lines into a slice instead of writing them to an `io.Writer`).
+Use `go doc code.linenisgreat.com/hyphence/go/hyphence` and read the source files listed above (they're now in the local Go module cache after Task B1). Confirm: how to decode a `[]byte`/`io.Reader` hyphence document into a slice of `MetadataLine{Prefix, Value, LeadingComments}` — likely by implementing a small type satisfying whatever callback interface `Decoder.Metadata` expects (mirroring `MetadataStreamer`'s shape, but collecting lines into a slice instead of writing them to an `io.Writer`).
 
 **Step 2: Write a failing test for the wrapper**
 

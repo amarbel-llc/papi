@@ -21,8 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	"code.linenisgreat.com/hyphence/go/hyphence"
 	"github.com/amarbel-llc/crap/go-crap/v2/ndjsoncrap"
-	"github.com/amarbel-llc/hyphence/go/hyphence"
 	"github.com/amarbel-llc/papi/internal/0/markl"
 	"github.com/amarbel-llc/papi/internal/0/papi"
 	"github.com/amarbel-llc/papi/internal/alfa/enroll"

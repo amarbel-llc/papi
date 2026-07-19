@@ -38,7 +38,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amarbel-llc/hyphence/go/hyphence"
+	"code.linenisgreat.com/hyphence/go/hyphence"
 	"github.com/amarbel-llc/papi/internal/0/markl"
 )
 
