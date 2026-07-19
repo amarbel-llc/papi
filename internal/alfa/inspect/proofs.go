@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
-	"github.com/amarbel-llc/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/papi"
 )
 
 // txtLookup resolves a hostname's DNS TXT records. It is a package var so the

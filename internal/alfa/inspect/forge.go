@@ -8,8 +8,8 @@ import (
 	"io"
 	"net/http"
 
+	"code.linenisgreat.com/papi/internal/0/papi"
 	"github.com/amarbel-llc/crap/go-crap/v2/crap"
-	"github.com/amarbel-llc/papi/internal/0/papi"
 )
 
 // forgeEntry is the slice of a /papi/forges entry the access asserter reads: its id

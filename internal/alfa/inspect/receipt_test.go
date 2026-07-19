@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
-	"github.com/amarbel-llc/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/papi"
 )
 
 // testRecipientID is a well-formed §5.1 slot-9D recipient markl-id used as the

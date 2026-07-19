@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/amarbel-llc/papi/internal/0/papi"
-	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
+	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/signchallenge"
 )
 
 const (

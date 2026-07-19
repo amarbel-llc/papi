@@ -21,9 +21,9 @@ import (
 	"io"
 	"os"
 
+	"code.linenisgreat.com/papi/internal/0/installer"
+	"code.linenisgreat.com/papi/internal/0/papi"
 	"github.com/amarbel-llc/crap/go-crap/v2/crap"
-	"github.com/amarbel-llc/papi/internal/0/installer"
-	"github.com/amarbel-llc/papi/internal/0/papi"
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

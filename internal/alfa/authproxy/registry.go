@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
+	"code.linenisgreat.com/papi/internal/alfa/signchallenge"
 )
 
 // RegistryEntry is one registered slot-9A identity: its ECDSA public key and the

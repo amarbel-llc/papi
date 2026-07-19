@@ -16,8 +16,8 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
-	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
+	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/alfa/signchallenge"
 )
 
 const testDomain = "forge.linenisgreat.com"

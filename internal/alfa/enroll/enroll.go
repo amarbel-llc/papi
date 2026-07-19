@@ -14,8 +14,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
-	"github.com/amarbel-llc/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/papi"
 )
 
 // Signer signs message bytes with the slot-9A key of the card identified by guid,

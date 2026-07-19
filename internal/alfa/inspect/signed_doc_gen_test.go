@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/markl"
 	"github.com/gowebpki/jcs"
 )
 

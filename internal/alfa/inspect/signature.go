@@ -14,8 +14,8 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
-	"github.com/amarbel-llc/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/papi"
 	"github.com/gowebpki/jcs"
 	"golang.org/x/crypto/ssh"
 )

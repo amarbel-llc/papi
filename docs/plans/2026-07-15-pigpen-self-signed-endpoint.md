@@ -6,7 +6,7 @@
 
 **Architecture:** Two independent slices. Slice A is pure documentation (the RFC amendment prose, worked examples, changelog entry — no code). Slice B adds `code.linenisgreat.com/hyphence/go/hyphence` as a dependency and a new `internal/alfa/inspect/pigpen.go` check, mirroring the existing `signature.go` §10 verification pattern (fetch → parse → verify against published slot-9A keys → report as a `point`), gated to skip (not fail) when the server doesn't implement the endpoint. Full design rationale, the cross-repo dependency chain, and why `papi pigpen resolve` is explicitly OUT of scope here: `docs/plans/2026-07-15-pigpen-self-signed-resolver-design.md`.
 
-**Tech Stack:** Go 1.26, `code.linenisgreat.com/hyphence/go/hyphence` (new dependency, no tagged release yet — pin a pseudo-version), existing `github.com/amarbel-llc/papi/internal/0/markl` machinery.
+**Tech Stack:** Go 1.26, `code.linenisgreat.com/hyphence/go/hyphence` (new dependency, no tagged release yet — pin a pseudo-version), existing `code.linenisgreat.com/papi/internal/0/markl` machinery.
 
 **Rollback:** N/A — purely additive. The new endpoint, discovery entry, and validator check are all OPTIONAL; a server or client that doesn't implement them is unaffected. Deleting the new file and reverting the RFC prose fully reverts this work.
 

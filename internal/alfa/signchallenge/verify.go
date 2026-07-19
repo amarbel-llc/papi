@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/markl"
 )
 
 // Verify is the §5.2 sign-challenge verifier side: decode a papi-auth-sig-v1 markl

@@ -1,4 +1,4 @@
-module github.com/amarbel-llc/papi
+module code.linenisgreat.com/papi
 
 go 1.26
 

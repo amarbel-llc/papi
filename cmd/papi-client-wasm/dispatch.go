@@ -27,8 +27,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/amarbel-llc/papi/internal/0/papi"
-	"github.com/amarbel-llc/papi/internal/alfa/inspect"
+	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/inspect"
 )
 
 // request is the wire envelope: a function selector and the raw endpoint body.

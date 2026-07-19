@@ -19,8 +19,8 @@ import (
 	"testing"
 
 	"code.linenisgreat.com/hyphence/go/hyphence"
-	"github.com/amarbel-llc/papi/internal/0/markl"
-	"github.com/amarbel-llc/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/papi"
 )
 
 func TestFindPigpenSelfSig(t *testing.T) {

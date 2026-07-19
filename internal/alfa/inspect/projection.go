@@ -8,7 +8,7 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/amarbel-llc/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/0/papi"
 )
 
 // projectionChecks reconciles a domain's projected views of its repository set.

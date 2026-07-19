@@ -39,7 +39,7 @@ import (
 	"testing"
 
 	"code.linenisgreat.com/hyphence/go/hyphence"
-	"github.com/amarbel-llc/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/markl"
 )
 
 // SelfSigPurpose and SelfSigFormat mirror internal/alfa/inspect's unexported

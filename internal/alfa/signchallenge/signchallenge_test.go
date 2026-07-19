@@ -14,7 +14,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/amarbel-llc/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/markl"
 )
 
 // TestPreimageBytes pins the §5.2 framing byte-for-byte: prefix, two single-LF

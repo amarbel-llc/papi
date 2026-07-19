@@ -22,13 +22,13 @@ import (
 	"testing"
 
 	"code.linenisgreat.com/hyphence/go/hyphence"
+	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/enroll"
+	"code.linenisgreat.com/papi/internal/alfa/inspect"
+	"code.linenisgreat.com/papi/internal/alfa/pigpenfixture"
+	"code.linenisgreat.com/papi/internal/alfa/signchallenge"
 	"github.com/amarbel-llc/crap/go-crap/v2/ndjsoncrap"
-	"github.com/amarbel-llc/papi/internal/0/markl"
-	"github.com/amarbel-llc/papi/internal/0/papi"
-	"github.com/amarbel-llc/papi/internal/alfa/enroll"
-	"github.com/amarbel-llc/papi/internal/alfa/inspect"
-	"github.com/amarbel-llc/papi/internal/alfa/pigpenfixture"
-	"github.com/amarbel-llc/papi/internal/alfa/signchallenge"
 	"golang.org/x/crypto/ssh"
 )
 
