@@ -50,12 +50,14 @@
     # langlang: the PEG-grammar parser/validator behind the papi#54 pigpen
     # grammar-conformance test (internal/alfa/inspect/pigpen_grammar_test.go),
     # which parses each pigpen metadata line against hyphence's canonical
-    # hyphence-content.peg. No public mirror on code.linenisgreat.com — an
-    # SSH-auth GitHub fetch via the forwarded SSH agent, the same pattern piggy
-    # uses (piggy#220). `packages.${system}.default` is the `langlang` CLI
-    # (buildGoApplication over cmd/langlang), re-exposed below as `.#langlang`.
+    # hyphence-content.peg. langlang migrated to the forge 2026-07-19
+    # (code.linenisgreat.com/langlang, GitHub is now a push mirror), so the
+    # SSH-auth GitHub-fetch workaround this comment used to describe is moot;
+    # sourced as a plain tarball like every other first-party input below.
+    # `packages.${system}.default` is the `langlang` CLI (buildGoApplication
+    # over cmd/langlang), re-exposed below as `.#langlang`.
     langlang = {
-      url = "git+ssh://git@github.com/amarbel-llc/langlang";
+      url = "https://code.linenisgreat.com/langlang/archive/master.tar.gz";
       inputs.igloo.follows = "igloo";
       inputs.nixpkgs-master.follows = "nixpkgs-master";
       inputs.utils.follows = "utils";

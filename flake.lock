@@ -275,15 +275,12 @@
       "locked": {
         "lastModified": 1783344978,
         "narHash": "sha256-6oSyTN563abHKnvaNmuhpodX6Xb0IGUfKWLWiyC5bXM=",
-        "ref": "refs/heads/master",
-        "rev": "5fbd00358572d7f0f34e20f00a05ee79e64ee04d",
-        "revCount": 1089,
-        "type": "git",
-        "url": "ssh://git@github.com/amarbel-llc/langlang"
+        "type": "tarball",
+        "url": "https://code.linenisgreat.com/langlang/archive/5fbd00358572d7f0f34e20f00a05ee79e64ee04d.tar.gz"
       },
       "original": {
-        "type": "git",
-        "url": "ssh://git@github.com/amarbel-llc/langlang"
+        "type": "tarball",
+        "url": "https://code.linenisgreat.com/langlang/archive/master.tar.gz"
       }
     },
     "nixpkgs-master": {
