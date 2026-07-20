@@ -1,6 +1,11 @@
 schema = 3
 
 [mod]
+  [mod.'code.linenisgreat.com/crap/go-crap/v2']
+    version = 'v2.3.0'
+    hash = 'sha256-lC8mXs5K+MhAetVGst1lG1plJF7jS3KNl51Dk1XA6Nk='
+    goVersion = '1.26'
+
   [mod.'code.linenisgreat.com/hyphence/go']
     version = 'v0.3.0'
     hash = 'sha256-O6G/2ZXT7JfOrKZISKoxpGTThHG/vQh5JQIfL/ImGoE='
@@ -10,11 +15,6 @@ schema = 3
     version = 'v1.6.0'
     hash = 'sha256-ptdUJvuc21ixeLt+M5way/na3aCnCO4MYHWulWp8NEY='
     goVersion = '1.18'
-
-  [mod.'github.com/amarbel-llc/crap/go-crap/v2']
-    version = 'v2.2.2'
-    hash = 'sha256-ZyZNwjoJjDNB3pVJnHXomcQ5EYNOoLVSQu2X1Tj3CCY='
-    goVersion = '1.26'
 
   [mod.'github.com/amarbel-llc/purse-first/libs/dewey']
     version = 'v0.3.2'

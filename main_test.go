@@ -21,6 +21,7 @@ import (
 	"strings"
 	"testing"
 
+	"code.linenisgreat.com/crap/go-crap/v2/ndjsoncrap"
 	"code.linenisgreat.com/hyphence/go/hyphence"
 	"code.linenisgreat.com/papi/internal/0/markl"
 	"code.linenisgreat.com/papi/internal/0/papi"
@@ -28,7 +29,6 @@ import (
 	"code.linenisgreat.com/papi/internal/alfa/inspect"
 	"code.linenisgreat.com/papi/internal/alfa/pigpenfixture"
 	"code.linenisgreat.com/papi/internal/alfa/signchallenge"
-	"github.com/amarbel-llc/crap/go-crap/v2/ndjsoncrap"
 	"golang.org/x/crypto/ssh"
 )
 

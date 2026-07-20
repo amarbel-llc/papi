@@ -4,8 +4,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/amarbel-llc/crap/go-crap/v2/crap"
-	"github.com/amarbel-llc/crap/go-crap/v2/viewport"
+	"code.linenisgreat.com/crap/go-crap/v2/crap"
+	"code.linenisgreat.com/crap/go-crap/v2/viewport"
 )
 
 // Present runs produce against a crap.Reporter and renders the resulting

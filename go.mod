@@ -3,8 +3,8 @@ module code.linenisgreat.com/papi
 go 1.26
 
 require (
+	code.linenisgreat.com/crap/go-crap/v2 v2.3.0
 	github.com/BurntSushi/toml v1.6.0
-	github.com/amarbel-llc/crap/go-crap/v2 v2.2.2
 	github.com/charmbracelet/huh v1.0.0
 	github.com/gowebpki/jcs v1.0.1
 	github.com/itchyny/gojq v0.12.19

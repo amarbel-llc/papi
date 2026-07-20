@@ -15,8 +15,8 @@ import (
 	"sort"
 	"strings"
 
+	"code.linenisgreat.com/crap/go-crap/v2/crap"
 	"code.linenisgreat.com/papi/internal/0/papi"
-	"github.com/amarbel-llc/crap/go-crap/v2/crap"
 )
 
 // ErrNonConformant is returned by Run when the domain violates a MUST. The
