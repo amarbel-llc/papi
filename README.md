@@ -61,7 +61,7 @@ RFC-0001 conformance contract — discovery, the `{data, meta}` envelope and
 error codes, identity-ownership proofs (§9), key co-location proofs (§9.6), the
 detached document signature (§10), and the nix binary cache entry schema (§11).
 Output is an
-[ndjson-crap](https://github.com/amarbel-llc/crap) stream
+[ndjson-crap](https://code.linenisgreat.com/crap) stream
 (pipe it to `crap-present` to render); the process exits non-zero on any MUST
 violation.
 
@@ -139,7 +139,7 @@ are enrolled or rotated. With `--guid <HEX>`, install just one card's key. Only
 lines that parse as real SSH keys are installed (a hostile domain cannot inject
 text into the remote step).
 
-The command presents via the **crap-TUI** ([amarbel-llc/crap](https://github.com/amarbel-llc/crap)):
+The command presents via the **crap-TUI** ([amarbel-llc/crap](https://code.linenisgreat.com/crap)):
 on a terminal it renders a live viewport of the operation (the fetch + install
 phases and a per-key tally); piped or redirected it emits raw ndjson-crap, so
 `… | crap-present` renders the same TUI and `… > run.ndjson` captures it.
@@ -169,7 +169,7 @@ at all.
 > **Note:** ssh-copy-id currently targets pre-provisioned, **non-interactive**
 > hosts — the live viewport owns the terminal, so a step that prompts for an SSH
 > passphrase or YubiKey touch isn't supported yet
-> ([crap#31](https://github.com/amarbel-llc/crap/issues/31)).
+> ([crap#31](https://code.linenisgreat.com/crap/issues/31)).
 
 ### `papi ssh-sync <domain>`
 
@@ -599,5 +599,5 @@ main.go                cobra CLI (validate, piggy-ids, ssh-keys, ssh-copy-id, ss
 
 Packages under `internal/` are tiered by dependency depth — NATO-phonetic
 levels where `0` is a leaf (no internal deps), `alfa` depends only on level
-`0`, and so on — repositioned with [dagnabit](https://github.com/amarbel-llc/purse-first)
+`0`, and so on — repositioned with [dagnabit](https://code.linenisgreat.com/purse-first)
 (`nix run github:amarbel-llc/purse-first#dagnabit -- --initial internal`).

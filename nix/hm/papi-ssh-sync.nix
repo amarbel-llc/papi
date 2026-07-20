@@ -77,7 +77,7 @@ let
       linuxService = {
         Unit = {
           Description = "papi ssh-sync — authorized_keys from ${ic.domain}";
-          Documentation = "https://github.com/amarbel-llc/papi";
+          Documentation = "https://code.linenisgreat.com/papi";
           After = [ "network-online.target" ];
           Wants = [ "network-online.target" ];
         };

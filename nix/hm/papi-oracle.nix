@@ -159,7 +159,7 @@ in
       papi-oracle = {
         Unit = {
           Description = "papi sign-challenge oracle (FDR-0014 forward-auth /authorize)";
-          Documentation = "https://github.com/amarbel-llc/papi";
+          Documentation = "https://code.linenisgreat.com/papi";
         };
         Service = {
           Type = "simple";
