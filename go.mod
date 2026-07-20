@@ -12,9 +12,10 @@ require (
 	golang.org/x/crypto v0.53.0
 )
 
+require code.linenisgreat.com/purse-first/libs/dewey v0.5.0 // indirect
+
 require (
-	code.linenisgreat.com/hyphence/go v0.3.0
-	github.com/amarbel-llc/purse-first/libs/dewey v0.3.2 // indirect
+	code.linenisgreat.com/hyphence/go v0.4.0
 	github.com/atotto/clipboard v0.1.4 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/catppuccin/go v0.3.0 // indirect

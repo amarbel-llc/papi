@@ -1,13 +1,13 @@
 code.linenisgreat.com/crap/go-crap/v2 v2.3.0 h1:SD++RNZKIUsTpCwoosnLWjnowzWwvxB95tXsOw6syL4=
 code.linenisgreat.com/crap/go-crap/v2 v2.3.0/go.mod h1:1vN9uhpZQvV52Xkp+OLCkH76DuCOsqH51e9dmwYwsUM=
-code.linenisgreat.com/hyphence/go v0.3.0 h1:FpQ0ROPDmTGyU1F4Pqnp11Hzj4IutDaVCaMJcr+e7sk=
-code.linenisgreat.com/hyphence/go v0.3.0/go.mod h1:i3VFG2dtPRi9a5i86CwRjOT3FXnCwmf2aNFp+mXfZuM=
+code.linenisgreat.com/hyphence/go v0.4.0 h1:YSfQbiQ29ihjn8KgrR6bo3sNieFMv3GZlF/SVaoOJQI=
+code.linenisgreat.com/hyphence/go v0.4.0/go.mod h1:/c5ScMJSIbliSfj3R9IfVYql9PSMtFwNSgN8wvJQQc4=
+code.linenisgreat.com/purse-first/libs/dewey v0.5.0 h1:+sd1CsNmJqPOv0K8D/qHdN62vLngYMUohHE0h52uJZU=
+code.linenisgreat.com/purse-first/libs/dewey v0.5.0/go.mod h1:IGnHB011B9XE3LU4EvZHHyL8fA3qAeQBi1QMmDXKnYQ=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=
 github.com/MakeNowJust/heredoc v1.0.0/go.mod h1:mG5amYoWBHf8vpLOuehzbGGw0EHxpZZ6lCpQ4fNJ8LE=
-github.com/amarbel-llc/purse-first/libs/dewey v0.3.2 h1:DfqmtVDsyt0Is0IWoNS6o4xoYCD/RLavV+jyKSl19Hs=
-github.com/amarbel-llc/purse-first/libs/dewey v0.3.2/go.mod h1:js1n+xvK+A/cNwc/RXiqg7ic/XyjbtYdL7YofO6IJRI=
 github.com/atotto/clipboard v0.1.4 h1:EH0zSVneZPSuFR11BlR9YppQTVDbh5+16AmcJi4g1z4=
 github.com/atotto/clipboard v0.1.4/go.mod h1:ZY9tmq7sm5xIbd9bOK4onWV4S6X0u6GY7Vn0Yu86PYI=
 github.com/aymanbagabas/go-osc52/v2 v2.0.1 h1:HwpRHbFMcZLEVr42D4p7XBqjyuxQH5SMiErDT4WkJ2k=

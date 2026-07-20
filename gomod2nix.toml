@@ -7,19 +7,19 @@ schema = 3
     goVersion = '1.26'
 
   [mod.'code.linenisgreat.com/hyphence/go']
-    version = 'v0.3.0'
-    hash = 'sha256-O6G/2ZXT7JfOrKZISKoxpGTThHG/vQh5JQIfL/ImGoE='
+    version = 'v0.4.0'
+    hash = 'sha256-HMeJOBTmoABNHhQho2KUazvLAhDvdWCba8ZvMtKiEv8='
+    goVersion = '1.26'
+
+  [mod.'code.linenisgreat.com/purse-first/libs/dewey']
+    version = 'v0.5.0'
+    hash = 'sha256-WaAb5xVdkek2jtlcD8y+99VuZyAoCVzezyIrs5X9Mbg='
     goVersion = '1.26'
 
   [mod.'github.com/BurntSushi/toml']
     version = 'v1.6.0'
     hash = 'sha256-ptdUJvuc21ixeLt+M5way/na3aCnCO4MYHWulWp8NEY='
     goVersion = '1.18'
-
-  [mod.'github.com/amarbel-llc/purse-first/libs/dewey']
-    version = 'v0.3.2'
-    hash = 'sha256-qCPYqLkjtbqAaCX3nPxP4cGTTjBbub6iIWiOJG8ejWk='
-    goVersion = '1.26'
 
   [mod.'github.com/atotto/clipboard']
     version = 'v0.1.4'
