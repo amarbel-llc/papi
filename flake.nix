@@ -45,6 +45,7 @@
     piggy.inputs.purse-first.inputs.gomod2nix.follows = "purse-first/gomod2nix";
     piggy.inputs.conformist.follows = "conformist";
     piggy.inputs.purse-first.follows = "purse-first";
+    piggy.inputs.langlang.inputs.tap.follows = "langlang/tap";
     purse-first.inputs.conformist.follows = "conformist";
 
     # langlang: the PEG-grammar parser/validator behind the papi#54 pigpen
@@ -71,6 +72,12 @@
     # silently swapping which dagnabit build papi runs against. Collapse it to
     # papi's own purse-first (piggy#220's diamond-dependency gotcha).
     langlang.inputs.tap.inputs.purse-first.follows = "purse-first";
+    langlang.inputs.conformist.inputs.igloo.inputs.bun2nix.follows = "igloo/bun2nix";
+    langlang.inputs.conformist.inputs.igloo.inputs.flake-parts.follows = "igloo/flake-parts";
+    langlang.inputs.conformist.inputs.igloo.inputs.systems.follows = "igloo/systems";
+    langlang.inputs.tap.inputs.treefmt-nix.follows = "igloo/treefmt-nix";
+    langlang.inputs.conformist.inputs.igloo.inputs.treefmt-nix.follows = "igloo/treefmt-nix";
+    langlang.inputs.tap.inputs.gomod2nix.follows = "purse-first/gomod2nix";
 
     # hyphence: source-only input (flake = false) providing the single source
     # of truth for the pigpen grammar — docs/rfcs/hyphence-content.peg. A
