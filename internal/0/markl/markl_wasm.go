@@ -1,10 +1,10 @@
-//go:build wasip1
+//go:build wasip1 || (js && wasm)
 
-// Inline blech32 for GOOS=wasip1. Piggy's markl adapter (markl_host.go)
-// transitively imports purse-first/libs/dewey which has no WASM stub for
-// setUserChanges. This file provides a self-contained Parse/Build using the
-// same algorithm as piggy/go/internal/alfa/blech32 (MIT-licensed).
-// File a bug against purse-first/libs/dewey to get a proper WASM stub.
+// Inline blech32 for GOOS=wasip1 and GOOS=js/GOARCH=wasm. Piggy's markl
+// adapter (markl_host.go) transitively imports purse-first/libs/dewey which
+// has no WASM stub for setUserChanges (filed: linenisgreat/purse-first#172).
+// This file provides a self-contained Parse/Build using the same algorithm as
+// piggy/go/internal/alfa/blech32 (MIT-licensed).
 
 package markl
 
@@ -34,14 +34,13 @@ func blech32Polymod(values []byte) uint32 {
 }
 
 func blech32HRPExpand(hrp string) []byte {
-	h := []byte(hrp) // caller ensures lowercase
-	ret := make([]byte, 0, len(h)*2+1)
-	for _, c := range h {
-		ret = append(ret, c>>5)
+	ret := make([]byte, 0, len(hrp)*2+1)
+	for i := 0; i < len(hrp); i++ {
+		ret = append(ret, hrp[i]>>5)
 	}
 	ret = append(ret, 0)
-	for _, c := range h {
-		ret = append(ret, c&31)
+	for i := 0; i < len(hrp); i++ {
+		ret = append(ret, hrp[i]&31)
 	}
 	return ret
 }
@@ -52,7 +51,7 @@ func blech32VerifyChecksum(hrp string, data []byte) bool {
 
 func blech32CreateChecksum(hrp string, data []byte) []byte {
 	values := append(blech32HRPExpand(hrp), data...)
-	values = append(values, make([]byte, 6)...)
+	values = append(values, 0, 0, 0, 0, 0, 0)
 	mod := blech32Polymod(values) ^ 1
 	ret := make([]byte, 6)
 	for p := range ret {
@@ -92,8 +91,10 @@ func blech32ConvertBits(data []byte, fromBits, toBits byte, pad bool) ([]byte, e
 // blech32Decode decodes a blech32 body string (no `purpose@` prefix).
 // Enforces RFC 0011 §3.5 lowercase-only and §3.2 single-separator split.
 func blech32Decode(s string) (hrp string, payload []byte, err error) {
-	if strings.ToLower(s) != s {
-		return "", nil, fmt.Errorf("blech32: uppercase or mixed case in %q", s)
+	for _, c := range s {
+		if c >= 'A' && c <= 'Z' {
+			return "", nil, fmt.Errorf("blech32: uppercase or mixed case in %q", s)
+		}
 	}
 	pos := strings.IndexByte(s, '-')
 	switch {
