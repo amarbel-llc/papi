@@ -1,114 +1,78 @@
-// Package markl parses "markl-id" self-describing identifier strings as
-// specified by amarbel-llc/madder RFC-0002: an OPTIONAL `purpose@` decoration
-// followed by a blech32-encoded `format-payload` body. papi needs this to read
-// the `signatures[]` markl-ids of RFC-0001 §10 (Amendment 9) — the document
-// signature `papi-doc-sig-v1@ecdsa_p256_sig-…` and its verifying key
-// `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…`.
+// Package markl parses and builds "markl-id" self-describing identifier strings
+// as specified by RFC 0011 (formerly madder RFC-0002): an OPTIONAL `purpose@`
+// decoration followed by a blech32-encoded `format-payload` body. papi uses
+// this to read the `signatures[]` markl-ids of RFC-0001 §10 (Amendment 9) —
+// the document signature `papi-doc-sig-v1@ecdsa_p256_sig-…` and its verifying
+// key `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-…`.
 //
-// madder's reference Go implementation lives in an internal/ package and is not
-// importable, so this is a minimal, decode-focused port validated byte-for-byte
-// against madder's RFC-0002 conformance vectors (see markl_test.go). Purpose ⇄
-// format compatibility policy is left to the caller (the §10 verifier checks the
-// exact purpose/format pair it expects); this package validates only the blech32
-// envelope and the payload size of formats it knows.
-//
-// TEMPORARY: this package will be dropped in favor of piggy's shared markl Go
-// library once the piggy#183 ownership inversion ships an importable module —
-// tracked in amarbel-llc/papi#10. The surface (Parse, Build, ID, the format/
-// purpose constants) is kept deliberately small so the swap is mechanical.
+// This package is a thin adapter over piggy's shared markl Go library
+// (code.linenisgreat.com/piggy/go/pkgs/markl), fulfilling papi#10. The
+// exported surface (Parse, Build, ID, the format/purpose constants) is
+// identical to the former in-house port, so all call sites remain unchanged.
 package markl
 
 import (
-	"errors"
 	"fmt"
-	"strings"
+
+	piggymarkl "code.linenisgreat.com/piggy/go/pkgs/markl"
+	_ "code.linenisgreat.com/piggy/go/pkgs/markl_registrations"
 )
 
-// ErrWrongSize is returned when a known format's decoded payload is the wrong
-// length (RFC-0002 §5 registers a fixed byte size per format).
-var ErrWrongSize = errors.New("markl: wrong payload size for format")
-
-// formatSizes is the registered byte length of each markl format papi consumes
-// (RFC-0002 §5). Formats absent here are decoded without a size check — an
-// unknown format is the caller's to skip, not this package's to reject.
-var formatSizes = map[string]int{
-	FormatEcdsaP256Sig:        64, // ECDSA P-256 signature, raw r‖s fixed-width
-	FormatSSHEcdsaNistp256Pub: 33, // SEC1-compressed P-256 public key
-}
-
-// Known format identifiers papi consumes.
+// Known format identifiers papi consumes (RFC 0011 §5).
 const (
-	FormatEcdsaP256Sig        = "ecdsa_p256_sig"
-	FormatSSHEcdsaNistp256Pub = "ssh_ecdsa_nistp256_pub"
+	FormatEcdsaP256Sig        = piggymarkl.FormatIdEcdsaP256Sig
+	FormatSSHEcdsaNistp256Pub = piggymarkl.FormatIdSshEcdsaNistp256Pub
 )
 
-// Known purpose identifiers papi consumes (RFC-0002 §6.1).
+// Known purpose identifiers papi consumes (RFC 0011 §6.1).
+// PurposeDocSig, PurposeProofSig, and PurposePIVAuth are jointly registered
+// in piggy's canonical registry; the remaining three are papi-only purposes
+// that piggy carries opaquely (madder#255 / RFC 0011 §4.3).
 const (
-	PurposeDocSig    = "papi-doc-sig-v1"    // PAPI document signature (§10)
-	PurposeProofSig  = "papi-proof-sig-v1"  // PAPI identity-proof claim signature (§9.3)
-	PurposeEnrollAtt = "papi-enroll-att-v1" // PAPI enrollment-receipt attestation (FDR-0001)
-	PurposeAuthSig   = "papi-auth-sig-v1"   // PAPI sign-challenge auth signature (§5.2)
-	PurposePIVAuth   = "piggy-piv_auth-v1"  // PIV slot-9A authentication key
-
-	// PurposePigpenSelfSig pairs with FormatEcdsaP256Sig, same as
-	// PurposeDocSig — the ordinary two-field purpose@format-payload markl-id
-	// shape, placed as a bare `-` line's whole value with no lock suffix and
-	// no wrapper tag (ratified against piggy's real recipient-line parser
-	// and hyphence's content grammar: linenisgreat/hyphence#6). This
-	// replaces an earlier, now-abandoned scheme that embedded a
-	// piggy-specific atomic tag as a lock on the pigpen `!`-line — piggy's
-	// RFC 0008 §2.6 reserves that lock slot exclusively for a sealed
-	// document's header MAC, so a payload-less self-signature never had a
-	// wire position there at all (see
-	// docs/features/0013-pigpen-resolver-papi-http.md).
-	PurposePigpenSelfSig = "papi-pigpen-self-sig-v1" // pigpen document self-signature (RFC-0001 §14.2, papi#54)
+	PurposeDocSig        = piggymarkl.PurposePapiDocSigV1   // PAPI document signature (§10)
+	PurposeProofSig      = piggymarkl.PurposePapiProofSigV1 // PAPI identity-proof claim signature (§9.3)
+	PurposePIVAuth       = piggymarkl.PurposePiggyPivAuthV1 // PIV slot-9A authentication key
+	PurposeEnrollAtt     = "papi-enroll-att-v1"             // PAPI enrollment-receipt attestation (FDR-0001)
+	PurposeAuthSig       = "papi-auth-sig-v1"               // PAPI sign-challenge auth signature (§5.2)
+	PurposePigpenSelfSig = "papi-pigpen-self-sig-v1"        // pigpen document self-signature (RFC-0001 §14.2, papi#54)
 )
 
 // ID is a parsed markl-id.
 type ID struct {
 	Purpose string // the `purpose` decoration, or "" when absent
-	Format  string // the format (the blech32 human-readable part)
+	Format  string // the blech32 human-readable part (the format identifier)
 	Payload []byte // the decoded payload bytes
-	Raw     string // the original string
+	Raw     string // the original wire string
 }
 
-// Parse decodes a markl-id string. It splits an OPTIONAL leading `purpose@`,
-// blech32-decodes the `format-payload` body, and — for formats it knows —
-// checks the payload size. Unknown formats decode without a size check.
+// Parse decodes a markl-id wire string via piggy's canonical RFC 0011 implementation.
 func Parse(s string) (ID, error) {
 	if s == "" {
-		return ID{}, ErrSeparatorMissing
+		return ID{}, fmt.Errorf("markl: empty id")
 	}
-	if !uniformCase(s) {
-		return ID{}, ErrMixedCase
-	}
-	purpose, body := "", s
-	if at := strings.IndexByte(s, '@'); at >= 0 {
-		purpose, body = s[:at], s[at+1:]
-	}
-	format, payload, err := blech32Decode(body)
-	if err != nil {
+	var pig piggymarkl.Id
+	if err := pig.Set(s); err != nil {
 		return ID{}, err
 	}
-	if want, ok := formatSizes[format]; ok && len(payload) != want {
-		return ID{}, fmt.Errorf("%w: %s is %d bytes, want %d", ErrWrongSize, format, len(payload), want)
-	}
-	return ID{Purpose: purpose, Format: format, Payload: payload, Raw: s}, nil
+	return ID{
+		Purpose: pig.GetPurposeId(),
+		Format:  pig.GetMarklFormat().GetMarklFormatId(),
+		Payload: pig.GetBytes(),
+		Raw:     s,
+	}, nil
 }
 
-// Build encodes a markl-id from a purpose, format, and payload. Used by tests to
-// construct fixtures byte-identically to a producer. A known format whose
-// payload is the wrong size is rejected.
+// Build encodes purpose, format, and payload as a markl-id wire string.
+// A registered format whose payload is the wrong size is rejected.
 func Build(purpose, format string, payload []byte) (string, error) {
-	if want, ok := formatSizes[format]; ok && len(payload) != want {
-		return "", fmt.Errorf("%w: %s is %d bytes, want %d", ErrWrongSize, format, len(payload), want)
-	}
-	body, err := blech32Encode(format, payload)
-	if err != nil {
+	var pig piggymarkl.Id
+	if err := pig.SetMarklId(format, payload); err != nil {
 		return "", err
 	}
-	if purpose == "" {
-		return body, nil
+	if purpose != "" {
+		if err := pig.SetPurposeId(purpose); err != nil {
+			return "", err
+		}
 	}
-	return purpose + "@" + body, nil
+	return pig.StringWithFormat(), nil
 }

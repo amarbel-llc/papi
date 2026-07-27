@@ -3,16 +3,15 @@ package markl
 import (
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
-// vector mirrors one entry in madder's RFC-0002 conformance fixture
-// (testdata/0002-markl-id-format-vectors.json), vendored byte-for-byte from
-// amarbel-llc/madder so papi's port stays cross-implementation compatible.
+// vector mirrors one entry in the RFC-0002 conformance fixture
+// (testdata/0002-markl-id-format-vectors.json), used to keep papi's adapter
+// cross-implementation compatible with the canonical piggy encoding.
 type vector struct {
 	Name       string `json:"name"`
 	Purpose    string `json:"purpose"`
@@ -105,40 +104,27 @@ func TestPapiVectorsTyped(t *testing.T) {
 	}
 }
 
-// TestInvalidVectorsCodec asserts the codec-level invalid vectors are rejected.
-// The registry-level errors (WrongSize on sha256, IncompatiblePurposeAndFormat
-// on dodder purposes) exercise madder's full registry, which papi does not
-// replicate — purpose/format policy is the §10 verifier's job — so they are
-// covered by TestWrongSizeKnownFormat instead.
+// TestInvalidVectorsCodec asserts that all invalid vectors are rejected by
+// piggy's canonical parser. IncompatiblePurposeAndFormat depends on piggy's
+// purpose-format registry, so it is skipped — the §10 verifier checks
+// exact purpose/format pairs independently.
 func TestInvalidVectorsCodec(t *testing.T) {
-	codec := map[string]error{
-		"MixedCase":        ErrMixedCase,
-		"SeparatorMissing": ErrSeparatorMissing,
-		"InvalidChecksum":  ErrInvalidChecksum,
-		"InvalidCharacter": ErrInvalidCharacter,
-	}
 	for _, v := range loadVectors(t).Invalid {
-		want, ok := codec[v.Error]
-		if !ok {
-			t.Logf("skipping registry-level invalid vector %q (%s)", v.Name, v.Error)
+		if v.Error == "IncompatiblePurposeAndFormat" {
+			t.Logf("skipping %q (%s): purpose-format compatibility is registry-dependent", v.Name, v.Error)
 			continue
 		}
-		if _, err := Parse(v.Encoded); !errors.Is(err, want) {
-			t.Errorf("%s: Parse error = %v, want %v", v.Name, err, want)
+		if _, err := Parse(v.Encoded); err == nil {
+			t.Errorf("%s: Parse(%q) expected error (%s), got nil", v.Name, v.Encoded, v.Error)
 		}
 	}
 }
 
-// TestWrongSizeKnownFormat: a payload of the wrong length for a known format is
-// rejected even though its blech32 envelope is valid.
-func TestWrongSizeKnownFormat(t *testing.T) {
-	// 33 bytes under ecdsa_p256_sig (which RFC-0002 §5 fixes at 64).
-	bad, err := blech32Encode(FormatEcdsaP256Sig, make([]byte, 33))
-	if err != nil {
-		t.Fatalf("blech32Encode: %v", err)
-	}
-	if _, err := Parse(bad); !errors.Is(err, ErrWrongSize) {
-		t.Fatalf("Parse(wrong-size) error = %v, want ErrWrongSize", err)
+// TestWrongSizeBuildFails: Build rejects a payload whose length does not match
+// the registered format size (ecdsa_p256_sig is 64 bytes; 33 is wrong).
+func TestWrongSizeBuildFails(t *testing.T) {
+	if _, err := Build("", FormatEcdsaP256Sig, make([]byte, 33)); err == nil {
+		t.Fatal("Build with wrong-size payload expected error, got nil")
 	}
 }
 

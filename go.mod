@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	code.linenisgreat.com/crap/go-crap/v2 v2.3.0
+	code.linenisgreat.com/piggy/go v0.0.0-20260727110126-96046398c1b5
 	github.com/BurntSushi/toml v1.6.0
 	github.com/charmbracelet/huh v1.0.0
 	github.com/gowebpki/jcs v1.0.1
@@ -12,7 +13,10 @@ require (
 	golang.org/x/crypto v0.53.0
 )
 
-require code.linenisgreat.com/purse-first/libs/dewey v0.5.0 // indirect
+require (
+	code.linenisgreat.com/purse-first/libs/dewey v0.5.0 // indirect
+	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
+)
 
 require (
 	code.linenisgreat.com/hyphence/go v0.4.0
