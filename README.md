@@ -582,7 +582,7 @@ Run `just --list` for the full recipe set. Dependency changes go through
 ```
 docs/rfcs/             the PAPI wire-format spec (RFC-0001)
 internal/0/papi/       HTTP client + wire-format decoders + enrollment receipt
-internal/0/markl/      markl-id (blech32) parser (RFC-0002)
+internal/0/markl/      markl-id parser/builder (piggy adapter, RFC 0011)
 internal/0/identity/   local identity.toml scalar reader (FDR-0009)
 internal/alfa/inspect/ the validate command + receipt verification core
 internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
