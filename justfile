@@ -74,7 +74,7 @@ build-wasm-client:
     @install -m 0644 "$(nix develop --command go env GOROOT)/lib/wasm/wasm_exec.js" build/wasm_exec.js
     @ls -lh build/papi-client.wasm build/wasm_exec.js
 
-# Full nix build of the papi CLI (injects the real version/commit).
+# full nix build of the papi CLI (injects the real version/commit)
 build-nix:
     nix build --no-link --print-build-logs .#papi
 
@@ -98,7 +98,7 @@ build-installer:
 
 test: test-go test-grammar test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module test-nix-verifier-module
 
-# Hermetic Go test suite (httptest fixtures; no network, no card).
+# hermetic Go test suite (httptest fixtures; no network, no card)
 test-go:
     nix develop --command go test ./...
 
@@ -461,7 +461,7 @@ debug-pin-status:
 
 codemod-fmt: codemod-fmt-tree
 
-# Format the tree in place (repair mode) via `nix fmt`.
+# format the tree in place (repair mode) via `nix fmt`
 codemod-fmt-tree:
     nix fmt
 
@@ -478,16 +478,16 @@ codemod-reposition-go:
 
 # --- maintenance ---
 
-# `go mod tidy`, then regenerate gomod2nix.toml (the && dependency).
+# `go mod tidy`, then regenerate gomod2nix.toml (the && dependency)
 update-go: && build-gomod2nix
     nix develop --command go mod tidy
 
-# Rewrite PAPI_VERSION in version.env (pure mutation; `release` stages + commits).
+# rewrite PAPI_VERSION in version.env (pure mutation; `release` stages + commits)
 [group("maintenance")]
 bump-version new_version:
     sed -E -i "s/^(export PAPI_VERSION)=.*/\1={{new_version}}/" version.env
 
-# Create + push a signed annotated v<sem> tag from version.env, then verify it.
+# create + push a signed annotated v<sem> tag from version.env, then verify it
 [group("maintenance")]
 tag $message:
     #!/usr/bin/env bash
