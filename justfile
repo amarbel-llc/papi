@@ -11,6 +11,8 @@ lint: lint-fmt
 
 # Read-only formatting + the eng preset's file-based linters, via the sandboxed
 # checks.formatting derivation.
+#
+# run the read-only formatting and file-based lint checks
 lint-fmt:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -22,6 +24,8 @@ lint-impure: lint-worktree
 # The impure eng checks (git remotes, sweatfile, agents-md) against the working
 # tree, where .git is available. Needs SSH remotes + a sweatfile; add lint-impure
 # to the `lint` aggregate above once those exist.
+#
+# run the impure conformist checks against the working tree
 lint-worktree:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -35,11 +39,15 @@ build: build-gomod2nix build-go build-wasm build-wasm-client build-nix build-ts 
 # Regenerate gomod2nix.toml from go.mod/go.sum. A no-op when current; run after
 # changing deps. (conformist-justfile(7): a build-* leaf lives in the build
 # aggregate.)
+#
+# regenerate gomod2nix.toml from go.mod/go.sum
 build-gomod2nix:
     nix develop --command gomod2nix
 
 # Out-of-nix go build for a fast inner loop. Version stays dev/unknown here; the
 # nix build injects the real values (eng-versioning(7)).
+#
+# build the papi CLI out-of-nix into build/papi
 build-go:
     nix develop --command go build -o build/papi .
 
@@ -47,6 +55,8 @@ build-go:
 # (cmd/papi-verify-wasm, FDR-0002) for php-wasm native verification. In `build` so
 # the merge pre-hook enforces that the verify core stays free of the enroll TUI
 # subtree (huh→termenv→terminfo→os/user) that blocks a wasip1 compile.
+#
+# cross-build the receipt-verify core to a wasip1 WASM module
 build-wasm:
     nix develop --command env GOOS=wasip1 GOARCH=wasm go build -o build/papi-verify.wasm ./cmd/papi-verify-wasm
     @ls -lh build/papi-verify.wasm
@@ -57,6 +67,8 @@ build-wasm:
 # rather than wasip1 because Bun's node:wasi cannot instantiate a Go wasip1 module
 # (FDR-0007). In `build` so the merge pre-hook keeps the client core wasm-able (no
 # TUI/os.user import).
+#
+# cross-build the client core to a js/wasm module plus wasm_exec.js
 build-wasm-client:
     nix develop --command env GOOS=js GOARCH=wasm go build -o build/papi-client.wasm ./cmd/papi-client-wasm
     @install -m 0644 "$(nix develop --command go env GOROOT)/lib/wasm/wasm_exec.js" build/wasm_exec.js
@@ -69,12 +81,16 @@ build-nix:
 # Build the zero-dep papi-client-ts flake output (FDR-0007): the js/wasm core +
 # wasm_exec.js + papi.ts staged into one store path. Validates the derivation in
 # the build lane; `test-ts-bundle` smokes the result.
+#
+# build the papi-client-ts flake bundle
 build-ts:
     nix build --no-link --print-build-logs .#papi-client-ts
 
 # Build the staged host installer binary (FDR-0006): a static, CGO-free
 # papi-installer. Validates the flake package in the build lane; the engine + the
 # headless run are covered by `test-go`.
+#
+# build the static papi-installer binary
 build-installer:
     nix build --no-link --print-build-logs .#papi-installer
 
@@ -94,6 +110,8 @@ test-go:
 # sibling ~/eng/repos checkout is needed. The test skips gracefully in plain
 # `test-go` (no env set); this recipe is what makes it fail on a real
 # regression.
+#
+# run the pigpen grammar-conformance gate against hyphence-content.peg
 test-grammar:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -108,6 +126,8 @@ test-grammar:
 # js/wasm core, then run its bun tests, which drive the wasm via Go's wasm_exec.js
 # (path handed in via $PAPI_CLIENT_WASM). Network-free — the fetch-based Client is
 # not exercised here.
+#
+# run the TypeScript client wrapper's bun tests against the js/wasm core
 test-ts: build-wasm-client
     nix develop --command env PAPI_CLIENT_WASM="$PWD/build/papi-client.wasm" bun test clients/ts
 
@@ -115,6 +135,8 @@ test-ts: build-wasm-client
 # and import its papi.ts straight from the nix store with NO $PAPI_CLIENT_WASM, so
 # papi.ts's default sibling resolution of the wasm + wasm_exec.js is exercised —
 # the real consumer path test-ts does not cover.
+#
+# smoke the distributed papi-client-ts bundle from the Nix store
 test-ts-bundle:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -125,6 +147,8 @@ test-ts-bundle:
 # against synthetic configs (lib.evalModules, no home-manager input) and verify
 # the option schema, both platform code paths, the default fragment-path slug,
 # and the assertions. Mirrors piggy's test-nix-hm-module.
+#
+# evaluate the services.papi-ssh-sync home-manager module against synthetic configs
 test-nix-hm-module:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -147,6 +171,8 @@ test-nix-hm-module:
 # synthetic configs (lib.evalModules, no home-manager input) and verify the option
 # schema, the authorize-only ExecStart (--allow-callback but no --domain/--origin),
 # the default agent socket, and the non-empty-allowCallbacks assertion.
+#
+# evaluate the services.papi-oracle home-manager module against synthetic configs
 test-nix-oracle-module:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -169,6 +195,8 @@ test-nix-oracle-module:
 # synthetic configs (lib.evalModules, no NixOS system) and verify the option schema,
 # the forward-auth / verify-signature-only / combined ExecStart, and the
 # forward-auth-requires-its-flags assertion. Mirrors test-nix-oracle-module.
+#
+# evaluate the services.papi-auth-verifier NixOS module against synthetic configs
 test-nix-verifier-module:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -193,6 +221,8 @@ test-nix-verifier-module:
 # `test-grammar` (hyphence#9's lesson): it shows whether a FAILED parse is
 # distinguishable from a successful one by the stdout prefix the test keys off.
 # e.g. `just debug-grammar-parse 'not a valid @@@ markl id'`
+#
+# parse a string against hyphence-content.peg with the pinned langlang
 [group("debug")]
 debug-grammar-parse content:
     #!/usr/bin/env bash
@@ -216,6 +246,8 @@ debug-grammar-parse content:
 # Regenerate the committed sample enrollment receipt fixture
 # (internal/alfa/enroll/testdata/) — a hand-off artifact for the deploy-side
 # verify recipe (site-linenisgreat). Normal `test-go` skips this generator.
+#
+# regenerate the committed sample enrollment receipt fixture
 [group("debug")]
 debug-sample-receipt:
     PAPI_GEN_SAMPLE=1 nix develop --command go test ./internal/alfa/enroll/ -run TestGenerateSampleReceipt -v
@@ -223,6 +255,8 @@ debug-sample-receipt:
 # Regenerate the committed §10-signed /papi fixture (clients/ts/testdata/
 # signed-papi.json + signed-papi.pubid.txt) the bun §10-verify test consumes
 # (FDR-0007). Deterministic (fixed-seed key+sig); normal `test-go` skips it.
+#
+# regenerate the committed §10-signed /papi fixture
 [group("debug")]
 debug-signed-doc:
     PAPI_GEN_SIGNED_DOC=1 nix develop --command go test ./internal/alfa/inspect/ -run TestGenerateSignedDocFixture -v
@@ -231,6 +265,8 @@ debug-signed-doc:
 # before a live `papi enroll` run — which card is provisioned (slot 9D+9A) vs
 # blank. Runs via the PINNED piggy (the flake input papi uses), so blank cards
 # show up via piggy#193. Serves the papi#15 live-test prep.
+#
+# list attached PIV cards and their provisioning state
 [group("debug")]
 debug-cards:
     nix develop --command bash -c 'echo "=== piggy list --format=ndjson (all cards, incl. blank via piggy#193) ==="; piggy list --format=ndjson; echo; echo "=== piggy list --format=ssh ==="; piggy list --format=ssh'
@@ -238,12 +274,16 @@ debug-cards:
 # Run the current papi against a live domain (go run, so it picks up uncommitted
 # changes). For live-test verification, e.g. `just debug-papi piggy-ids
 # linenisgreat.com`. Serves the papi#15 live-test prep.
+#
+# run the working-tree papi with ARGS via go run
 [group("debug")]
 debug-papi *ARGS:
     nix develop --command go run . {{ARGS}}
 
 # Read a card's slot-9D age recipient (read-only, PIN-free) to validate the
 # age-plugin-piggy readback parser. Serves the papi#15 live-test prep.
+#
+# print a card's slot-9D age recipient
 [group("debug")]
 debug-age guid:
     nix develop --command age-plugin-piggy generate --guid {{guid}}
@@ -251,12 +291,16 @@ debug-age guid:
 # Run pivy-tool (via piggy's passthrough) for live-test exploration — e.g.
 # `just debug-pivy list` to enumerate all PIV cards incl. blank ones that
 # `piggy list` hides. Read-only ops only here. Serves the papi#15 live-test prep.
+#
+# run pivy-tool with ARGS via piggy's passthrough
 [group("debug")]
 debug-pivy *ARGS:
     piggy tool {{ARGS}}
 
 # Confirm the PINNED piggy (the flake input papi burns in, not ambient PATH)
 # exposes `sign-bytes` (piggy#190) — papi enroll's slot-9A signer. papi#15 prep.
+#
+# check that the pinned piggy exposes sign-bytes
 [group("debug")]
 debug-piggy-signcheck:
     nix develop --command piggy sign-bytes --help
@@ -268,6 +312,8 @@ debug-piggy-signcheck:
 # uses the forwarded $SSH_AUTH_SOCK (this host); signer=auto/pcsc for a local card.
 # Operator-in-the-loop: may prompt the card for PIN/touch. e.g.
 #   just debug-sign-challenge-smoke api.linenisgreat.com
+#
+# sign a dummy challenge with the real card to smoke the slot-9A signer
 [group("debug")]
 debug-sign-challenge-smoke domain="api.linenisgreat.com" signer="agent":
     echo '{"challenge_id":"smoke","nonce":"deadbeefdeadbeef","expires_at":0}' | nix develop --command go run . sign-challenge --domain "{{domain}}" --signer "{{signer}}"
@@ -280,6 +326,8 @@ debug-sign-challenge-smoke domain="api.linenisgreat.com" signer="agent":
 # loop (card PIN/touch). domain = the server's §5.2 binding domain (must match its
 # PAPI_AUTH_DOMAIN). e.g.
 #   just debug-sign-challenge-serve linenisgreat.com https://api.linenisgreat.com http://<your-host>.ts.net:8080
+#
+# serve the §5 card oracle for the browser login demo
 [group("debug")]
 debug-sign-challenge-serve domain target origin addr="0.0.0.0:8088":
     nix develop --command go run . sign-challenge-serve --domain "{{domain}}" --target "{{target}}" --origin "{{origin}}" --addr "{{addr}}"
@@ -292,6 +340,8 @@ debug-sign-challenge-serve domain target origin addr="0.0.0.0:8088":
 # reach it from another host/tailnet (it holds no secret — registry public keys only).
 # e.g.
 #   just debug-auth-verify-signature-serve /var/lib/papi/registry
+#
+# serve the standalone verify-signature auth verifier
 [group("debug")]
 debug-auth-verify-signature-serve registry addr="127.0.0.1:9099":
     nix develop --command go run . auth-verifier --enable-verify-signature --authorized-keys-file "{{registry}}" --addr "{{addr}}" --log-format text
@@ -301,6 +351,8 @@ debug-auth-verify-signature-serve registry addr="127.0.0.1:9099":
 # from nixpkgs on demand — no devShell dep. Pair with debug-sign-challenge-serve. e.g.
 #   just debug-sign-challenge-demo 8080
 # then open http://localhost:8080/sign-challenge-demo.html
+#
+# serve the sign-challenge demo page over http://localhost
 [group("debug")]
 debug-sign-challenge-demo port="8080":
     nix run nixpkgs#python3 -- -m http.server {{port}} --directory clients/ts/examples
@@ -311,6 +363,8 @@ debug-sign-challenge-demo port="8080":
 # live site) with NO blank card / piggy#193/#194 needed. Run in YOUR terminal so
 # the PIN prompt reaches you; pass `pin=<PIN>` if it hangs with no prompt. Needs
 # the card present + `piggy sign-bytes`. papi#15 live-test prep.
+#
+# smoke `papi enroll` end-to-end by enrolling one card into itself
 [group("debug")]
 debug-enroll-smoke guid domain="linenisgreat.com" pin="":
     #!/usr/bin/env bash
@@ -321,6 +375,8 @@ debug-enroll-smoke guid domain="linenisgreat.com" pin="":
 
 # Independently verify an enrollment receipt against a domain (the deploy-gate
 # check `papi enroll` also runs internally). papi#15 live-test prep.
+#
+# verify an enrollment receipt file against a domain
 [group("debug")]
 debug-verify-receipt file domain="linenisgreat.com":
     nix develop --command go run . verify-receipt "{{file}}" --domain "{{domain}}"
@@ -330,6 +386,8 @@ debug-verify-receipt file domain="linenisgreat.com":
 # + 9A with piggy's CN convention. Run with ONLY the blank card attached —
 # pivy-tool can't target a blank card by serial alongside another. Factory admin
 # key is auto-tried; prints the new GUID for `just debug-enroll`. papi#15 prep.
+#
+# provision the sole attached blank card via pivy-tool
 [group("debug")]
 debug-provision-blank:
     #!/usr/bin/env bash
@@ -345,6 +403,8 @@ debug-provision-blank:
 # Run `papi enroll` for a REAL two-card enrollment: the new card (--new-guid)
 # attested by the trusted card (--trusted-guid). Run in YOUR terminal (PIN
 # prompt); pass `pin=<PIN>` if it hangs. papi#15 live test.
+#
+# run a real two-card `papi enroll` (new card attested by trusted card)
 [group("debug")]
 debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
     #!/usr/bin/env bash
@@ -357,6 +417,8 @@ debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
 # package — e.g. `just debug-imports-of os/user .` locates the transitive wasip1
 # build blocker, and `... ./internal/alfa/inspect` checks if the verify core is
 # clean of it. WASM-isolation exploration.
+#
+# list which packages in a build subtree import a given package
 [group("debug")]
 debug-imports-of target pkg=".":
     nix develop --command bash -c 'go list -deps -json {{pkg}} | jq -r --arg p "{{target}}" "select(.Imports != null and (.Imports | index(\$p))) | .ImportPath"'
@@ -365,6 +427,8 @@ debug-imports-of target pkg=".":
 # — e.g. `just debug-why-depends ffmpeg-headless` pins what drags ffmpeg into the
 # merge-gate cold build. Finds the exact instance via --requisites, then prints the
 # dependency chain.
+#
+# trace why a package sits in the devShell closure
 [group("debug")]
 debug-why-depends pkg:
     #!/usr/bin/env bash
@@ -379,6 +443,8 @@ debug-why-depends pkg:
 
 # Show PIV PIN/PUK retry counts per attached card (read-only via ykman) — diagnose
 # a blocked PIN after a live test. papi#15 live-test debug.
+#
+# show PIV PIN/PUK retry counts per attached card
 [group("debug")]
 debug-pin-status:
     #!/usr/bin/env bash
@@ -405,6 +471,8 @@ codemod-reposition: codemod-reposition-go
 # purse-first; on the devShell PATH). Run after adding or moving packages;
 # preview with `nix develop --command dagnabit -n internal`. The one-time
 # initial tiering of the flat layout used `dagnabit --initial internal`.
+#
+# rebalance internal/ package tiers by dependency depth
 codemod-reposition-go:
     nix develop --command dagnabit internal
 
@@ -434,6 +502,8 @@ tag $message:
 
 # Full release from master (eng-versioning(7)): changelog -> idempotent
 # bump+commit -> signed tag -> fj release.
+#
+# cut a full release from master at new_version
 [group("maintenance")]
 release new_version:
     #!/usr/bin/env bash
