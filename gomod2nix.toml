@@ -17,8 +17,8 @@ schema = 3
     goVersion = '1.26'
 
   [mod.'code.linenisgreat.com/purse-first/libs/dewey']
-    version = 'v0.5.1-0.20260729104136-439984ec8628'
-    hash = 'sha256-9izfiRXtRIFe8VvUv0h70YXcsiFbKwK5ZBHmvZVxalM='
+    version = 'v0.5.1-0.20260729133446-c1ced82d4ee8'
+    hash = 'sha256-JIDcB3i3OTszKFWfE+LG3y+xxzORrFxJ7Zf9hagmdqk='
     goVersion = '1.26'
 
   [mod.'github.com/BurntSushi/toml']
