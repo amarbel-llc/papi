@@ -14,7 +14,7 @@ require (
 )
 
 require (
-	code.linenisgreat.com/purse-first/libs/dewey v0.5.0 // indirect
+	code.linenisgreat.com/purse-first/libs/dewey v0.5.1-0.20260729104136-439984ec8628 // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
 )
 

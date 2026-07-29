@@ -10,10 +10,21 @@
 // exported surface (Parse, Build, ID, the format/purpose constants) is
 // identical to the former in-house port, so all call sites remain unchanged.
 //
-// For GOOS=wasip1, the piggy adapter is unavailable (purse-first/libs/dewey
-// has no WASM stub for setUserChanges). markl_wasm.go provides a self-contained
-// implementation using inline blech32 derived from piggy's own algorithm.
+// The adapter is the single markl path on every target, including wasip1 and
+// js/wasm. It briefly was not: piggy's dependency chain reached dewey code that
+// did not compile for wasm, so this package carried an inline blech32 fallback
+// behind a build tag. purse-first#172/#173 fixed dewey (setUserChanges stubs for
+// both wasm targets, SIGHUP build-tagged out for js/wasm), and papi#62 deleted
+// the fallback — there is no longer a second implementation to keep in sync,
+// and no build-tag split left to justify splitting this package across files.
 package markl
+
+import (
+	"fmt"
+
+	piggymarkl "code.linenisgreat.com/piggy/go/pkgs/markl"
+	_ "code.linenisgreat.com/piggy/go/pkgs/markl_registrations"
+)
 
 // Known format identifiers papi consumes (RFC 0011 §5).
 // These are wire-format strings defined by the RFC; they must stay in sync with
@@ -42,4 +53,36 @@ type ID struct {
 	Format  string // the blech32 human-readable part (the format identifier)
 	Payload []byte // the decoded payload bytes
 	Raw     string // the original wire string
+}
+
+// Parse decodes a markl-id wire string via piggy's canonical RFC 0011 implementation.
+func Parse(s string) (ID, error) {
+	if s == "" {
+		return ID{}, fmt.Errorf("markl: empty id")
+	}
+	var pig piggymarkl.Id
+	if err := pig.Set(s); err != nil {
+		return ID{}, err
+	}
+	return ID{
+		Purpose: pig.GetPurposeId(),
+		Format:  pig.GetMarklFormat().GetMarklFormatId(),
+		Payload: pig.GetBytes(),
+		Raw:     s,
+	}, nil
+}
+
+// Build encodes purpose, format, and payload as a markl-id wire string.
+// A registered format whose payload is the wrong size is rejected.
+func Build(purpose, format string, payload []byte) (string, error) {
+	var pig piggymarkl.Id
+	if err := pig.SetMarklId(format, payload); err != nil {
+		return "", err
+	}
+	if purpose != "" {
+		if err := pig.SetPurposeId(purpose); err != nil {
+			return "", err
+		}
+	}
+	return pig.StringWithFormat(), nil
 }

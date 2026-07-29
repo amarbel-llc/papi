@@ -1,15 +1,20 @@
 //go:build !wasip1 && !(js && wasm)
 
-// The hyphence import below pulls in purse-first/libs/dewey transitively,
-// which has no wasip1/js-wasm implementation of its OS-file-attribute
-// syscall wrapper (setUserChanges in dewey's internal/delta/files package).
-// internal/alfa/inspect is imported wholesale by both cmd/papi-verify-wasm
-// (GOOS=wasip1) and cmd/papi-client-wasm (GOOS=js GOARCH=wasm), and Go
-// compiles every file in an imported package for the target platform even
-// when its exported symbols go uncalled — so this file (and its
-// hyphence/dewey dependency) must stay out of both wasm builds until
-// nothing outside inspect calls parsePigpenMetadataLines under those
-// targets (see `just build-wasm` / `just build-wasm-client`).
+// The hyphence import below pulls in purse-first/libs/dewey transitively.
+// dewey USED to be the reason for this tag — it had no wasip1/js-wasm
+// implementation of its OS-file-attribute syscall wrapper (setUserChanges).
+// purse-first#172/#173 fixed that, and papi#62 bumped dewey past both, so
+// hyphence now compiles for either wasm target (`just debug-build-wasm-pkg
+// code.linenisgreat.com/hyphence/go/hyphence`).
+//
+// The tag is retained because internal/alfa/inspect is imported wholesale by
+// both cmd/papi-verify-wasm (GOOS=wasip1) and cmd/papi-client-wasm (GOOS=js
+// GOARCH=wasm), and Go compiles every file in an imported package for the
+// target even when its exported symbols go uncalled — so dropping it would
+// add hyphence to both wasm payloads, and papi-client.wasm is browser-
+// delivered (FDR-0007). That size cost has never been measured; papi#63
+// tracks measuring it and then either dropping the tag or recording the
+// delta here as the deliberate rationale.
 package inspect
 
 import (

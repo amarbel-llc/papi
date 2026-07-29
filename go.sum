@@ -6,6 +6,8 @@ code.linenisgreat.com/piggy/go v0.0.0-20260727110126-96046398c1b5 h1:pTFqHzWyhLu
 code.linenisgreat.com/piggy/go v0.0.0-20260727110126-96046398c1b5/go.mod h1:SvQcD+AKbeY0YJUYUrTRUyDYtV3JGFZLzcZXJSsyAUk=
 code.linenisgreat.com/purse-first/libs/dewey v0.5.0 h1:+sd1CsNmJqPOv0K8D/qHdN62vLngYMUohHE0h52uJZU=
 code.linenisgreat.com/purse-first/libs/dewey v0.5.0/go.mod h1:IGnHB011B9XE3LU4EvZHHyL8fA3qAeQBi1QMmDXKnYQ=
+code.linenisgreat.com/purse-first/libs/dewey v0.5.1-0.20260729104136-439984ec8628 h1:3GU2LYtOEtYSbudGtHxb1WqZ6etP9Jk0RiO1rj2RaOQ=
+code.linenisgreat.com/purse-first/libs/dewey v0.5.1-0.20260729104136-439984ec8628/go.mod h1:IGnHB011B9XE3LU4EvZHHyL8fA3qAeQBi1QMmDXKnYQ=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
 github.com/MakeNowJust/heredoc v1.0.0 h1:cXCdzVdstXyiTqTvfqk9SDHpKNjxuom+DOlyEeQ4pzQ=

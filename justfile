@@ -413,6 +413,20 @@ debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
     if [[ -n "{{pin}}" ]]; then args+=(--pin "{{pin}}"); fi
     nix develop --command go run . "${args[@]}"
 
+# Explore: cross-build ARBITRARY packages for both wasm targets, isolated from
+# papi's own build graph — the way to ask "is this dependency wasm-clean?"
+# without papi's TUI/auth stack (huh→termenv→terminfo→os/user, creack/pty,
+# runtime/cgo) failing first for unrelated reasons. Building a papi package that
+# carries a wasm build-tag split cannot answer it: the tag just selects whichever
+# file already compiles. Defaults to the papi#62 gate — piggy's markl, unblocked
+# for wasm by purse-first#172/#173 in dewey; a regression there is upstream, not
+# papi's. e.g. `just debug-build-wasm-pkg code.linenisgreat.com/hyphence/go/hyphence`
+[group("debug")]
+debug-build-wasm-pkg pkg="code.linenisgreat.com/piggy/go/pkgs/markl code.linenisgreat.com/piggy/go/pkgs/markl_registrations":
+    nix develop --command env GOOS=js GOARCH=wasm go build {{pkg}}
+    nix develop --command env GOOS=wasip1 GOARCH=wasm go build {{pkg}}
+    @echo "OK: {{pkg}} builds for js/wasm and wasip1/wasm"
+
 # Explore: which packages in a build subtree import a given (often stdlib)
 # package — e.g. `just debug-imports-of os/user .` locates the transitive wasip1
 # build blocker, and `... ./internal/alfa/inspect` checks if the verify core is
