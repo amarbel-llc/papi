@@ -421,6 +421,8 @@ debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
 # file already compiles. Defaults to the papi#62 gate — piggy's markl, unblocked
 # for wasm by purse-first#172/#173 in dewey; a regression there is upstream, not
 # papi's. e.g. `just debug-build-wasm-pkg code.linenisgreat.com/hyphence/go/hyphence`
+#
+# cross-build arbitrary packages for both wasm targets, isolated from papi
 [group("debug")]
 debug-build-wasm-pkg pkg="code.linenisgreat.com/piggy/go/pkgs/markl code.linenisgreat.com/piggy/go/pkgs/markl_registrations":
     nix develop --command env GOOS=js GOARCH=wasm go build {{pkg}}
