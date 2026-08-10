@@ -162,8 +162,24 @@
           # and to `gh` (registering the new card's slot-9A key on GitHub as an
           # auth + signing key); wrap the binary so the pinned piggy/bin and gh
           # take precedence over the ambient PATH.
-          nativeBuildInputs = [ pkgs.makeWrapper ];
+          nativeBuildInputs = [
+            pkgs.makeWrapper
+            pkgs.scdoc
+          ];
           postInstall = ''
+            # Man pages (eng-manpages(7)). Section 1 is generated from the cobra
+            # command tree by the hidden `generate-man` subcommand (Go codegen),
+            # so it stays in lockstep with --help; run the raw binary BEFORE
+            # wrapProgram. Section 7 concept pages are compiled from the
+            # hand-written doc/*.7.scd sources. SOURCE_DATE_EPOCH (set in the Nix
+            # sandbox) + the subcommand's DisableAutoGenTag keep both reproducible.
+            $out/bin/papi generate-man $out
+            install -d $out/share/man/man7
+            for f in ${./doc}/*.7.scd; do
+              [ -e "$f" ] || continue
+              scdoc < "$f" > "$out/share/man/man7/$(basename "$f" .scd)"
+            done
+
             wrapProgram $out/bin/papi \
               --prefix PATH : ${
                 pkgs.lib.makeBinPath [
@@ -287,6 +303,10 @@
             # dagnabit(1): tiers internal/ packages by dependency depth — see
             # `just codemod-reposition` and the README Layout section.
             purse-first.packages.${system}.dagnabit
+            # scdoc compiles the hand-written doc/*.7.scd concept pages
+            # (eng-manpages(7)); used by the papi derivation's postInstall and by
+            # `just debug-man` for local preview.
+            pkgs.scdoc
             # gum + gh drive the eng-versioning(7) release recipes
             # (`just bump-version` / `tag` / `release`).
             pkgs.gum

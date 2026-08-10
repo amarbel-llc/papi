@@ -558,6 +558,11 @@ inputs.papi.url = "github:amarbel-llc/papi/v0.2.0";
 `papi version` reports the burned-in `papi <version>+<commit>` (the version
 comes from `version.env`, injected by igloo's `buildGoApplication`).
 
+Installing the package also installs man pages (`man papi`): `papi(1)` plus a
+page per subcommand (`papi-validate(1)`, `papi-enroll(1)`, …), generated from
+the CLI so they track `--help`, and the concept pages `papi-ssh-sync(7)` and
+`papi-bootstrap(7)`.
+
 Releases are cut with `just release <new>` from `master` (eng-versioning(7)):
 it generates the changelog, bumps `version.env`, and creates a signed `v<sem>`
 tag plus a GitHub release.

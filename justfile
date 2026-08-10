@@ -280,6 +280,25 @@ debug-cards:
 debug-papi *ARGS:
     nix develop --command go run . {{ARGS}}
 
+# Render man pages into build/man and open one — section 1 via the CLI's hidden
+# `generate-man` (Go codegen), section 7 via scdoc. Local preview of the pages
+# `nix build` ships (eng-manpages(7)), no full nix build needed.
+#
+# render papi's man pages locally and open PAGE (default papi)
+[group("debug")]
+debug-man page="papi":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    rm -rf build/man && mkdir -p build/man/share/man/man7
+    nix develop --command go run . generate-man build/man
+    for f in doc/*.7.scd; do
+      [ -e "$f" ] || continue
+      nix develop --command scdoc < "$f" > "build/man/share/man/man7/$(basename "$f" .scd)"
+    done
+    page=build/man/share/man/man1/{{page}}.1
+    [ -e "$page" ] || page=build/man/share/man/man7/{{page}}.7
+    man "$page"
+
 # Read a card's slot-9D age recipient (read-only, PIN-free) to validate the
 # age-plugin-piggy readback parser. Serves the papi#15 live-test prep.
 #
