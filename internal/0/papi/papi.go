@@ -190,7 +190,7 @@ func (c *Client) servingBase(ctx context.Context) string {
 var resourceSuffixes = []string{
 	"/papi/ssh-authorized-keys", "/papi/organizations", "/papi/piggy-ids",
 	"/papi/templates", "/papi/sitemap", "/papi/forges", "/papi/proofs",
-	"/papi/caches", "/papi/repos", "/papi",
+	"/papi/caches", "/papi/repos", "/papi/identity", "/papi",
 }
 
 // servingBaseFromResources derives the API base (scheme://host[/prefix]) from the
