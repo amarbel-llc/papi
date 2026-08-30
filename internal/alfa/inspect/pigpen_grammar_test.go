@@ -3,6 +3,7 @@
 package inspect
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,11 +33,12 @@ import (
 // or signature correctness. Those are the decoder's and verifier's job.
 //
 // Hermetic under `just test-grammar` (papi#58/#60): that recipe builds the
-// langlang CLI (`.#langlang`) and hyphence's grammar (`.#hyphence-content-grammar`)
-// from flake inputs and hands them in via LANGLANG_BIN / PAPI_HYPHENCE_GRAMMAR.
-// SKIPs (never fails) when neither the env vars nor a fallback (langlang on
-// PATH, a sibling ~/eng/repos/hyphence checkout) resolves — so a plain
-// `go test ./...` outside the wired recipe still passes.
+// langlang CLI (`.#langlang`) and hyphence's staged grammar directory
+// (`.#hyphence-content-grammar`) from flake inputs and hands them in via
+// LANGLANG_BIN / PAPI_HYPHENCE_GRAMMAR. SKIPs (never fails) when neither the
+// env vars nor a fallback (langlang on PATH, a sibling ~/eng/repos/hyphence
+// checkout) resolves — so a plain `go test ./...` outside the wired recipe
+// still passes.
 func TestPigpenGrammarConformance(t *testing.T) {
 	langlangBin, err := resolveLanglangBin()
 	if err != nil {
@@ -97,9 +99,18 @@ func resolveLanglangBin() (string, error) {
 }
 
 // resolveHyphenceContentGrammar locates hyphence-content.peg: PAPI_HYPHENCE_GRAMMAR
-// (set by `just test-grammar` to the `.#hyphence-content-grammar` flake build)
-// wins, else a sibling ~/eng/repos/hyphence checkout is tried for local,
+// (set by `just test-grammar` to the staged `.#hyphence-content-grammar` flake
+// build) wins, else a sibling ~/eng/repos/hyphence checkout is tried for local,
 // non-nix dev. papi deliberately vendors no grammar copy of its own (papi#60).
+//
+// The peg must be STAGED — marklid.peg beside it (papi#72): hyphence-content.peg
+// `@import`s String/Char/Format/DataChar from piggy's marklid.peg and langlang
+// resolves `@import` relative to the importing file, so an unstaged peg loads
+// with every imported rule undefined. The env var comes from a nix build that
+// stages by construction and is trusted unchecked, so a recipe handing over a
+// bad path still fails loudly rather than skipping. A plain hyphence checkout,
+// though, has no marklid.peg (piggy owns it) — so the sibling fallback only
+// resolves when someone has staged one there by hand.
 func resolveHyphenceContentGrammar() (string, error) {
 	if p := os.Getenv("PAPI_HYPHENCE_GRAMMAR"); p != "" {
 		return p, nil
@@ -111,6 +122,10 @@ func resolveHyphenceContentGrammar() (string, error) {
 	p := filepath.Join(home, "eng", "repos", "hyphence", "docs", "rfcs", "hyphence-content.peg")
 	if _, err := os.Stat(p); err != nil {
 		return "", err
+	}
+	marklid := filepath.Join(filepath.Dir(p), "marklid.peg")
+	if _, err := os.Stat(marklid); err != nil {
+		return "", fmt.Errorf("%s has no marklid.peg beside it: %w", p, err)
 	}
 	return p, nil
 }

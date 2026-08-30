@@ -105,18 +105,22 @@ test-go:
 # Enforced pigpen grammar-conformance gate (papi#54/#58/#60): feed the
 # SignPigpen fixture's metadata lines through langlang's parse of hyphence's
 # canonical hyphence-content.peg. Hermetic — both the langlang binary and the
-# grammar .peg come from flake inputs (.#langlang / .#hyphence-content-grammar,
+# grammar come from flake inputs (.#langlang / .#hyphence-content-grammar,
 # an SSH-auth git+ssh langlang fetch + the public hyphence tarball), so no
 # sibling ~/eng/repos checkout is needed. The test skips gracefully in plain
 # `test-go` (no env set); this recipe is what makes it fail on a real
 # regression.
+#
+# .#hyphence-content-grammar is a STAGING DIRECTORY, not a bare .peg (papi#72):
+# hyphence-content.peg `@import`s piggy's marklid.peg, which langlang resolves
+# relative to the importing file, so both sit side by side in it.
 #
 # run the pigpen grammar-conformance gate against hyphence-content.peg
 test-grammar:
     #!/usr/bin/env bash
     set -euo pipefail
     langlang_bin="$(nix build .#langlang --no-link --print-out-paths)/bin/langlang"
-    grammar="$(nix build .#hyphence-content-grammar --no-link --print-out-paths)"
+    grammar="$(nix build .#hyphence-content-grammar --no-link --print-out-paths)/hyphence-content.peg"
     nix develop --command env \
       LANGLANG_BIN="$langlang_bin" \
       PAPI_HYPHENCE_GRAMMAR="$grammar" \
@@ -228,7 +232,7 @@ debug-grammar-parse content:
     #!/usr/bin/env bash
     set -euo pipefail
     langlang_bin="$(nix build .#langlang --no-link --print-out-paths)/bin/langlang"
-    grammar="$(nix build .#hyphence-content-grammar --no-link --print-out-paths)"
+    grammar="$(nix build .#hyphence-content-grammar --no-link --print-out-paths)/hyphence-content.peg"
     input="$(mktemp)"
     printf '%s' '{{content}}' > "$input"
     set +e

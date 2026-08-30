@@ -85,8 +85,8 @@
     # vendors no grammar copy of its own; the conformance test parses against
     # hyphence's own .peg, materialized hermetically as
     # `.#hyphence-content-grammar` below rather than reached for in a sibling
-    # ~/eng/repos/hyphence checkout. Only one file is needed, so this is a bare
-    # source input, not a flake — no dependency tree pulled in.
+    # ~/eng/repos/hyphence checkout. Only the grammar is needed, so this is a
+    # bare source input, not a flake — no dependency tree pulled in.
     hyphence = {
       url = "https://code.linenisgreat.com/hyphence/archive/master.tar.gz";
       flake = false;
@@ -130,10 +130,21 @@
 
         # hyphence-content.peg (papi#60) lifted out of the hyphence source
         # input into its own store path, so `just test-grammar` can
-        # `nix build .#hyphence-content-grammar` for the grammar file without
+        # `nix build .#hyphence-content-grammar` for the grammar without
         # encoding hyphence's internal directory layout at the recipe site.
-        hyphence-content-grammar = pkgs.runCommandLocal "hyphence-content.peg" { } ''
-          cp ${hyphence}/docs/rfcs/hyphence-content.peg "$out"
+        #
+        # A DIRECTORY, not a bare file (papi#72): since hyphence#11 the peg
+        # `@import`s String/Char/Format/DataChar from piggy's marklid.peg, and
+        # langlang resolves `@import` relative to the importing file — so the
+        # two have to sit side by side or every imported rule comes back
+        # undefined. This mirrors hyphence's own `grammarStaged` and consumes
+        # piggy's published `.#marklid-grammar` export surface rather than
+        # reaching into piggy's source tree. Consumers point langlang at
+        # `$out/hyphence-content.peg`.
+        hyphence-content-grammar = pkgs.runCommandLocal "hyphence-content-grammar" { } ''
+          mkdir -p "$out"
+          cp ${hyphence}/docs/rfcs/hyphence-content.peg "$out/hyphence-content.peg"
+          cp ${piggy.packages.${system}.marklid-grammar} "$out/marklid.peg"
         '';
 
         # The papi CLI. version/commit are injected by the fork's
@@ -266,9 +277,9 @@
           papi = papi;
           papi-client-ts = papi-client-ts;
           papi-installer = papi-installer;
-          # The langlang CLI + hyphence's grammar .peg, the two hermetic inputs
-          # the `just test-grammar` gate feeds the pigpen conformance test
-          # (papi#58/#60).
+          # The langlang CLI + hyphence's staged grammar directory, the two
+          # hermetic inputs the `just test-grammar` gate feeds the pigpen
+          # conformance test (papi#58/#60/#72).
           langlang = langlangPkg;
           hyphence-content-grammar = hyphence-content-grammar;
           conformist-impure-config = impureEval.config.build.configFile;
