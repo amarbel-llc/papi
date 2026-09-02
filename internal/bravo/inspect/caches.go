@@ -3,7 +3,7 @@ package inspect
 import (
 	"fmt"
 
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // cacheKind is the only nix-binary-cache mechanism defined in papi/v0 (§11.1).

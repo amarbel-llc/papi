@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // runFn drives the wasm harness's run() as a host binary: it builds a

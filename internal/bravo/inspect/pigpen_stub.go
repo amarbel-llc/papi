@@ -19,7 +19,7 @@ package inspect
 import (
 	"context"
 
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // pigpenSignaturePoints is a no-op stub under wasip1/js-wasm builds; see this

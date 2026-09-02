@@ -20,7 +20,7 @@ import (
 
 	"code.linenisgreat.com/hyphence/go/hyphence"
 	"code.linenisgreat.com/papi/internal/0/markl"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 func TestFindPigpenSelfSig(t *testing.T) {

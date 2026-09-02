@@ -27,8 +27,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"code.linenisgreat.com/papi/internal/0/papi"
-	"code.linenisgreat.com/papi/internal/alfa/inspect"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
+	"code.linenisgreat.com/papi/internal/bravo/inspect"
 )
 
 // request is the wire envelope: a function selector and the raw endpoint body.

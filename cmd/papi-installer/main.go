@@ -23,7 +23,7 @@ import (
 
 	"code.linenisgreat.com/crap/go-crap/v2/crap"
 	"code.linenisgreat.com/papi/internal/0/installer"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }

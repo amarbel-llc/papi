@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"code.linenisgreat.com/papi/internal/0/markl"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 	"golang.org/x/crypto/ssh"
 )
 

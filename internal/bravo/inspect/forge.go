@@ -9,7 +9,7 @@ import (
 	"net/http"
 
 	"code.linenisgreat.com/crap/go-crap/v2/crap"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // forgeEntry is the slice of a /papi/forges entry the access asserter reads: its id

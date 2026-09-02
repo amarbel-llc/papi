@@ -16,7 +16,7 @@ import (
 	"strings"
 
 	"code.linenisgreat.com/crap/go-crap/v2/crap"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // ErrNonConformant is returned by Run when the domain violates a MUST. The

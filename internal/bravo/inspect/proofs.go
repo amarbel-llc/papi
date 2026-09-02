@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"code.linenisgreat.com/papi/internal/0/markl"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // txtLookup resolves a hostname's DNS TXT records. It is a package var so the

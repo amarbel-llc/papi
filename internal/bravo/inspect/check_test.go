@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 func mustJSON(t *testing.T, s string) any {

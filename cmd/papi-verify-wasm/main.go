@@ -26,7 +26,7 @@ import (
 	"io"
 	"os"
 
-	"code.linenisgreat.com/papi/internal/alfa/inspect"
+	"code.linenisgreat.com/papi/internal/bravo/inspect"
 )
 
 // request is the stdin envelope. Receipt is held as RawMessage so the receipt's

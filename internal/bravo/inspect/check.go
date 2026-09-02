@@ -9,7 +9,7 @@ import (
 	"sort"
 	"strings"
 
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // conformanceChecks runs the RFC-0001 public-tier conformance verdicts against

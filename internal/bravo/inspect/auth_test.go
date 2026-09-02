@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 	"code.linenisgreat.com/papi/internal/alfa/signchallenge"
 )
 

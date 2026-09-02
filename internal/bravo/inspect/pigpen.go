@@ -27,7 +27,7 @@ import (
 
 	"code.linenisgreat.com/hyphence/go/hyphence"
 	"code.linenisgreat.com/papi/internal/0/markl"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // parsePigpenMetadataLines decodes the metadata section of a hyphence

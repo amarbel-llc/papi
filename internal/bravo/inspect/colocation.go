@@ -7,7 +7,7 @@ import (
 	"fmt"
 
 	"code.linenisgreat.com/papi/internal/0/markl"
-	"code.linenisgreat.com/papi/internal/0/papi"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 // coLocationClaim is the canonical §9.6.2 Level-A statement a co_location proof's
