@@ -332,20 +332,22 @@ records a deadline in the token's *name* — papi keeps no state — and `sweep`
 it for sessions that crashed without revoking. `revoke` on a session with no tokens
 succeeds, so a caller that retries a failed revoke terminates.
 
-Credentials arrive as shell commands so no secret enters argv or the environment.
-Minting and revoking need `--password-command`: Forgejo gates both routes behind
-password basic-auth (or a trusted reverse proxy) and **refuses an access token
-however broadly scoped** — so a sealed API token can drive `list` but neither mint nor
-revoke. See `man 7 papi-forge-token` for the model and trust boundaries.
+Minting and revoking need `--card-login` or `--password-command`: Forgejo gates both
+routes behind password basic-auth or a trusted reverse proxy and **refuses an access
+token however broadly scoped**, so a sealed API token can drive `list` but neither
+mint nor revoke. `--card-login` is the presence-bound path and stores no forge secret
+— papi drives the FDR-0014 verifier's login flow headlessly and signs its nonce with
+slot-9A, and the reverse proxy turns the resulting session into an asserted account.
+Otherwise credentials arrive as shell commands, so no secret enters argv or the
+environment. See `man 7 papi-forge-token` for the model and trust boundaries.
 
 ```console
-$ papi forge token mint --host forge.example.com --user sasha \
-    --password-command 'piggy pass show forge/krone-password' \
+$ papi forge token mint --host forge.example.com --user sasha --card-login \
     --repo linenisgreat/papi --session papi/mild-maple --ttl 12h
 $ papi forge token list   --host forge.example.com --user sasha --token-command '...'
-$ papi forge token revoke --host forge.example.com --user sasha \
-    --password-command '...' --session papi/mild-maple
-$ papi forge token sweep  --host forge.example.com --user sasha --password-command '...'
+$ papi forge token revoke --host forge.example.com --user sasha --card-login \
+    --session papi/mild-maple
+$ papi forge token sweep  --host forge.example.com --user sasha --card-login
 ```
 
 ### `papi profiles <domain>`

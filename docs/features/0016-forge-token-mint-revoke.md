@@ -37,13 +37,34 @@ non-expiring, all-repos token per run (circus#193).
 
     --host <forge-hostname>
     --user <forge-account>
-    --password-command <sh>   # prints the account password; required to mint or revoke
+    --card-login              # sign the papi verifier's login challenge with the card (no stored secret)
+    --auth-domain <host>      # host the verifier binds §5.2 signatures to (default: --host)
+    --password-command <sh>   # prints the account password
     --otp-command <sh>        # prints a TOTP code (accounts with TOTP enrolled)
     --token-command <sh>      # prints an access token; drives the read-only paths only
 
-Secrets arrive as **shell commands**, never as flag values or environment variables,
-so nothing lands in argv (world-readable in `/proc`) or in a child's environment. The
-canonical value is a piggy read. This follows `papi validate --decrypt-cmd`.
+Minting and revoking need `--card-login` or `--password-command`; `--token-command`
+reaches only `list` (see Limitations). Secrets arrive as **shell commands**, never as
+flag values or environment variables, so nothing lands in argv (world-readable in
+`/proc`) or in a child's environment. The canonical value is a piggy read. This
+follows `papi validate --decrypt-cmd`.
+
+**`--card-login` is the presence-bound credential and stores no forge secret at
+all.** papi drives the FDR-0014 forward-auth verifier's login flow headlessly:
+`GET /auth/login` answers with a redirect carrying a nonce and a signed state, papi
+signs the nonce with slot-9A, and `GET /auth/callback` returns the verifier's session
+cookie, which the reverse proxy turns into an asserted account for the API. The flow
+was built for browsers — the redirect normally aims at a workstation oracle holding
+the card — but a CLI already has the card, so it reads the nonce out of the redirect
+and signs directly. **This needs no change to the verifier**: the oracle is bypassed,
+and `/auth/verify-signature` (FDR-0013) is deliberately not used, because it is
+stateless by design and issues no cookie.
+
+Two byte-exact details decide whether it works, both easy to get wrong and both
+failing as an indistinguishable 401: the signature is bound to the verifier's own
+external host rather than the host being called (hence `--auth-domain`), and papi
+sends **no** Authorization header on the API request, because the forge vhost routes
+header-authenticated requests away from the header-asserting location.
 
 - **`mint --repo <owner/name|name> --session <id> [--scope ...] [--ttl 12h]`** creates
   a token whose write access is confined to `--repo`, and prints **the token and
@@ -112,15 +133,22 @@ Reap what crashed sessions left behind:
   invisible). For a public forge plane that is no exposure beyond what anonymous
   readers have, but "limited to the listed repository" is a claim about write only and
   should not be stated more broadly.
-- **papi cannot mint with an access token, and this is unresolved.** Forgejo gates
-  both token creation and token deletion behind `ReqBasicOrRevProxyAuth`, which accepts
-  only real password basic-auth or a trusted reverse proxy; an access token is refused
-  however broadly scoped. So eng's sealed `forge/krone-api-token` can neither mint nor
-  revoke — the sweeper needs the same privileged credential as the mint. `--password-command`
-  is implemented; the reverse-proxy alternative (a circus-side
-  `ENABLE_REVERSE_PROXY_AUTHENTICATION_API` change, which would need no standing secret
-  and matches papi#73's "§5-gated resource" framing) is not, and the choice between them
-  is with the operator. **No token has been minted against a live forge yet.**
+- **papi cannot mint with an access token.** Forgejo gates both token creation and
+  token deletion behind `ReqBasicOrRevProxyAuth`, which accepts only real password
+  basic-auth or a trusted reverse proxy; an access token is refused however broadly
+  scoped — verified live, not only in source: with a disposable `write:user` token past
+  the scope gate, `DELETE /api/v1/users/sasha/tokens/…` returns 401 `auth method not
+  allowed` in both token-auth forms. So eng's sealed `forge/krone-api-token` can neither
+  mint nor revoke, and the sweeper needs the same privileged credential as the mint.
+- **`--card-login` is unexercised end to end, and depends on a forge-side change that
+  has not landed.** It needs `ENABLE_REVERSE_PROXY_AUTHENTICATION_API` on the forge
+  (today the asserted header does nothing on `/api/v1`) and the verifier's `/auth/*`
+  routes reachable on the forge vhost — both circus's, both operator-gated. The papi
+  half is implemented and unit-tested against a stub verifier, but **no token has been
+  minted against a live forge**, so the flow is not yet known to work. `--password-command`
+  works against the forge as it stands today and is the fallback; the operator has
+  weighed a standing admin password against the config change and the card path is the
+  recommendation, not yet the deployed reality.
 - **Basic auth is unavailable to some accounts.** An account with WebAuthn keys
   enrolled cannot use basic auth at all; one with TOTP needs `--otp-command`, and a
   code that expires between fetch and use will fail the call.

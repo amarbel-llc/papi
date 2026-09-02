@@ -247,6 +247,15 @@ func IsAuthMethod(err error) bool {
 	return errors.As(err, &ae) && ae.Status == http.StatusUnauthorized
 }
 
+// IsForbidden reports whether err is a 403 — on the token routes, the scope gate,
+// which runs BEFORE the credential-kind check and so masks it: a token credential
+// gets 403 "needs write:user" and only reaches IsAuthMethod's 401 once its scopes
+// are wide enough. Callers use it to give the same advice for both.
+func IsForbidden(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Status == http.StatusForbidden
+}
+
 func (c *Client) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var rdr *bytes.Reader
 	if body != nil {

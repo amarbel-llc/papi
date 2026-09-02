@@ -41,7 +41,15 @@ Minting a token requires a credential that can *create* tokens, and the forge is
 
 An access token is refused on those two routes *however broadly it is scoped* — a deliberate anti-escalation rule, so a leaked token cannot mint itself a fresh one or delete the evidence. Listing is not gated this way and works with a token.
 
-The practical consequence is that *a sealed forge API token cannot drive this feature*, and neither can it revoke — the sweeper needs the same privileged credential as the mint. *--password-command* supplies the password by running a shell command (canonically a *piggy*(1) read), so the secret never appears in argv or in any process environment. An account with WebAuthn keys enrolled cannot use basic auth at all; an account with TOTP needs *--otp-command*.
+The practical consequence is that *a sealed forge API token cannot drive this feature*, and neither can it revoke — the sweeper needs the same privileged credential as the mint. There are two ways to satisfy the forge.
+
+*--card-login* (the presence-bound path) authenticates with the operator's YubiKey and stores no forge secret anywhere. papi drives the forward-auth verifier's login flow headlessly: _GET /auth/login_ answers with a redirect carrying a nonce and a signed state, papi signs the nonce with slot-9A, and _GET /auth/callback_ returns the verifier's session cookie. The reverse proxy then turns that cookie into an asserted account for the API. The flow exists for browsers — the redirect normally aims at a workstation oracle that holds the card — but a CLI already has the card, so it reads the nonce out of the redirect and signs directly; the oracle is never involved and the verifier needs no change.
+
+Two byte-exact details decide whether this works: the signature is bound to the verifier's *own* external host, not necessarily the host being called (see *--auth-domain*), and papi sends *no* Authorization header on the API request, because the forge vhost deliberately routes header-authenticated requests away from the header-asserting location.
+
+*--password-command* (the stored-secret path) supplies an account password by running a shell command, canonically a *piggy*(1) read, so the secret never appears in argv or in any process environment. It works with no proxy configuration, but a standing account password read unattended is a larger blast radius than a scoped token, and it is not presence-bound. An account with WebAuthn keys enrolled cannot use basic auth at all; an account with TOTP needs *--otp-command*.
+
+*--token-command* reaches only *list*.
 
 # DEADLINES WITHOUT FORGE SUPPORT
 

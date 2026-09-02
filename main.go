@@ -306,6 +306,13 @@ type forgeTokenFlags struct {
 	passwordCmd string
 	otpCmd      string
 	tokenCmd    string
+	// Card login (the §5 path): authenticate by driving the papi forward-auth
+	// verifier's login flow with the card, so no forge secret is stored at all.
+	cardLogin  bool
+	authDomain string
+	signerMode string
+	signGUID   string
+	pin        string
 }
 
 func (f *forgeTokenFlags) register(cmd *cobra.Command) {
@@ -313,6 +320,16 @@ func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 		"forge hostname (e.g. forge.example.com)")
 	cmd.PersistentFlags().StringVar(&f.user, "user", "",
 		"forge account whose tokens are managed")
+	cmd.PersistentFlags().BoolVar(&f.cardLogin, "card-login", false,
+		"authenticate by signing the papi verifier's login challenge with the card, instead of storing a forge secret (§5)")
+	cmd.PersistentFlags().StringVar(&f.authDomain, "auth-domain", "",
+		"host the verifier binds §5.2 signatures to (default: --host); must match its external URL byte-exactly")
+	cmd.PersistentFlags().StringVar(&f.signerMode, "signer", "auto",
+		"slot-9A signer for --card-login: auto, agent, or pcsc")
+	cmd.PersistentFlags().StringVar(&f.signGUID, "sign-guid", "",
+		"GUID of the card to sign the login challenge with (default: the sole provisioned card)")
+	cmd.PersistentFlags().StringVar(&f.pin, "pin", "",
+		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P)")
 	cmd.PersistentFlags().StringVar(&f.passwordCmd, "password-command", "",
 		"shell command printing the account password on stdout (e.g. `piggy pass show forge/...`) — required to mint or revoke")
 	cmd.PersistentFlags().StringVar(&f.otpCmd, "otp-command", "",
@@ -321,11 +338,32 @@ func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 		"shell command printing an existing access token on stdout; drives the read-only paths, but the forge refuses it for mint and revoke")
 }
 
-// client builds the forge client. A password credential is preferred when both are
-// supplied, since it is the only one the forge accepts for the whole lifecycle.
+// client builds the forge client. Card login wins when several credentials are
+// supplied, then a password; a token is last because it drives only the read paths.
 func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error) {
 	var cred forgetoken.Credential
 	switch {
+	case f.cardLogin:
+		signer, guid, err := signChallengeSignerFn(ctx, f.signerMode, f.signGUID, f.pin, "")
+		if err != nil {
+			return nil, err
+		}
+		domain := f.authDomain
+		if domain == "" {
+			domain = f.host
+		}
+		cred, err = forgetoken.CardLogin(ctx, "https://"+f.host, domain, "",
+			func(ctx context.Context, domain, nonce string) (string, error) {
+				resp, err := signchallenge.Sign(ctx, signer, guid, domain,
+					signchallenge.Challenge{ChallengeID: "forge-token-login", Nonce: nonce})
+				if err != nil {
+					return "", err
+				}
+				return resp.Signature, nil
+			})
+		if err != nil {
+			return nil, err
+		}
 	case f.passwordCmd != "":
 		password, err := forgetoken.SecretFromCommand(ctx, f.passwordCmd)
 		if err != nil {
@@ -347,22 +385,30 @@ func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error
 		}
 		cred = forgetoken.TokenCredential{Token: token}
 	default:
-		return nil, errors.New("no credential: pass --password-command (mint/revoke) or --token-command (read-only)")
+		return nil, errors.New("no credential: pass --card-login or --password-command (mint/revoke), " +
+			"or --token-command (read-only)")
 	}
 	return forgetoken.NewClient(f.host, f.user, cred)
 }
 
-// forgeTokenAuthHint turns the forge's bare 401 on a mint or revoke into the
-// actionable explanation, because the cause is never the caller's identity: Forgejo
-// gates both routes behind ReqBasicOrRevProxyAuth, which refuses an access token
-// however broadly scoped.
-func forgeTokenAuthHint(err error) error {
-	if !forgetoken.IsAuthMethod(err) {
+// authHint explains a rejection the forge reports in terms that hide the real cause.
+// An access token cannot mint or revoke tokens at all — Forgejo gates both routes
+// behind ReqBasicOrRevProxyAuth — but which status says so depends on how far the
+// request got: the token-scope check runs first and answers 403 "needs write:user",
+// so a caller widening the token's scopes to satisfy that would then hit the 401 and
+// still be stuck. Both get the same advice.
+func (f *forgeTokenFlags) authHint(err error) error {
+	usingToken := f.tokenCmd != "" && !f.cardLogin && f.passwordCmd == ""
+	if !forgetoken.IsAuthMethod(err) && !(usingToken && forgetoken.IsForbidden(err)) {
 		return err
 	}
+	if usingToken {
+		return fmt.Errorf("%w\n\nan access token cannot mint or revoke forge tokens whatever its scopes: "+
+			"the forge accepts only password basic-auth or a trusted reverse proxy on those routes. "+
+			"Pass --card-login or --password-command; --token-command reaches only `list`", err)
+	}
 	return fmt.Errorf("%w\n\nthe forge refuses this CREDENTIAL KIND, not this identity: it accepts only "+
-		"password basic-auth (or a trusted reverse proxy) for minting and revoking tokens, however broadly "+
-		"scoped an access token is. Pass --password-command instead of --token-command", err)
+		"password basic-auth or a trusted reverse proxy for minting and revoking tokens", err)
 }
 
 func newForgeTokenCmd() *cobra.Command {
@@ -419,7 +465,7 @@ func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
 			}
 			resolved, err := c.ResolveRepo(cmd.Context(), target)
 			if err != nil {
-				return forgeTokenAuthHint(err)
+				return f.authHint(err)
 			}
 			var deadline time.Time
 			if ttl > 0 {
@@ -431,7 +477,7 @@ func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
 				Repos:  []forgetoken.RepoTarget{resolved},
 			})
 			if err != nil {
-				return forgeTokenAuthHint(err)
+				return f.authHint(err)
 			}
 			// Diagnostics go to stderr so stdout stays exactly the token: a
 			// caller captures stdout and treats anything else as the token.
@@ -469,7 +515,7 @@ func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {
 			}
 			revoked, err := c.RevokeSession(cmd.Context(), session)
 			if err != nil {
-				return forgeTokenAuthHint(err)
+				return f.authHint(err)
 			}
 			if len(revoked) == 0 {
 				fmt.Fprintf(cmd.OutOrStdout(), "no token to revoke for session %s\n", session)
@@ -559,7 +605,7 @@ func newForgeTokenSweepCmd(f *forgeTokenFlags) *cobra.Command {
 					m.Name, m.ID, m.Session, deadlineText(m.Deadline))
 			}
 			if sweepErr != nil {
-				return forgeTokenAuthHint(sweepErr)
+				return f.authHint(sweepErr)
 			}
 			if len(revoked) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "no expired tokens")

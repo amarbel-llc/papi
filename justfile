@@ -535,6 +535,43 @@ debug-forge-api method="GET" path="user" json="" host="forge.starbrandshoes.com"
     # not allowed" from "route reached"), so don't let -f swallow error bodies.
     curl "${args[@]}" "https://{{host}}/api/v1/{{path}}" </dev/null
 
+# Live round-trip for papi#73 / FDR-0016's definition of done, against the REAL forge:
+# mint a per-repo token, assert the forge grants push on the listed repo and NOT on an
+# unlisted one (read back from the token's own view, so it tests the resource rows
+# rather than our request), revoke, then assert the token is gone. Non-destructive —
+# it never pushes; permissions are read from GET /repos/{owner}/{name}.
+#
+# BLOCKED until the mint credential is provisioned (FDR-0016 Limitations): the forge
+# refuses an access token for mint/revoke. Pass cred='--card-login' once circus enables
+# reverse-proxy API auth, or cred="--password-command '...'" for the fallback.
+# Operator-in-the-loop: --card-login may prompt the card. e.g.
+#   just debug-forge-token-roundtrip linenisgreat/papi linenisgreat/circus "--card-login"
+#
+# live mint→verify→revoke round-trip against the real forge
+[group("debug")]
+debug-forge-token-roundtrip repo unlisted cred host="forge.starbrandshoes.com" user="sasha":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    session="roundtrip/$(date +%s)"
+    papi() { nix develop --command go run . forge token "$@" --host "{{host}}" --user "{{user}}" {{cred}}; }
+    # The token is a secret: keep it in a variable, never on a command line.
+    token="$(papi mint --repo "{{repo}}" --session "$session" --ttl 1h)"
+    trap 'papi revoke --session "$session" >&2 || true' EXIT
+    perm() {
+        curl -fsS -H "Authorization: token $token" \
+            "https://{{host}}/api/v1/repos/$1" </dev/null | jq -r '.permissions.push'
+    }
+    echo "listed   {{repo}}: push=$(perm "{{repo}}")   (want true)"
+    echo "unlisted {{unlisted}}: push=$(perm "{{unlisted}}") (want false)"
+    [ "$(perm "{{repo}}")" = true ] || { echo "FAIL: no push on the listed repo" >&2; exit 1; }
+    [ "$(perm "{{unlisted}}")" = false ] || { echo "FAIL: push on an UNLISTED repo — resource rows are not confining" >&2; exit 1; }
+    papi revoke --session "$session"
+    trap - EXIT
+    if papi list --session "$session" | grep -q .; then
+        echo "FAIL: the token survived revoke" >&2; exit 1
+    fi
+    echo "OK: minted, confined to {{repo}}, revoked"
+
 # --- codemod ---
 
 codemod-fmt: codemod-fmt-tree
