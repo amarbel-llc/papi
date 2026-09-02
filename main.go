@@ -352,7 +352,9 @@ func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error
 		if domain == "" {
 			domain = f.host
 		}
-		cred, err = forgetoken.CardLogin(ctx, "https://"+f.host, domain, "",
+		// The cookie name comes from the verifier's own constant rather than a
+		// copy, so the two halves of this flow cannot drift apart silently.
+		cred, err = forgetoken.CardLogin(ctx, f.host, domain, authproxy.DefaultCookieName,
 			func(ctx context.Context, domain, nonce string) (string, error) {
 				resp, err := signchallenge.Sign(ctx, signer, guid, domain,
 					signchallenge.Challenge{ChallengeID: "forge-token-login", Nonce: nonce})
@@ -391,24 +393,17 @@ func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error
 	return forgetoken.NewClient(f.host, f.user, cred)
 }
 
-// authHint explains a rejection the forge reports in terms that hide the real cause.
-// An access token cannot mint or revoke tokens at all — Forgejo gates both routes
-// behind ReqBasicOrRevProxyAuth — but which status says so depends on how far the
-// request got: the token-scope check runs first and answers 403 "needs write:user",
-// so a caller widening the token's scopes to satisfy that would then hit the 401 and
-// still be stuck. Both get the same advice.
+// authHint adds the actionable half to a bare 401 from the forge. A credential kind
+// that could NEVER mint is refused before the request is made (ErrCredentialCannotMint),
+// so reaching a 401 here means a credential that normally works was not accepted —
+// most often reverse-proxy API auth not being enabled on the forge.
 func (f *forgeTokenFlags) authHint(err error) error {
-	usingToken := f.tokenCmd != "" && !f.cardLogin && f.passwordCmd == ""
-	if !forgetoken.IsAuthMethod(err) && !(usingToken && forgetoken.IsForbidden(err)) {
+	if !forgetoken.IsAuthMethod(err) {
 		return err
 	}
-	if usingToken {
-		return fmt.Errorf("%w\n\nan access token cannot mint or revoke forge tokens whatever its scopes: "+
-			"the forge accepts only password basic-auth or a trusted reverse proxy on those routes. "+
-			"Pass --card-login or --password-command; --token-command reaches only `list`", err)
-	}
-	return fmt.Errorf("%w\n\nthe forge refuses this CREDENTIAL KIND, not this identity: it accepts only "+
-		"password basic-auth or a trusted reverse proxy for minting and revoking tokens", err)
+	return fmt.Errorf("%w\n\nthe forge refuses this CREDENTIAL KIND, not this identity. With "+
+		"--card-login this usually means the forge is not configured to honour the reverse proxy's "+
+		"asserted account on its API", err)
 }
 
 func newForgeTokenCmd() *cobra.Command {
@@ -472,17 +467,18 @@ func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
 				deadline = time.Now().UTC().Add(ttl)
 			}
 			tok, err := c.Mint(cmd.Context(), forgetoken.MintRequest{
-				Name:   forgetoken.TokenName(session, deadline),
-				Scopes: splitScopes(scopes),
-				Repos:  []forgetoken.RepoTarget{resolved},
+				Session:  session,
+				Deadline: deadline,
+				Scopes:   scopes,
+				Repos:    []forgetoken.RepoTarget{resolved},
 			})
 			if err != nil {
 				return f.authHint(err)
 			}
 			// Diagnostics go to stderr so stdout stays exactly the token: a
 			// caller captures stdout and treats anything else as the token.
-			fmt.Fprintf(cmd.ErrOrStderr(), "minted %q (id %d) for %s, scopes %s%s\n",
-				tok.Name, tok.ID, resolved, strings.Join(tok.Scopes, ","), deadlineNote(deadline))
+			fmt.Fprintf(cmd.ErrOrStderr(), "minted %q (id %d) for %s, scopes %s, expires %s\n",
+				tok.Name, tok.ID, resolved, strings.Join(tok.Scopes, ","), deadlineText(deadline))
 			fmt.Fprintln(cmd.OutOrStdout(), tok.Secret)
 			return nil
 		},
@@ -614,27 +610,6 @@ func newForgeTokenSweepCmd(f *forgeTokenFlags) *cobra.Command {
 		},
 	}
 	return cmd
-}
-
-// splitScopes flattens the --scope values, accepting both a repeated flag and the
-// comma-separated spelling a sweatfile command string naturally uses.
-func splitScopes(values []string) []string {
-	var out []string
-	for _, v := range values {
-		for _, s := range strings.Split(v, ",") {
-			if s = strings.TrimSpace(s); s != "" {
-				out = append(out, s)
-			}
-		}
-	}
-	return out
-}
-
-func deadlineNote(deadline time.Time) string {
-	if deadline.IsZero() {
-		return ", no deadline"
-	}
-	return ", expires " + deadlineText(deadline)
 }
 
 func deadlineText(deadline time.Time) string {

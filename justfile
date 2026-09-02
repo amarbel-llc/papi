@@ -541,41 +541,84 @@ debug-forge-api method="GET" path="user" json="" host="forge.starbrandshoes.com"
     curl "${args[@]}" "https://{{host}}/api/v1/{{path}}" </dev/null
 
 # Live round-trip for papi#73 / FDR-0016's definition of done, against the REAL forge:
-# mint a per-repo token, assert the forge grants push on the listed repo and NOT on an
-# unlisted one (read back from the token's own view, so it tests the resource rows
-# rather than our request), revoke, then assert the token is gone. Non-destructive —
-# it never pushes; permissions are read from GET /repos/{owner}/{name}.
+# mint a per-repo token, assert all three arms of Forgejo's fine-grained resource model
+# from the TOKEN'S OWN view (so it tests the resource rows the forge stored, not the
+# request we sent), revoke, then assert the token is gone.
 #
-# BLOCKED until the mint credential is provisioned (FDR-0016 Limitations): the forge
-# refuses an access token for mint/revoke. Pass cred='--card-login' once circus enables
-# reverse-proxy API auth, or cred="--password-command '...'" for the fallback.
+#   listed repo      -> push granted
+#   unlisted PUBLIC  -> visible but push denied (the read-only degradation)
+#   unlisted PRIVATE -> 404, invisible entirely
+#
+# The two controls must differ in visibility: a private control alone cannot tell a
+# confining token from a broken one, since both 404. Non-destructive — it never pushes.
 # Operator-in-the-loop: --card-login may prompt the card. e.g.
-#   just debug-forge-token-roundtrip linenisgreat/papi linenisgreat/circus "--card-login"
+#   just debug-forge-token-roundtrip linenisgreat/papi linenisgreat/bats linenisgreat/circus "--card-login --signer agent"
 #
 # live mint→verify→revoke round-trip against the real forge
 [group("debug")]
-debug-forge-token-roundtrip repo unlisted cred host="forge.starbrandshoes.com" user="sasha":
+debug-forge-token-roundtrip repo public_control private_control cred host="forge.starbrandshoes.com" user="sasha":
     #!/usr/bin/env bash
     set -euo pipefail
     session="roundtrip/$(date +%s)"
-    papi() { nix develop --command go run . forge token "$@" --host "{{host}}" --user "{{user}}" {{cred}}; }
+    # Build once: `go run` would re-link the whole CLI on each of the four calls.
+    bin="$(mktemp -d)/papi"
+    nix develop --command go build -o "$bin" .
+    papi() { "$bin" forge token "$@" --host "{{host}}" --user "{{user}}" {{cred}}; }
     # The token is a secret: keep it in a variable, never on a command line.
     token="$(papi mint --repo "{{repo}}" --session "$session" --ttl 1h)"
     trap 'papi revoke --session "$session" >&2 || true' EXIT
-    perm() {
-        curl -fsS -H "Authorization: token $token" \
-            "https://{{host}}/api/v1/repos/$1" </dev/null | jq -r '.permissions.push'
+    # Report "invisible" for a 404 rather than an empty permission, so a failure
+    # message can never claim the opposite of what happened.
+    probe() {
+        local body status
+        body="$(mktemp)"
+        status="$(curl -sS -o "$body" -w '%{http_code}' -H "Authorization: token $token" \
+            "https://{{host}}/api/v1/repos/$1" </dev/null)"
+        if [ "$status" = 404 ]; then echo invisible; else jq -r '.permissions.push' "$body"; fi
     }
-    echo "listed   {{repo}}: push=$(perm "{{repo}}")   (want true)"
-    echo "unlisted {{unlisted}}: push=$(perm "{{unlisted}}") (want false)"
-    [ "$(perm "{{repo}}")" = true ] || { echo "FAIL: no push on the listed repo" >&2; exit 1; }
-    [ "$(perm "{{unlisted}}")" = false ] || { echo "FAIL: push on an UNLISTED repo — resource rows are not confining" >&2; exit 1; }
+    listed="$(probe "{{repo}}")"
+    pub="$(probe "{{public_control}}")"
+    priv="$(probe "{{private_control}}")"
+    echo "listed           {{repo}}: $listed (want true)"
+    echo "unlisted public  {{public_control}}: $pub (want false)"
+    echo "unlisted private {{private_control}}: $priv (want invisible)"
+    [ "$listed" = true ] || { echo "FAIL: no push on the listed repo" >&2; exit 1; }
+    [ "$pub" = false ] || { echo "FAIL: push=$pub on an unlisted PUBLIC repo — write is not confined" >&2; exit 1; }
+    [ "$priv" = invisible ] || { echo "FAIL: unlisted PRIVATE repo reads as $priv — it should be invisible" >&2; exit 1; }
     papi revoke --session "$session"
     trap - EXIT
     if papi list --session "$session" | grep -q .; then
         echo "FAIL: the token survived revoke" >&2; exit 1
     fi
-    echo "OK: minted, confined to {{repo}}, revoked"
+    echo "OK: minted, write confined to {{repo}}, revoked"
+
+# Live check of the TTL backstop (FDR-0016): the forge has no native token expiry, so
+# a session that crashes without revoking is only cleaned up by `sweep` reading the
+# deadline out of the token's name. Mints one token that expires almost immediately and
+# one that does not, sweeps, and asserts it took exactly the expired one — the "and not
+# the other" half is the point, since a sweep that reaped everything would also pass a
+# one-token test. Operator-in-the-loop with --card-login. e.g.
+#   just debug-forge-token-sweep-check linenisgreat/papi "--card-login --signer agent"
+#
+# live check that sweep reaps expired tokens and spares live ones
+[group("debug")]
+debug-forge-token-sweep-check repo cred host="forge.starbrandshoes.com" user="sasha":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    stamp="$(date +%s)"
+    live="sweepcheck-live/$stamp"
+    dead="sweepcheck-dead/$stamp"
+    bin="$(mktemp -d)/papi"
+    nix develop --command go build -o "$bin" .
+    papi() { "$bin" forge token "$@" --host "{{host}}" --user "{{user}}" {{cred}}; }
+    trap 'papi revoke --session "$live" >&2 || true; papi revoke --session "$dead" >&2 || true' EXIT
+    papi mint --repo "{{repo}}" --session "$live" --ttl 1h >/dev/null
+    papi mint --repo "{{repo}}" --session "$dead" --ttl 1s >/dev/null
+    sleep 3
+    papi sweep
+    papi list --session "$dead" | grep -q . && { echo "FAIL: expired token survived the sweep" >&2; exit 1; }
+    papi list --session "$live" | grep -q . || { echo "FAIL: sweep reaped a token that had not expired" >&2; exit 1; }
+    echo "OK: sweep reaped the expired token and spared the live one"
 
 # --- codemod ---
 

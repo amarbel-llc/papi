@@ -33,7 +33,9 @@ func (c SessionCookieCredential) apply(r *http.Request) {
 	r.AddCookie(&http.Cookie{Name: name, Value: c.Value})
 }
 
-func (c SessionCookieCredential) Describe() string { return "papi session cookie" }
+// canMint: the reverse proxy turns this cookie into an asserted account, which is
+// exactly the second credential kind the forge's mint routes accept.
+func (c SessionCookieCredential) canMint() bool { return true }
 
 // NonceSigner signs a verifier login nonce with the operator's card and returns the
 // §5.2 signature as a papi-auth-sig-v1 markl id.

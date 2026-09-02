@@ -1,15 +1,15 @@
 ---
-status: experimental
+status: testing
 date: 2026-09-02
 promotion-criteria: >
-  experimental (the CLI and the fine-grained mint path are implemented and covered by
-  hermetic tests, but no token has been minted against a live forge — the credential
-  papi authenticates WITH is still undecided) → testing when the mint credential is
-  provisioned and a real round-trip runs end to end on forge.starbrandshoes.com: mint a
-  token for one repo, push with it, confirm an unlisted repo is not writable, revoke,
-  confirm the token is gone; → accepted when spinclass's `[auth]` drives a session's
-  whole lifecycle through it (spinclass FDR-0028's own promotion criteria) and the
-  deadline sweep has reaped a real orphan.
+  testing (a real round-trip runs end to end against forge.starbrandshoes.com under
+  `--card-login`: mint confined to one repo, all three arms of the resource model
+  confirmed from the token's own view, revoke, gone — plus a live sweep that reaps an
+  expired token and spares a live one; `just debug-forge-token-roundtrip` and
+  `just debug-forge-token-sweep-check` are those checks) → accepted when spinclass's
+  `[auth]` drives a real session's whole lifecycle through it, including a merge push
+  (spinclass FDR-0028's own promotion criteria) and an orphan swept in anger rather
+  than in a test.
 ---
 
 # Forge access-token mint / revoke (`papi forge token`)
@@ -93,6 +93,23 @@ user-wide token. `internal/0/forgetoken` therefore refuses an empty target set
 outright rather than encoding one, so no input to the package can produce a
 user-wide token.
 
+**The sweeper is scoped positively to this feature's own names, and that scoping is
+load-bearing.** On 2026-09-02 an earlier version used the prefix `papi-` and a live
+`sweep` revoked **5,146 pre-existing tokens it did not mint** — the
+`papi-key-sync-<epoch>-<pid>` tokens krone's `papi-ssh-key-sync` timer leaves behind
+every 15 minutes (the circus#193 leak). They shared the prefix, and their trailing PID
+parsed as a long-past Unix deadline, so the sweeper classified them as its own and
+overdue. Nothing broke — that timer mints a fresh token per run and never reuses one —
+but the claim "tokens papi did not mint are out of reach" was simply false.
+
+Two things changed. The prefix became `papi-forge-token-`, specific to this feature
+rather than to papi. More importantly, `ParseTokenName` now enforces the escape
+alphabet: `escapeSession` encodes `-` as `_2D`, so a genuinely papi-minted session part
+contains **no literal hyphen**, while every `<prefix>-<epoch>-<pid>` name does. That is a
+structural exclusion rather than a hope that the prefix is distinctive — which matters,
+because circus reports the same `<prefix>-<epoch>-<pid>` shape is minted under a dozen
+other prefixes on that host, and nothing stops a future one starting with `papi`.
+
 **Deadlines live in the token's name.** papi keeps no state for this feature. A
 token is named `papi-<escaped-session>-<deadline-unix>`, so any papi process on any
 host can list the account's tokens and reconstruct which session owns what and when
@@ -111,7 +128,7 @@ Mint a token for one repository, print it, and use it:
     $ papi forge token mint --host forge.example.com --user sasha \
         --password-command 'piggy pass show forge/krone-password' \
         --repo linenisgreat/papi --session papi/mild-maple --ttl 12h
-    minted "papi-papi_2Fmild-maple-1789041600" (id 41) for linenisgreat/papi, scopes write:repository, expires 2026-09-02T22:00:00Z
+    minted "papi-forge-token-papi_2Fmild_2Dmaple-1789041600" (id 41) for linenisgreat/papi, scopes write:repository, expires 2026-09-02T22:00:00Z
     <the token, on stdout>
 
 The session manager's `[auth]` wiring (spinclass FDR-0028), where the command string
@@ -123,8 +140,8 @@ is a sweatfile value:
 
 Reap what crashed sessions left behind:
 
-    $ papi forge token sweep --host forge.example.com --user sasha --password-command '...'
-    revoked expired "papi-papi_2Fkeen-holly-1788955200" (id 38, session papi/keen-holly, deadline 2026-09-01T22:00:00Z)
+    $ papi forge token sweep --host forge.example.com --user sasha --card-login
+    revoked expired "papi-forge-token-papi_2Fkeen_2Dholly-1788955200" (id 38, session papi/keen-holly, deadline 2026-09-01T22:00:00Z)
 
 ## Limitations
 
@@ -140,18 +157,16 @@ Reap what crashed sessions left behind:
   the scope gate, `DELETE /api/v1/users/sasha/tokens/…` returns 401 `auth method not
   allowed` in both token-auth forms. So eng's sealed `forge/krone-api-token` can neither
   mint nor revoke, and the sweeper needs the same privileged credential as the mint.
-- **`--card-login` works up to a forge-side flag that has not deployed yet.** What is
-  verified live against `forge.starbrandshoes.com`: the login legs complete (redirect →
-  slot-9A signature off the forwarded agent → `__papi_session`), and that cookie
-  satisfies the vhost's `auth_request` — an anonymous request to the same path is
-  bounced by nginx with a 302 to the login, while the cookie-bearing one reaches
-  Forgejo. What is **not** verified: Forgejo honouring the asserted account. It answers
-  403 `doer should be the site admin or be same as the contextUser`, consistent with
-  its API auth chain not yet including the reverse-proxy method — that is
-  `ENABLE_REVERSE_PROXY_AUTHENTICATION_API`, approved by the operator and landing
-  through circus, not yet deployed. **That the flag closes this gap is a prediction,
-  not an observation, and no token has been minted against a live forge.**
-  `--password-command` works against the forge as it stands today and is the fallback.
+- **`--card-login` depends on forge-side configuration.** It needs
+  `ENABLE_REVERSE_PROXY_AUTHENTICATION_API` on the forge and the verifier's `/auth/*`
+  routes reachable on its vhost. Both are in place on `forge.starbrandshoes.com` (circus,
+  2026-09-02), but the flag is not portable: against a forge without them, papi obtains a
+  session cookie the API then ignores, and the mint fails with a 401 rather than anything
+  that names the missing config. `--password-command` needs no forge configuration and is
+  the fallback.
+- **`--otp-command` is untested.** The account this was built against has no 2FA, so the
+  `X-Forgejo-OTP` path has never run against a real forge. A TOTP code that expires
+  between the command and the request would also fail with no useful diagnostic.
 - **Basic auth is unavailable to some accounts.** An account with WebAuthn keys
   enrolled cannot use basic auth at all; one with TOTP needs `--otp-command`, and a
   code that expires between fetch and use will fail the call.
@@ -170,7 +185,7 @@ Reap what crashed sessions left behind:
 |---|---|---|---|
 | default `--ttl` | 12h | covers a long interactive or worker session without a mid-run 401, while bounding an orphan's life | passes routinely exceed it → raise; forge-native expiry lands → shorten toward the sweep interval |
 | default `--scope` | `write:repository` | the minimum a push needs; `write:X` implies `read:X`, and public repos are anonymously readable | private repos whose fetch needs an explicit `read:repository` |
-| name prefix | `papi-` | marks a token as papi-minted; `sweep` and `revoke` touch nothing else | a collision with a human-made token named `papi-…` (would need a more distinctive prefix) |
+| name prefix | `papi-forge-token-` | marks a token as this feature's; combined with the escape-alphabet check, `sweep` and `revoke` reach nothing else | another tool starts minting `papi-forge-token-…` names (the alphabet check would still exclude the `<prefix>-<epoch>-<pid>` shape) |
 | owner resolution | forge repo search, exact-name match | spinclass cannot supply an owner from a vanity remote | ambiguity becomes common → resolve through the domain's PAPI `/papi/repos` projection instead |
 
 ## More Information

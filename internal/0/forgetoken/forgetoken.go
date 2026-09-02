@@ -49,9 +49,28 @@ const maxBody = 4 << 20
 type Credential interface {
 	// apply attaches the credential to an outgoing request.
 	apply(*http.Request)
-	// Describe names the credential for diagnostics. It MUST NOT include the
-	// secret — its output reaches error messages and logs.
-	Describe() string
+	// canMint reports whether the forge will accept this credential KIND on the
+	// mint and revoke routes. It is known statically, so the client refuses before
+	// making a request the forge is certain to reject.
+	canMint() bool
+}
+
+// ErrCredentialCannotMint is returned before any request when the credential in hand
+// could never mint or revoke. It exists because the forge's own answer is misleading:
+// the token-scope gate runs first and reports a missing write:user scope, so a caller
+// widening the token's scopes to satisfy that would only uncover the auth-method
+// rejection underneath.
+var ErrCredentialCannotMint = errors.New(
+	"this credential kind cannot mint or revoke forge tokens: the forge accepts only " +
+		"password basic-auth or a trusted reverse proxy on those routes, whatever an " +
+		"access token's scopes are",
+)
+
+func (c *Client) mustMint() error {
+	if !c.Cred.canMint() {
+		return ErrCredentialCannotMint
+	}
+	return nil
 }
 
 // BasicCredential authenticates as a forge account with its password. This is the
@@ -73,19 +92,18 @@ func (c BasicCredential) apply(r *http.Request) {
 	}
 }
 
-func (c BasicCredential) Describe() string { return "basic auth as " + c.User }
+func (c BasicCredential) canMint() bool { return true }
 
 // TokenCredential authenticates with an existing access token. Sufficient for
 // List (with read:user scope) but rejected by the forge for Mint and Delete — it
-// is here so read-only callers, and the diagnostics that prove the gate, need no
-// password.
+// is here so read-only callers need no password.
 type TokenCredential struct{ Token string }
 
 func (c TokenCredential) apply(r *http.Request) {
 	r.Header.Set("Authorization", "token "+c.Token)
 }
 
-func (c TokenCredential) Describe() string { return "access token" }
+func (c TokenCredential) canMint() bool { return false }
 
 // SecretFromCommand runs a shell command and returns its first output line with
 // surrounding space trimmed — the papi convention for keeping a secret out of argv
@@ -247,15 +265,6 @@ func IsAuthMethod(err error) bool {
 	return errors.As(err, &ae) && ae.Status == http.StatusUnauthorized
 }
 
-// IsForbidden reports whether err is a 403 — on the token routes, the scope gate,
-// which runs BEFORE the credential-kind check and so masks it: a token credential
-// gets 403 "needs write:user" and only reaches IsAuthMethod's 401 once its scopes
-// are wide enough. Callers use it to give the same advice for both.
-func IsForbidden(err error) bool {
-	var ae *APIError
-	return errors.As(err, &ae) && ae.Status == http.StatusForbidden
-}
-
 func (c *Client) do(ctx context.Context, method, path string, body any) ([]byte, error) {
 	var rdr *bytes.Reader
 	if body != nil {
@@ -310,25 +319,30 @@ func apiMessage(raw []byte) string {
 
 // createTokenBody is the POST /users/{user}/tokens payload.
 //
-// Repositories is a POINTER to a slice on purpose, and it is the single most
-// dangerous field in this package. Forgejo reads nil-vs-present, not
-// empty-vs-non-empty: an OMITTED `repositories` means ResourceAllRepos=true (a
-// user-wide token — write to every repo the account can reach), while a PRESENT
-// one, even `[]`, means ResourceAllRepos=false. A plain slice with `omitempty`
-// would silently drop an empty list and mint the user-wide token this whole
-// feature exists to avoid, so Mint refuses an empty target set outright and this
-// field is only ever set to a non-empty list.
+// Repositories is the single most dangerous field in this package, and the reason
+// it carries no `omitempty`. Forgejo reads it as absent-vs-present, not
+// empty-vs-non-empty: an OMITTED `repositories` means ResourceAllRepos=true — a
+// user-wide token, write to every repo the account can reach — while a PRESENT one
+// means ResourceAllRepos=false. `omitempty` would drop an empty list and silently
+// mint exactly the user-wide token this feature exists to avoid. Mint refuses an
+// empty target set, so the field is always non-empty and always on the wire.
 type createTokenBody struct {
-	Name         string        `json:"name"`
-	Scopes       []string      `json:"scopes"`
-	Repositories *[]RepoTarget `json:"repositories,omitempty"`
+	Name         string       `json:"name"`
+	Scopes       []string     `json:"scopes"`
+	Repositories []RepoTarget `json:"repositories"`
 }
 
 // MintRequest describes one token to create.
+//
+// It carries the session and deadline rather than a rendered name so that the naming
+// scheme cannot be bypassed: a token minted under a name this package did not build
+// would be invisible to RevokeSession and Sweep, which decode names to find their
+// work — an orphan by construction.
 type MintRequest struct {
-	Name   string       // the forge-visible name; see TokenName
-	Scopes []string     // category scopes, e.g. write:repository (implies read)
-	Repos  []RepoTarget // the repositories to confine write access to; MUST be non-empty
+	Session  string       // the session the token belongs to; encoded in its name
+	Deadline time.Time    // when Sweep may reap it; zero means never
+	Scopes   []string     // category scopes, e.g. write:repository (implies read)
+	Repos    []RepoTarget // the repositories to confine write access to; MUST be non-empty
 }
 
 // Mint creates a fine-grained token and returns it with Secret populated — the one
@@ -341,8 +355,11 @@ type MintRequest struct {
 // Mint refuses an empty Repos rather than falling back to a user-wide token, so
 // there is no input to this package that can accidentally produce one.
 func (c *Client) Mint(ctx context.Context, req MintRequest) (Token, error) {
-	if req.Name == "" {
-		return Token{}, errors.New("token name is required")
+	if err := c.mustMint(); err != nil {
+		return Token{}, err
+	}
+	if req.Session == "" {
+		return Token{}, errors.New("session is required: it names the token so it can be revoked later")
 	}
 	if len(req.Scopes) == 0 {
 		return Token{}, errors.New("at least one scope is required")
@@ -357,11 +374,10 @@ func (c *Client) Mint(ctx context.Context, req MintRequest) (Token, error) {
 			return Token{}, fmt.Errorf("repository %q is missing an owner; resolve it first", r)
 		}
 	}
-	repos := req.Repos
 	raw, err := c.do(ctx, http.MethodPost, c.tokensPath(), createTokenBody{
-		Name:         req.Name,
+		Name:         TokenName(req.Session, req.Deadline),
 		Scopes:       req.Scopes,
-		Repositories: &repos,
+		Repositories: req.Repos,
 	})
 	if err != nil {
 		return Token{}, err
@@ -398,6 +414,9 @@ func (c *Client) List(ctx context.Context) ([]Token, error) {
 // fails with 422 when several tokens share a name, and a repeated session key
 // could produce exactly that.
 func (c *Client) DeleteByID(ctx context.Context, id int64) error {
+	if err := c.mustMint(); err != nil {
+		return err
+	}
 	_, err := c.do(ctx, http.MethodDelete, c.tokensPath()+"/"+strconv.FormatInt(id, 10), nil)
 	if err != nil && !IsNotFound(err) {
 		return err

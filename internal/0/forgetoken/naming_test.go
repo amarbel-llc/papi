@@ -31,6 +31,18 @@ func TestTokenNameRoundTrip(t *testing.T) {
 	}
 }
 
+// Pins the rendered format. The name is the feature's only persistent state and the
+// operator reads it in the forge UI, so a change here is a real interface change —
+// and note that "-" itself is escaped, which is what keeps the trailing-deadline
+// split unambiguous.
+func TestTokenNameRendersExactly(t *testing.T) {
+	got := TokenName("papi/mild-maple", time.Unix(1789041600, 0).UTC())
+	want := "papi-forge-token-papi_2Fmild_2Dmaple-1789041600"
+	if got != want {
+		t.Fatalf("TokenName = %q, want %q", got, want)
+	}
+}
+
 // The lossy "flatten / to -" encoding bobo warned about collides repo "a-b" +
 // branch "c" with repo "a" + branch "b-c", which would let one session's revoke
 // kill another's token. The escape must keep them distinct.
@@ -63,6 +75,28 @@ func TestTokenNameZeroDeadline(t *testing.T) {
 	}
 	if (Managed{Deadline: deadline}).Expired(time.Now().Add(1000 * time.Hour)) {
 		t.Fatal("a deadline-free token must never be swept")
+	}
+}
+
+// Regression for the 2026-09-02 mass revocation: a live sweep matched 5,146
+// pre-existing "papi-key-sync-<epoch>-<n>" tokens minted by an unrelated job and
+// revoked all of them. They passed the old parser because they shared its "papi-"
+// prefix and their trailing number read as a long-past Unix deadline. Both defences
+// added since must reject them — the specific prefix, and (the load-bearing one) the
+// escape alphabet, which forbids the literal "-" every such session name contains.
+func TestParseTokenNameRejectsTheKeySyncNames(t *testing.T) {
+	for _, name := range []string{
+		"papi-key-sync-1788345474-434515",
+		"papi-key-sync-1783389423-1171590",
+		// Even carrying today's prefix, the hyphens still disqualify it.
+		NamePrefix + "key-sync-1788345474-434515",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if session, deadline, ok := ParseTokenName(name); ok {
+				t.Fatalf("ParseTokenName(%q) accepted a foreign token as session %q (deadline %s) — "+
+					"sweep would revoke it", name, session, deadline)
+			}
+		})
 	}
 }
 

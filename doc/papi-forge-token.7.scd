@@ -57,7 +57,9 @@ Forgejo tokens have *no native expiry*. "Ephemeral" is therefore not a property 
 
 papi keeps *no state of its own* for this. A token's deadline and the session it belongs to are encoded in the token's *name*, so any papi process on any host can list the account's tokens and reconstruct the whole picture. That is what lets *revoke* find a token minted by a different process hours earlier, and what lets *sweep* reap the tokens of a session that died without ever calling revoke.
 
-The name is _papi-<session>-<deadline>_, with the session reversibly escaped so that two different sessions can never produce the same name, and the deadline as a Unix timestamp (_0_ meaning none). Only names in this form are ever considered: a token papi did not mint is invisible to *revoke* and untouchable by *sweep*.
+The name is _papi-forge-token-<session>-<deadline>_, with the session reversibly escaped so that two different sessions can never produce the same name, and the deadline as a Unix timestamp (_0_ meaning none). Only names in this exact form are ever considered, so a token papi did not mint is invisible to *revoke* and untouchable by *sweep*.
+
+That scoping is enforced by the *escape alphabet*, not by the prefix alone. The escaping encodes _-_ as ___2D_, so a papi-minted session part never contains a literal hyphen; a name shaped like _<something>-<epoch>-<pid>_ — the shape a great many ad-hoc minting scripts produce — is therefore excluded structurally. This is not hypothetical: an earlier version keyed on the bare prefix _papi-_ and a single *sweep* revoked over five thousand unrelated tokens whose trailing PID happened to parse as a long-past deadline.
 
 When upstream token expiry lands (forgejo#8837), the same _--ttl_ becomes a real expiry field the forge enforces, and the sweep degrades to a belt-and-suspenders prune rather than the mechanism.
 

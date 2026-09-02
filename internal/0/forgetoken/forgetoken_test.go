@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -112,15 +113,20 @@ func TestMintSendsResourceRepositories(t *testing.T) {
 	f := &fakeForge{}
 	c := newTestClient(t, f)
 	tok, err := c.Mint(context.Background(), MintRequest{
-		Name:   "papi-x-0",
-		Scopes: []string{"write:repository"},
-		Repos:  []RepoTarget{{Owner: "linenisgreat", Name: "papi"}},
+		Session: "papi/mild-maple",
+		Scopes:  []string{"write:repository"},
+		Repos:   []RepoTarget{{Owner: "linenisgreat", Name: "papi"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if tok.Secret != "minted-secret" {
 		t.Fatalf("mint must return the one-time secret, got %q", tok.Secret)
+	}
+	// The package renders the name, so a caller cannot mint an orphan that
+	// RevokeSession and Sweep would never find.
+	if got := f.lastCreate["name"]; got != TokenName("papi/mild-maple", time.Time{}) {
+		t.Fatalf("minted name %v, want the one TokenName renders", got)
 	}
 	repos, present := f.lastCreate["repositories"]
 	if !present {
@@ -134,9 +140,6 @@ func TestMintSendsResourceRepositories(t *testing.T) {
 	if entry["owner"] != "linenisgreat" || entry["name"] != "papi" {
 		t.Fatalf("resource row: got %#v", entry)
 	}
-	if got := f.lastAuth; !strings.HasPrefix(got, "Basic ") {
-		t.Fatalf("mint must present basic auth, got %q", got)
-	}
 	want := "Basic " + base64.StdEncoding.EncodeToString([]byte("sasha:hunter2"))
 	if f.lastAuth != want {
 		t.Fatalf("basic auth header: got %q, want %q", f.lastAuth, want)
@@ -149,8 +152,8 @@ func TestMintRefusesAnEmptyRepoSet(t *testing.T) {
 	f := &fakeForge{}
 	c := newTestClient(t, f)
 	_, err := c.Mint(context.Background(), MintRequest{
-		Name:   "papi-x-0",
-		Scopes: []string{"write:repository"},
+		Session: "papi/mild-maple",
+		Scopes:  []string{"write:repository"},
 	})
 	if err == nil {
 		t.Fatal("mint with no repositories must fail rather than mint a user-wide token")
@@ -164,15 +167,44 @@ func TestMintSurfacesTheAuthMethodRejection(t *testing.T) {
 	f := &fakeForge{mintStatus: http.StatusUnauthorized}
 	c := newTestClient(t, f)
 	_, err := c.Mint(context.Background(), MintRequest{
-		Name:   "papi-x-0",
-		Scopes: []string{"write:repository"},
-		Repos:  []RepoTarget{{Owner: "linenisgreat", Name: "papi"}},
+		Session: "papi/mild-maple",
+		Scopes:  []string{"write:repository"},
+		Repos:   []RepoTarget{{Owner: "linenisgreat", Name: "papi"}},
 	})
 	if err == nil {
 		t.Fatal("expected an error")
 	}
 	if !IsAuthMethod(err) {
 		t.Fatalf("a 401 must be recognisable as the credential-kind rejection, got %v", err)
+	}
+}
+
+// A token credential can never mint or revoke, so the client says so instead of
+// making a request whose 403 would misleadingly blame the token's scopes.
+func TestTokenCredentialIsRefusedWithoutAskingTheForge(t *testing.T) {
+	f := &fakeForge{tokens: []Token{{ID: 1, Name: TokenName("papi/x", time.Time{})}}}
+	srv := f.server(t)
+	c, err := NewClient(srv.URL, "sasha", TokenCredential{Token: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, mintErr := c.Mint(context.Background(), MintRequest{
+		Session: "papi/x",
+		Scopes:  []string{"write:repository"},
+		Repos:   []RepoTarget{{Owner: "linenisgreat", Name: "papi"}},
+	})
+	if !errors.Is(mintErr, ErrCredentialCannotMint) {
+		t.Fatalf("mint error = %v, want ErrCredentialCannotMint", mintErr)
+	}
+	if !errors.Is(c.DeleteByID(context.Background(), 1), ErrCredentialCannotMint) {
+		t.Fatal("revoke must be refused for the same reason")
+	}
+	if f.lastCreate != nil || len(f.deleted) != 0 {
+		t.Fatal("neither call should have reached the forge")
+	}
+	// Listing is the one route a token credential genuinely drives.
+	if _, err := c.List(context.Background()); err != nil {
+		t.Fatalf("list must still work with a token credential: %v", err)
 	}
 }
 

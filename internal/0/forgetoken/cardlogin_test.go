@@ -11,7 +11,8 @@ import (
 
 // fakeVerifier stands in for the papi forward-auth verifier's two login legs.
 type fakeVerifier struct {
-	// loginStatus/loginLocation shape the /auth/login redirect.
+	// loginLocation is the /auth/login redirect target; empty means no Location
+	// header at all, i.e. the route is not the verifier's.
 	loginLocation string
 	// callbackStatus, when non-zero, replaces the 302 on /auth/callback.
 	callbackStatus int
@@ -49,6 +50,10 @@ func (v *fakeVerifier) server(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// oracleRedirect is the Location the real verifier aims at the workstation oracle.
+// The `callback` param is included because the verifier sends it, not because
+// CardLogin reads it — CardLogin takes only the nonce and state and calls the
+// callback itself.
 func oracleRedirect(nonce, state string) string {
 	return "https://oracle.example:9098/authorize?" + url.Values{
 		"callback": {"https://forge.example/auth/callback"},

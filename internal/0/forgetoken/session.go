@@ -2,6 +2,7 @@ package forgetoken
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -93,18 +94,11 @@ func (c *Client) Sweep(ctx context.Context, now time.Time) ([]Managed, error) {
 		revoked = append(revoked, m)
 	}
 	if len(failed) > 0 {
-		return revoked, joinErrors(failed)
+		// errors.Join rather than flattening to a string: it keeps each *APIError
+		// reachable through errors.As, so a caller can still ask whether a sweep
+		// failure was the credential-kind rejection and say something useful.
+		return revoked, fmt.Errorf("%d expired token(s) could not be revoked: %w",
+			len(failed), errors.Join(failed...))
 	}
 	return revoked, nil
-}
-
-func joinErrors(errs []error) error {
-	if len(errs) == 1 {
-		return errs[0]
-	}
-	msg := fmt.Sprintf("%d of the expired tokens could not be revoked:", len(errs))
-	for _, e := range errs {
-		msg += "\n  " + e.Error()
-	}
-	return fmt.Errorf("%s", msg)
 }

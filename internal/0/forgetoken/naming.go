@@ -7,10 +7,17 @@ import (
 	"time"
 )
 
-// NamePrefix marks a token as papi-minted. Every name papi generates starts with
-// it, and `sweep` will only ever delete tokens carrying it — the operator's own
-// hand-made tokens are structurally out of reach of the sweeper.
-const NamePrefix = "papi-"
+// NamePrefix marks a token as minted by this command. Every name papi generates
+// starts with it, and revoke and sweep consider nothing else.
+//
+// It is this long on purpose. A short marker like "papi-" is not evidence of
+// anything: on 2026-09-02 a sweep run against the live forge matched 5,146
+// pre-existing tokens named "papi-key-sync-<epoch>-<n>" — minted by an unrelated
+// job — because they shared that prefix AND their trailing number parsed as a
+// (long past) Unix deadline, and revoked every one of them. The prefix is now
+// specific to this feature, and ParseTokenName additionally enforces the escape
+// alphabet below, which is the check that actually rules such names out.
+const NamePrefix = "papi-forge-token-"
 
 // A minted token's forge-visible name is the ONLY place papi records per-session
 // state. There is no papi-side database: `revoke --session X` finds its token by
@@ -38,23 +45,38 @@ const NamePrefix = "papi-"
 func escapeSession(session string) string {
 	var b strings.Builder
 	for i := 0; i < len(session); i++ {
-		c := session[i]
-		switch {
-		case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9', c == '.':
+		if c := session[i]; isEscapeLiteral(c) {
 			b.WriteByte(c)
-		default:
+		} else {
 			fmt.Fprintf(&b, "_%02X", c)
 		}
 	}
 	return b.String()
 }
 
-// unescapeSession inverts escapeSession. It reports ok=false on a malformed
-// escape so a hand-made token that merely happens to start with "papi-" is
-// rejected rather than misread as a session's.
+// isEscapeLiteral reports whether a byte survives escapeSession unchanged. It is
+// the single definition of the escape alphabet, so escaping and the parser's
+// validation cannot drift apart.
+func isEscapeLiteral(c byte) bool {
+	return c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '.'
+}
+
+// unescapeSession inverts escapeSession, accepting ONLY what escapeSession can
+// produce: literals from [A-Za-z0-9.] and "_XX" hex escapes. Anything else means
+// papi did not mint this name, and ok=false keeps revoke and sweep away from it.
+//
+// Rejecting a literal "-" is the load-bearing part, and the check whose absence
+// caused the 2026-09-02 mass revocation described on NamePrefix: escapeSession
+// encodes "-" as _2D, so a genuinely papi-minted session NEVER contains one,
+// while an unrelated token named "papi-key-sync-<epoch>-<n>" does. Enforcing the
+// alphabet excludes every such name structurally, rather than hoping the prefix
+// is distinctive enough.
 func unescapeSession(escaped string) (string, bool) {
 	var b strings.Builder
 	for i := 0; i < len(escaped); i++ {
+		if c := escaped[i]; c != '_' && !isEscapeLiteral(c) {
+			return "", false
+		}
 		if escaped[i] != '_' {
 			b.WriteByte(escaped[i])
 			continue
