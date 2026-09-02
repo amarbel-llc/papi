@@ -31,6 +31,7 @@ import (
 
 	"code.linenisgreat.com/crap/go-crap/v2/crap"
 	"code.linenisgreat.com/crap/go-crap/v2/viewport"
+	"code.linenisgreat.com/papi/internal/0/forgetoken"
 	"code.linenisgreat.com/papi/internal/0/identity"
 	"code.linenisgreat.com/papi/internal/alfa/papi"
 	"code.linenisgreat.com/papi/internal/alfa/signchallenge"
@@ -288,7 +289,326 @@ func newForgeCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	cmd.AddCommand(newForgeCheckCmd())
+	cmd.AddCommand(newForgeTokenCmd())
 	return cmd
+}
+
+// forgeTokenFlags are the connection + credential flags shared by every `papi forge
+// token` subcommand.
+//
+// Secrets arrive as SHELL COMMANDS, never as flag values or environment variables,
+// so a token or password never appears in argv (world-readable in /proc) or in a
+// child process's environment. The canonical value is a piggy read — the eng
+// password store is where the fleet's forge credentials already live.
+type forgeTokenFlags struct {
+	host        string
+	user        string
+	passwordCmd string
+	otpCmd      string
+	tokenCmd    string
+}
+
+func (f *forgeTokenFlags) register(cmd *cobra.Command) {
+	cmd.PersistentFlags().StringVar(&f.host, "host", "",
+		"forge hostname (e.g. forge.example.com)")
+	cmd.PersistentFlags().StringVar(&f.user, "user", "",
+		"forge account whose tokens are managed")
+	cmd.PersistentFlags().StringVar(&f.passwordCmd, "password-command", "",
+		"shell command printing the account password on stdout (e.g. `piggy pass show forge/...`) — required to mint or revoke")
+	cmd.PersistentFlags().StringVar(&f.otpCmd, "otp-command", "",
+		"shell command printing a TOTP code on stdout (only for an account with TOTP enrolled)")
+	cmd.PersistentFlags().StringVar(&f.tokenCmd, "token-command", "",
+		"shell command printing an existing access token on stdout; drives the read-only paths, but the forge refuses it for mint and revoke")
+}
+
+// client builds the forge client. A password credential is preferred when both are
+// supplied, since it is the only one the forge accepts for the whole lifecycle.
+func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error) {
+	var cred forgetoken.Credential
+	switch {
+	case f.passwordCmd != "":
+		password, err := forgetoken.SecretFromCommand(ctx, f.passwordCmd)
+		if err != nil {
+			return nil, err
+		}
+		basic := forgetoken.BasicCredential{User: f.user, Password: password}
+		if f.otpCmd != "" {
+			otp, err := forgetoken.SecretFromCommand(ctx, f.otpCmd)
+			if err != nil {
+				return nil, err
+			}
+			basic.OTP = otp
+		}
+		cred = basic
+	case f.tokenCmd != "":
+		token, err := forgetoken.SecretFromCommand(ctx, f.tokenCmd)
+		if err != nil {
+			return nil, err
+		}
+		cred = forgetoken.TokenCredential{Token: token}
+	default:
+		return nil, errors.New("no credential: pass --password-command (mint/revoke) or --token-command (read-only)")
+	}
+	return forgetoken.NewClient(f.host, f.user, cred)
+}
+
+// forgeTokenAuthHint turns the forge's bare 401 on a mint or revoke into the
+// actionable explanation, because the cause is never the caller's identity: Forgejo
+// gates both routes behind ReqBasicOrRevProxyAuth, which refuses an access token
+// however broadly scoped.
+func forgeTokenAuthHint(err error) error {
+	if !forgetoken.IsAuthMethod(err) {
+		return err
+	}
+	return fmt.Errorf("%w\n\nthe forge refuses this CREDENTIAL KIND, not this identity: it accepts only "+
+		"password basic-auth (or a trusted reverse proxy) for minting and revoking tokens, however broadly "+
+		"scoped an access token is. Pass --password-command instead of --token-command", err)
+}
+
+func newForgeTokenCmd() *cobra.Command {
+	f := &forgeTokenFlags{}
+	cmd := &cobra.Command{
+		Use:   "token",
+		Short: "Mint, list, and revoke fine-grained per-repository forge access tokens",
+		Long: "Manage FINE-GRAINED Forgejo access tokens confined to a single repository (papi#73) — the " +
+			"issuer behind a session manager's ephemeral push credential (spinclass FDR-0028). Tokens are " +
+			"minted through the forge API with v15 token RESOURCES (ResourceAllRepos=false plus a resource " +
+			"row per repository), never `forgejo admin user generate-access-token`, which hardcodes " +
+			"all-repos access. Write is confined to the named repositories; note that read is not — other " +
+			"PUBLIC repos stay readable through the token. Because the forge has no native token expiry, " +
+			"`--ttl` records a deadline in the token's name and `sweep` enforces it.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	f.register(cmd)
+	cmd.AddCommand(newForgeTokenMintCmd(f))
+	cmd.AddCommand(newForgeTokenRevokeCmd(f))
+	cmd.AddCommand(newForgeTokenListCmd(f))
+	cmd.AddCommand(newForgeTokenSweepCmd(f))
+	return cmd
+}
+
+func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
+	var (
+		repo    string
+		scopes  []string
+		ttl     time.Duration
+		session string
+	)
+	cmd := &cobra.Command{
+		Use:   "mint",
+		Short: "Mint a token confined to one repository and print it on stdout",
+		Long: "Mint a fine-grained access token whose write access is confined to --repo, and print the " +
+			"token — and nothing else — on stdout. The forge reveals a token's value exactly once, at " +
+			"creation, so this output is the only chance to capture it; keep it out of logs and shell " +
+			"history. The token is named after --session, which is how `revoke` and `sweep` address it " +
+			"later. --repo takes owner/name, or a bare name whose owner is resolved against the forge " +
+			"(a session manager deriving the repo from a vanity remote has no owner to pass).",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if session == "" {
+				return errors.New("--session is required: it names the token so it can be revoked later")
+			}
+			target, err := forgetoken.ParseRepo(repo)
+			if err != nil {
+				return err
+			}
+			c, err := f.client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			resolved, err := c.ResolveRepo(cmd.Context(), target)
+			if err != nil {
+				return forgeTokenAuthHint(err)
+			}
+			var deadline time.Time
+			if ttl > 0 {
+				deadline = time.Now().UTC().Add(ttl)
+			}
+			tok, err := c.Mint(cmd.Context(), forgetoken.MintRequest{
+				Name:   forgetoken.TokenName(session, deadline),
+				Scopes: splitScopes(scopes),
+				Repos:  []forgetoken.RepoTarget{resolved},
+			})
+			if err != nil {
+				return forgeTokenAuthHint(err)
+			}
+			// Diagnostics go to stderr so stdout stays exactly the token: a
+			// caller captures stdout and treats anything else as the token.
+			fmt.Fprintf(cmd.ErrOrStderr(), "minted %q (id %d) for %s, scopes %s%s\n",
+				tok.Name, tok.ID, resolved, strings.Join(tok.Scopes, ","), deadlineNote(deadline))
+			fmt.Fprintln(cmd.OutOrStdout(), tok.Secret)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&repo, "repo", "", "repository to confine write access to, as owner/name or a bare name")
+	cmd.Flags().StringSliceVar(&scopes, "scope", []string{"write:repository"},
+		"category scopes for the token (write:X implies read:X)")
+	cmd.Flags().DurationVar(&ttl, "ttl", 12*time.Hour,
+		"how long the token should live; recorded in its name and enforced by `sweep` (0 = no deadline)")
+	cmd.Flags().StringVar(&session, "session", "", "session identifier the token is minted for")
+	return cmd
+}
+
+func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {
+	var session string
+	cmd := &cobra.Command{
+		Use:   "revoke",
+		Short: "Revoke every token minted for a session",
+		Long: "Revoke the tokens `mint` created for --session. Revoking a session that has no tokens " +
+			"succeeds silently rather than failing: a caller that retries a failed revoke — as a session " +
+			"manager's orphan sweep does — would otherwise retry forever once the token is gone.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if session == "" {
+				return errors.New("--session is required")
+			}
+			c, err := f.client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			revoked, err := c.RevokeSession(cmd.Context(), session)
+			if err != nil {
+				return forgeTokenAuthHint(err)
+			}
+			if len(revoked) == 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "no token to revoke for session %s\n", session)
+				return nil
+			}
+			for _, m := range revoked {
+				fmt.Fprintf(cmd.OutOrStdout(), "revoked %q (id %d) for session %s\n", m.Name, m.ID, session)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&session, "session", "", "session identifier whose tokens to revoke")
+	return cmd
+}
+
+func newForgeTokenListCmd(f *forgeTokenFlags) *cobra.Command {
+	var (
+		session string
+		all     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List the papi-minted tokens on the account",
+		Long: "List the account's papi-minted tokens with the session and deadline decoded from each name, " +
+			"plus the repositories each is confined to — the inventory a sweeper reads. Tokens papi did " +
+			"not mint are omitted unless --all is given. This is the one read-only path, so it works with " +
+			"--token-command as well as --password-command.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := f.client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if all {
+				tokens, err := c.List(cmd.Context())
+				if err != nil {
+					return err
+				}
+				for _, t := range tokens {
+					fmt.Fprintf(out, "%d\t%s\t%s\t%s\n", t.ID, t.Name,
+						strings.Join(t.Scopes, ","), repoList(t))
+				}
+				return nil
+			}
+			managed, err := c.Managed(cmd.Context())
+			if err != nil {
+				return err
+			}
+			now := time.Now().UTC()
+			for _, m := range managed {
+				if session != "" && m.Session != session {
+					continue
+				}
+				state := "live"
+				if m.Expired(now) {
+					state = "EXPIRED"
+				}
+				fmt.Fprintf(out, "%d\t%s\t%s\t%s\t%s\n", m.ID, m.Session, state,
+					deadlineText(m.Deadline), repoList(m.Token))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&session, "session", "", "only list tokens minted for this session")
+	cmd.Flags().BoolVar(&all, "all", false, "list every token on the account, including ones papi did not mint")
+	return cmd
+}
+
+func newForgeTokenSweepCmd(f *forgeTokenFlags) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "sweep",
+		Short: "Revoke every papi-minted token whose deadline has passed",
+		Long: "Revoke the papi-minted tokens whose --ttl deadline has passed. This is the issuer-side " +
+			"backstop for sessions that crashed without revoking: the forge has no native token expiry " +
+			"(forgejo#8837), so the deadline lives in the token name and enforcing it is papi's job. " +
+			"Tokens papi did not mint carry no deadline and are never touched.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, err := f.client(cmd.Context())
+			if err != nil {
+				return err
+			}
+			revoked, sweepErr := c.Sweep(cmd.Context(), time.Now().UTC())
+			for _, m := range revoked {
+				fmt.Fprintf(cmd.OutOrStdout(), "revoked expired %q (id %d, session %s, deadline %s)\n",
+					m.Name, m.ID, m.Session, deadlineText(m.Deadline))
+			}
+			if sweepErr != nil {
+				return forgeTokenAuthHint(sweepErr)
+			}
+			if len(revoked) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no expired tokens")
+			}
+			return nil
+		},
+	}
+	return cmd
+}
+
+// splitScopes flattens the --scope values, accepting both a repeated flag and the
+// comma-separated spelling a sweatfile command string naturally uses.
+func splitScopes(values []string) []string {
+	var out []string
+	for _, v := range values {
+		for _, s := range strings.Split(v, ",") {
+			if s = strings.TrimSpace(s); s != "" {
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+func deadlineNote(deadline time.Time) string {
+	if deadline.IsZero() {
+		return ", no deadline"
+	}
+	return ", expires " + deadlineText(deadline)
+}
+
+func deadlineText(deadline time.Time) string {
+	if deadline.IsZero() {
+		return "never"
+	}
+	return deadline.Format(time.RFC3339)
+}
+
+// repoList renders a token's resource rows, naming the user-wide case explicitly
+// so an accidentally unconfined token is obvious in a listing rather than blank.
+func repoList(t forgetoken.Token) string {
+	if !t.FineGrained() {
+		return "ALL REPOS"
+	}
+	names := make([]string, len(t.Repositories))
+	for i, r := range t.Repositories {
+		names[i] = r.FullName
+	}
+	return strings.Join(names, ",")
 }
 
 func newForgeCheckCmd() *cobra.Command {

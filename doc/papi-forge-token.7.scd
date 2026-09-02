@@ -1,0 +1,68 @@
+papi-forge-token(7) "papi"
+
+# NAME
+
+papi-forge-token - fine-grained, per-repository forge access tokens as an ephemeral push credential
+
+# DESCRIPTION
+
+Fleet automation needs to push to a forge without a live card-backed ssh-agent: a forwarded agent drops mid-run and kills long unattended passes. The replacement is an HTTPS access token that is minted when a session starts, confined to the one repository that session works on, and revoked when the session ends.
+
+*papi forge token* is the issuer for that lifecycle — mint, revoke, list, and the sweep that enforces a deadline the forge itself cannot. This page describes the model and the trust boundaries. For flags, see *papi-forge-token-mint*(1), *papi-forge-token-revoke*(1), *papi-forge-token-list*(1) and *papi-forge-token-sweep*(1).
+
+# WHY THE API, NEVER THE ADMIN CLI
+
+Forgejo exposes two unrelated ways to narrow a token, and only one of them is reachable from a command line on the forge host.
+
+*Scopes* (_write:repository_, _read:repository_, ...) are *category-wide*. A token with _write:repository_ can write to *every* repository its owner can touch. Scopes alone confine nothing to one repo.
+
+*Resources* are the separate axis Forgejo v15 added: _ResourceAllRepos=false_ plus one _access\_token\_resource_ row per repository. This is the real per-repo narrowing, and it is settable only from the web UI and the API.
+
+_forgejo admin user generate-access-token_ — the obvious mint path, and the one the fleet used before — *hardcodes* _ResourceAllRepos=true_, with the source comment "maintain legacy behaviour ... not fine-grained". It can never produce a per-repo token. So papi mints through the *API*, and this is a correctness requirement rather than a preference.
+
+# WHAT A MINTED TOKEN CAN DO
+
+Write is confined to the repositories named at mint time. *Read is not.* With _ResourceAllRepos=false_:
+
+- listed repositories: full access at the token's scopes;
+- unlisted *public* repositories: read-only;
+- unlisted *private* repositories: no access.
+
+So "limited to the listed repository" is a statement about *write*. A leaked token still reads everything anonymous readers can, which for a public forge plane is no additional exposure — but it is not the same as total confinement, and it should not be described as such.
+
+Enforcement covers git-over-HTTPS, not merely API calls: the forge's basic-auth path feeds the same fine-grained authorization reducer, so a _git push_ authenticated with the token is subject to the resource rows.
+
+# THE CREDENTIAL PAPI ITSELF NEEDS
+
+Minting a token requires a credential that can *create* tokens, and the forge is deliberately strict about which kinds qualify. Both _POST_ and _DELETE_ on the token routes are gated behind a check that accepts only:
+
+- *password basic-auth* — a real account password, not a token; or
+- a *trusted reverse proxy* asserting the account.
+
+An access token is refused on those two routes *however broadly it is scoped* — a deliberate anti-escalation rule, so a leaked token cannot mint itself a fresh one or delete the evidence. Listing is not gated this way and works with a token.
+
+The practical consequence is that *a sealed forge API token cannot drive this feature*, and neither can it revoke — the sweeper needs the same privileged credential as the mint. *--password-command* supplies the password by running a shell command (canonically a *piggy*(1) read), so the secret never appears in argv or in any process environment. An account with WebAuthn keys enrolled cannot use basic auth at all; an account with TOTP needs *--otp-command*.
+
+# DEADLINES WITHOUT FORGE SUPPORT
+
+Forgejo tokens have *no native expiry*. "Ephemeral" is therefore not a property the forge maintains — it is a lifecycle the issuer owns: mint, revoke, and sweep whatever was never revoked because a session crashed.
+
+papi keeps *no state of its own* for this. A token's deadline and the session it belongs to are encoded in the token's *name*, so any papi process on any host can list the account's tokens and reconstruct the whole picture. That is what lets *revoke* find a token minted by a different process hours earlier, and what lets *sweep* reap the tokens of a session that died without ever calling revoke.
+
+The name is _papi-<session>-<deadline>_, with the session reversibly escaped so that two different sessions can never produce the same name, and the deadline as a Unix timestamp (_0_ meaning none). Only names in this form are ever considered: a token papi did not mint is invisible to *revoke* and untouchable by *sweep*.
+
+When upstream token expiry lands (forgejo#8837), the same _--ttl_ becomes a real expiry field the forge enforces, and the sweep degrades to a belt-and-suspenders prune rather than the mechanism.
+
+# IDEMPOTENCE
+
+Revoking a session that has no tokens *succeeds*. This is a requirement, not a convenience: a session manager that retries a failed revoke — as spinclass's orphan sweep does, re-running the revoke command for every credential it never saw revoked — would otherwise retry forever the moment the token actually went away.
+
+# THE SESSION-MANAGER LIFECYCLE
+
+The reference consumer is spinclass's _[auth]_ section (its FDR 0028). At session creation it runs the mint command in the new worktree, captures the token from stdout, and writes it mode-600 as a git-credential-store file; a worktree-scoped _credential.helper_ plus a forge-host-scoped _url.<https>.insteadOf_ then carry it into every fetch and push of that session and of the throwaway worktree its merge lands from. At close it runs the revoke command; for sessions that never closed, it re-runs revoke from the next session's orphan sweep, and papi's own *sweep* is the backstop behind that.
+
+Because mint prints the token and nothing else on stdout, *every diagnostic from mint goes to stderr* — a caller treats all of stdout as the secret.
+
+# SEE ALSO
+
+*papi*(1), *papi-forge-token-mint*(1), *papi-forge-token-revoke*(1), *papi-forge-token-list*(1), *papi-forge-token-sweep*(1), *papi-forge-check*(1), *piggy*(1)

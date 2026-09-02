@@ -313,6 +313,41 @@ $ papi forge check linenisgreat.com \
     --auth-key-id piggy-auth-v1@...                         # + full declared-vs-verified reconcile
 ```
 
+### `papi forge token <mint|revoke|list|sweep>`
+
+Mint, revoke, and sweep **fine-grained, per-repository** forge access tokens — the
+issuer behind a session manager's ephemeral push credential (papi#73,
+[FDR-0016](docs/features/0016-forge-token-mint-revoke.md); consumer design in
+spinclass FDR-0028). Tokens are minted through the forge **API** with Forgejo v15
+token *resources* (`ResourceAllRepos=false` plus a resource row per repo), never
+`forgejo admin user generate-access-token`, which hardcodes all-repos access. Note
+that the confinement is on **write**: unlisted *public* repos stay readable through
+the token.
+
+`mint` prints the token and **nothing else** on stdout (diagnostics go to stderr), so
+a caller can capture stdout as the secret; the forge reveals a token's value only
+once. `--repo` takes `owner/name` or a bare name whose owner is resolved against the
+forge. Because Forgejo tokens have **no native expiry** (forgejo#8837), `--ttl`
+records a deadline in the token's *name* — papi keeps no state — and `sweep` enforces
+it for sessions that crashed without revoking. `revoke` on a session with no tokens
+succeeds, so a caller that retries a failed revoke terminates.
+
+Credentials arrive as shell commands so no secret enters argv or the environment.
+Minting and revoking need `--password-command`: Forgejo gates both routes behind
+password basic-auth (or a trusted reverse proxy) and **refuses an access token
+however broadly scoped** — so a sealed API token can drive `list` but neither mint nor
+revoke. See `man 7 papi-forge-token` for the model and trust boundaries.
+
+```console
+$ papi forge token mint --host forge.example.com --user sasha \
+    --password-command 'piggy pass show forge/krone-password' \
+    --repo linenisgreat/papi --session papi/mild-maple --ttl 12h
+$ papi forge token list   --host forge.example.com --user sasha --token-command '...'
+$ papi forge token revoke --host forge.example.com --user sasha \
+    --password-command '...' --session papi/mild-maple
+$ papi forge token sweep  --host forge.example.com --user sasha --password-command '...'
+```
+
 ### `papi profiles <domain>`
 
 Fetch `<domain>`'s `GET /papi/profiles` — the host profiles (flakerefs) a staged

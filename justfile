@@ -496,6 +496,45 @@ debug-pin-status:
         ykman --device "$s" piv info 2>&1 | grep -iE 'PIN|PUK|tries|retr|attempt|management|WARNING' || ykman --device "$s" piv info 2>&1
     done
 
+# Explore: query the live forge's OpenAPI spec with a jq filter — the authoritative,
+# credential-free description of the Forgejo build papi actually mints against (field
+# spellings and per-operation security drift between versions, so reading the spec
+# beats reading upstream source). Serves papi#73's mint/revoke design. e.g.
+#   just debug-forge-swagger '.definitions.CreateAccessTokenOption'
+#   just debug-forge-swagger '.paths."/users/{username}/tokens".post'
+#
+# query the live forge's OpenAPI spec with a jq filter
+[group("debug")]
+debug-forge-swagger filter="." host="forge.starbrandshoes.com":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p build
+    spec="build/{{host}}.swagger.json"
+    curl -fsSL -o "$spec" "https://{{host}}/swagger.v1.json"
+    # Keep the fetched spec on disk so a jq parse failure (spec disabled, HTML error
+    # page, auth redirect) is inspectable instead of vanishing down the pipe.
+    jq '{{filter}}' "$spec" || { echo "--- first 400 bytes of $spec ---" >&2; head -c 400 "$spec" >&2; echo >&2; exit 1; }
+
+# Explore: make an authed call against the live forge API with the operator token
+# sealed in the eng piggy store (`forge/krone-api-token`) — the credential papi#73's
+# mint uses. Needs an unlocked piggy-agent. Read-only verbs only here; a mint/revoke
+# round-trip goes through `papi forge token` itself, not this. e.g.
+#   just debug-forge-api GET user
+#   just debug-forge-api GET 'users/sasha/tokens'
+#
+# call the live forge API with the piggy-sealed operator token
+[group("debug")]
+debug-forge-api method="GET" path="user" json="" host="forge.starbrandshoes.com":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    tok="$(piggy pass show forge/krone-api-token </dev/null | head -1)"
+    [[ -n $tok ]] || { echo "empty piggy entry forge/krone-api-token" >&2; exit 1; }
+    args=(-sS -o /dev/stderr -w '\nHTTP %{http_code}\n' -X "{{method}}" -H "Authorization: token $tok")
+    if [[ -n "{{json}}" ]]; then args+=(-H 'Content-Type: application/json' -d '{{json}}'); fi
+    # Status code is the point of this probe (401 vs 404 distinguishes "auth method
+    # not allowed" from "route reached"), so don't let -f swallow error bodies.
+    curl "${args[@]}" "https://{{host}}/api/v1/{{path}}" </dev/null
+
 # --- codemod ---
 
 codemod-fmt: codemod-fmt-tree
