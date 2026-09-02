@@ -1056,7 +1056,7 @@ func TestReposURLOwnerFilter(t *testing.T) {
 // registerHandshake wires the §5 challenge/response onto mux: the challenge mints
 // base64(nonce) (a `base64 -d` decrypt-cmd recovers it), the response validates it
 // once and mints session "sess1". Projected endpoints then gate their scoped set on
-// the `Authorization: PiggySession sess1` header. Mirrors internal/alfa/inspect's
+// the `Authorization: PiggySession sess1` header. Mirrors internal/bravo/inspect's
 // mock-box fixture.
 func registerHandshake(mux *http.ServeMux, nonce string) {
 	consumed := false

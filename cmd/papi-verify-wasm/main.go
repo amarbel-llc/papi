@@ -5,7 +5,7 @@
 // checks as `papi verify-receipt`, but against keys the caller already holds
 // (its own /papi/piggy-ids) rather than fetching them, so it needs no network.
 //
-// It imports only internal/alfa/inspect (+ stdlib) — never the enroll TUI — so it
+// It imports only internal/bravo/inspect (+ stdlib) — never the enroll TUI — so it
 // cross-compiles cleanly under `GOOS=wasip1 GOARCH=wasm` (see `just build-wasm`).
 // The same source also builds as an ordinary host CLI, which is what keeps it
 // under host `go vet` / `go build ./...`.

@@ -82,7 +82,7 @@ func TestDecodeDocumentAndUnknownFn(t *testing.T) {
 func TestVerifyDocumentDispatch(t *testing.T) {
 	// An unsigned document decodes + verifies (exit 0) but is not authentic; this
 	// exercises the verify_document dispatch wiring (the §10 crypto is covered in
-	// internal/alfa/inspect).
+	// internal/bravo/inspect).
 	out, code := runFn(t, "verify_document", `{"data":{"version":"papi/v0"},"meta":{}}`)
 	if code != 0 {
 		t.Fatalf("verify_document exit %d:\n%s", code, out)

@@ -366,7 +366,7 @@ func postJSON(ctx context.Context, httpc *http.Client, url string, body any) ([]
 // (Amendment 18) — carries it, so a body with no `data` member is non-conformant
 // and rejected rather than read at the top level. Tolerating a bare body here is
 // the same leniency that let the client auth handshake read the wrong nesting level
-// undetected (mirrors internal/0/papi.DecodeEnvelope).
+// undetected (mirrors internal/alfa/papi.DecodeEnvelope).
 func unwrapData(raw []byte) ([]byte, error) {
 	var env struct {
 		Data json.RawMessage `json:"data"`

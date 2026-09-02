@@ -421,7 +421,7 @@ func TestAuthorizeOnlyMode(t *testing.T) {
 
 // TestUnwrapDataStrict pins the broker's no-leniency §4.2 handling: a PAPI server
 // response with no `data` member is rejected, not read at the top level (mirrors
-// internal/0/papi.DecodeEnvelope; RFC-0001 Amendment 18). Tolerating a bare body
+// internal/alfa/papi.DecodeEnvelope; RFC-0001 Amendment 18). Tolerating a bare body
 // is the same leniency that hid the client auth-handshake bug.
 func TestUnwrapDataStrict(t *testing.T) {
 	data, err := unwrapData([]byte(`{"data":{"session":"s1"},"meta":{"type":"papi-auth-session"}}`))

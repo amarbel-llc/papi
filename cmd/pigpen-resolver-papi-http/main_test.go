@@ -68,7 +68,7 @@ func TestRunClientConstructionFailure(t *testing.T) {
 // simplest, cheapest failure fixture that doesn't require building any
 // signed-document bytes. ResolvePigpen's full range of failure classes
 // (unsigned, invalid signature, malformed lock, unpublished key, etc.) is
-// already exhaustively covered by internal/alfa/inspect/pigpen_test.go; this
+// already exhaustively covered by internal/bravo/inspect/pigpen_test.go; this
 // test only needs to prove run() correctly surfaces *a* ResolvePigpen error
 // to stderr with exit 1.
 func TestRunResolveFailure(t *testing.T) {

@@ -7,7 +7,7 @@
 // hyphence now compiles for either wasm target (`just debug-build-wasm-pkg
 // code.linenisgreat.com/hyphence/go/hyphence`).
 //
-// The tag is retained because internal/alfa/inspect is imported wholesale by
+// The tag is retained because internal/bravo/inspect is imported wholesale by
 // both cmd/papi-verify-wasm (GOOS=wasip1) and cmd/papi-client-wasm (GOOS=js
 // GOARCH=wasm), and Go compiles every file in an imported package for the
 // target even when its exported symbols go uncalled — so dropping it would
@@ -476,7 +476,7 @@ type PigpenSigner interface {
 // guaranteed to verify there. signer.SignSlot9A is called with that input
 // directly, UN-hashed: piggy (and any PigpenSigner satisfying this
 // interface) hashes SHA-256 internally, per PiggySignBytesSigner's own doc
-// comment (internal/alfa/enroll/card.go).
+// comment (internal/bravo/enroll/card.go).
 //
 // Any error returned by signer.SignSlot9A is propagated (wrapped, so
 // errors.Is/errors.As against the underlying error still works).

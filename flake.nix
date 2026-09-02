@@ -48,7 +48,7 @@
     purse-first.inputs.conformist.follows = "conformist";
 
     # langlang: the PEG-grammar parser/validator behind the papi#54 pigpen
-    # grammar-conformance test (internal/alfa/inspect/pigpen_grammar_test.go),
+    # grammar-conformance test (internal/bravo/inspect/pigpen_grammar_test.go),
     # which parses each pigpen metadata line against hyphence's canonical
     # hyphence-content.peg. langlang migrated to the forge 2026-07-19
     # (code.linenisgreat.com/langlang, GitHub is now a push mirror), so the
@@ -230,7 +230,7 @@
         };
 
         # The staged host installer (FDR-0006): a static binary that drives an
-        # RFC-0003 phase manifest, linking the internal/0/papi client + the crap
+        # RFC-0003 phase manifest, linking the internal/alfa/papi client + the crap
         # TUI. First increment — the phase engine + the runnable early phases;
         # host/hardware-gated phases are seams and slot-9A signing is out of scope
         # (FDR-0008), so this binary is built UNSIGNED. CGO-free static binary.

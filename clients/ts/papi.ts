@@ -20,7 +20,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-// --- wire types (mirror internal/0/papi + internal/alfa/inspect) ---
+// --- wire types (mirror internal/alfa/papi + internal/bravo/inspect) ---
 
 export interface Profile {
   id: string;

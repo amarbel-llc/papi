@@ -124,7 +124,7 @@ test-grammar:
     nix develop --command env \
       LANGLANG_BIN="$langlang_bin" \
       PAPI_HYPHENCE_GRAMMAR="$grammar" \
-      go test ./internal/alfa/inspect/ -run TestPigpenGrammarConformance -v
+      go test ./internal/bravo/inspect/ -run TestPigpenGrammarConformance -v
 
 # Smoke-test the TypeScript client wrapper (clients/ts, FDR-0007): cross-build the
 # js/wasm core, then run its bun tests, which drive the wasm via Go's wasm_exec.js
@@ -248,13 +248,13 @@ debug-grammar-parse content:
     case "$out" in "$input":*) echo "YES (test would FAIL on this input)";; *) echo "NO (test would PASS on this input)";; esac
 
 # Regenerate the committed sample enrollment receipt fixture
-# (internal/alfa/enroll/testdata/) — a hand-off artifact for the deploy-side
+# (internal/bravo/enroll/testdata/) — a hand-off artifact for the deploy-side
 # verify recipe (site-linenisgreat). Normal `test-go` skips this generator.
 #
 # regenerate the committed sample enrollment receipt fixture
 [group("debug")]
 debug-sample-receipt:
-    PAPI_GEN_SAMPLE=1 nix develop --command go test ./internal/alfa/enroll/ -run TestGenerateSampleReceipt -v
+    PAPI_GEN_SAMPLE=1 nix develop --command go test ./internal/bravo/enroll/ -run TestGenerateSampleReceipt -v
 
 # Regenerate the committed §10-signed /papi fixture (clients/ts/testdata/
 # signed-papi.json + signed-papi.pubid.txt) the bun §10-verify test consumes
@@ -263,7 +263,7 @@ debug-sample-receipt:
 # regenerate the committed §10-signed /papi fixture
 [group("debug")]
 debug-signed-doc:
-    PAPI_GEN_SIGNED_DOC=1 nix develop --command go test ./internal/alfa/inspect/ -run TestGenerateSignedDocFixture -v
+    PAPI_GEN_SIGNED_DOC=1 nix develop --command go test ./internal/bravo/inspect/ -run TestGenerateSignedDocFixture -v
 
 # Inspect attached PIV cards (read-only, PIN-free) to verify provisioning state
 # before a live `papi enroll` run — which card is provisioned (slot 9D+9A) vs
@@ -454,7 +454,7 @@ debug-build-wasm-pkg pkg="code.linenisgreat.com/piggy/go/pkgs/markl code.linenis
 
 # Explore: which packages in a build subtree import a given (often stdlib)
 # package — e.g. `just debug-imports-of os/user .` locates the transitive wasip1
-# build blocker, and `... ./internal/alfa/inspect` checks if the verify core is
+# build blocker, and `... ./internal/bravo/inspect` checks if the verify core is
 # clean of it. WASM-isolation exploration.
 #
 # list which packages in a build subtree import a given package

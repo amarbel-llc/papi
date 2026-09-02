@@ -10,7 +10,7 @@
 // shared helper must live in a regular (non-_test.go) file somewhere either
 // package can import — hence this package.
 //
-// internal/alfa/inspect/pigpen_test.go has its OWN, necessarily separate
+// internal/bravo/inspect/pigpen_test.go has its OWN, necessarily separate
 // fixture (buildPigpenDoc et al.): it reuses that package's unexported
 // crypto-critical core (pigpenStripSelfBytes, verifyPigpenSelfSignature)
 // directly, which this package — sitting outside inspect — cannot do. That
@@ -18,7 +18,7 @@
 // as-is; this package only removes the OTHER, unconstrained duplication
 // between the two `package main` test suites.
 //
-// Same wasm-isolation note as internal/alfa/inspect/pigpen.go: hyphence
+// Same wasm-isolation note as internal/bravo/inspect/pigpen.go: hyphence
 // pulls in purse-first/libs/dewey transitively, which has no wasip1/js-wasm
 // implementation, so this package must stay out of both wasm builds too.
 // In practice it's only ever imported from _test.go files in package main
@@ -42,7 +42,7 @@ import (
 	"code.linenisgreat.com/papi/internal/0/markl"
 )
 
-// SelfSigPurpose and SelfSigFormat mirror internal/alfa/inspect's unexported
+// SelfSigPurpose and SelfSigFormat mirror internal/bravo/inspect's unexported
 // self-signature scheme (RFC-0001 §14.2, papi#54): an ordinary
 // papi-pigpen-self-sig-v1@ecdsa_p256_sig markl-id placed as its own bare `-`
 // line, verified against piggy's real recipient-set parser (which tolerates

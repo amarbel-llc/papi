@@ -27,7 +27,7 @@
 // self-prefix there either).
 //
 // The actual fetch-verify-passthrough work is entirely
-// internal/alfa/inspect.ResolvePigpen; this binary is a thin argv/exit-code
+// internal/bravo/inspect.ResolvePigpen; this binary is a thin argv/exit-code
 // shim around it. See docs/rfcs/0001-personal-api-papi-wire-format.md §14
 // for the pigpen document's wire format and self-signature scheme, and
 // docs/plans/2026-07-17-pigpen-resolver-papi-http.md for this binary's own

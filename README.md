@@ -623,12 +623,14 @@ Run `just --list` for the full recipe set. Dependency changes go through
 
 ```
 docs/rfcs/             the PAPI wire-format spec (RFC-0001)
-internal/0/papi/       HTTP client + wire-format decoders + enrollment receipt
 internal/0/markl/      markl-id parser/builder (piggy adapter, RFC 0011)
 internal/0/identity/   local identity.toml scalar reader (FDR-0009)
-internal/alfa/inspect/ the validate command + receipt verification core
-internal/alfa/enroll/  the enroll command: card provisioning + receipt assembly
+internal/0/forgetoken/ fine-grained forge access tokens: mint/revoke/sweep (FDR-0016)
+internal/alfa/papi/    HTTP client + wire-format decoders + enrollment receipt
 internal/alfa/signchallenge/  the sign-challenge command: §5.2 preimage + slot-9A response
+internal/bravo/inspect/ the validate command + receipt verification core
+internal/bravo/enroll/  the enroll command: card provisioning + receipt assembly
+internal/bravo/authproxy/  the FDR-0014 forward-auth verifier
 cmd/papi-verify-wasm/  network-free receipt verifier, built to wasip1 (FDR-0002)
 cmd/papi-client-wasm/  network-free RFC-0001 decode/verify core, built to js/wasm (FDR-0007)
 cmd/papi-installer/    staged host installer: RFC-0003 phase engine + crap TUI (FDR-0006)

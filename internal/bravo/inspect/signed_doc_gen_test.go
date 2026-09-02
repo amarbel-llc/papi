@@ -127,7 +127,7 @@ func signedDocFixtureDir(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// internal/alfa/inspect/<file> → repo root is three levels up.
+	// internal/bravo/inspect/<file> → repo root is three levels up.
 	root := filepath.Join(filepath.Dir(thisFile), "..", "..", "..")
 	return filepath.Join(root, "clients", "ts", "testdata")
 }
