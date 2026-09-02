@@ -524,12 +524,17 @@ debug-forge-swagger filter="." host="forge.starbrandshoes.com":
 #
 # call the live forge API with the piggy-sealed operator token
 [group("debug")]
-debug-forge-api method="GET" path="user" json="" host="forge.starbrandshoes.com":
+debug-forge-api method="GET" path="user" json="" host="forge.starbrandshoes.com" auth="token":
     #!/usr/bin/env bash
     set -euo pipefail
-    tok="$(piggy pass show forge/krone-api-token </dev/null | head -1)"
-    [[ -n $tok ]] || { echo "empty piggy entry forge/krone-api-token" >&2; exit 1; }
-    args=(-sS -o /dev/stderr -w '\nHTTP %{http_code}\n' -X "{{method}}" -H "Authorization: token $tok")
+    args=(-sS -o /dev/stderr -w '\nHTTP %{http_code}\n' -X "{{method}}")
+    # auth=none sends no credential at all — the control that says whether a status
+    # means "authenticated as the wrong user" or just "anonymous".
+    if [[ "{{auth}}" != none ]]; then
+        tok="$(piggy pass show forge/krone-api-token </dev/null | head -1)"
+        [[ -n $tok ]] || { echo "empty piggy entry forge/krone-api-token" >&2; exit 1; }
+        args+=(-H "Authorization: token $tok")
+    fi
     if [[ -n "{{json}}" ]]; then args+=(-H 'Content-Type: application/json' -d '{{json}}'); fi
     # Status code is the point of this probe (401 vs 404 distinguishes "auth method
     # not allowed" from "route reached"), so don't let -f swallow error bodies.

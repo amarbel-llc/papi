@@ -140,15 +140,18 @@ Reap what crashed sessions left behind:
   the scope gate, `DELETE /api/v1/users/sasha/tokens/…` returns 401 `auth method not
   allowed` in both token-auth forms. So eng's sealed `forge/krone-api-token` can neither
   mint nor revoke, and the sweeper needs the same privileged credential as the mint.
-- **`--card-login` is unexercised end to end, and depends on a forge-side change that
-  has not landed.** It needs `ENABLE_REVERSE_PROXY_AUTHENTICATION_API` on the forge
-  (today the asserted header does nothing on `/api/v1`) and the verifier's `/auth/*`
-  routes reachable on the forge vhost — both circus's, both operator-gated. The papi
-  half is implemented and unit-tested against a stub verifier, but **no token has been
-  minted against a live forge**, so the flow is not yet known to work. `--password-command`
-  works against the forge as it stands today and is the fallback; the operator has
-  weighed a standing admin password against the config change and the card path is the
-  recommendation, not yet the deployed reality.
+- **`--card-login` works up to a forge-side flag that has not deployed yet.** What is
+  verified live against `forge.starbrandshoes.com`: the login legs complete (redirect →
+  slot-9A signature off the forwarded agent → `__papi_session`), and that cookie
+  satisfies the vhost's `auth_request` — an anonymous request to the same path is
+  bounced by nginx with a 302 to the login, while the cookie-bearing one reaches
+  Forgejo. What is **not** verified: Forgejo honouring the asserted account. It answers
+  403 `doer should be the site admin or be same as the contextUser`, consistent with
+  its API auth chain not yet including the reverse-proxy method — that is
+  `ENABLE_REVERSE_PROXY_AUTHENTICATION_API`, approved by the operator and landing
+  through circus, not yet deployed. **That the flag closes this gap is a prediction,
+  not an observation, and no token has been minted against a live forge.**
+  `--password-command` works against the forge as it stands today and is the fallback.
 - **Basic auth is unavailable to some accounts.** An account with WebAuthn keys
   enrolled cannot use basic auth at all; one with TOTP needs `--otp-command`, and a
   code that expires between fetch and use will fail the call.
