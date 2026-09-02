@@ -164,6 +164,17 @@ Reap what crashed sessions left behind:
   session cookie the API then ignores, and the mint fails with a 401 rather than anything
   that names the missing config. `--password-command` needs no forge configuration and is
   the fallback.
+- **`--host` is the API host, which is not the git host on a split deployment.** The
+  fleet publishes its forge on two planes: a public vanity plane serving *git only* at
+  owner-less paths (`code.linenisgreat.com`), and a tailnet vhost carrying `/api/v1`
+  and the verifier's `/auth/*` (`forge.starbrandshoes.com`). Pointing `--host` at the
+  vanity plane 404s. A consumer deriving a host from `remote.origin.url` therefore
+  gets the *wrong* one and must pass the API host explicitly — spinclass's
+  `$SPINCLASS_FORGE_HOST` is the git host, not this one. Verified live: the two are
+  otherwise interchangeable, since a token minted against the API host authenticates
+  for git against the vanity host (`just debug-forge-token-cross-plane`), so only mint
+  and revoke need the API host. papi could in principle resolve it from the domain's
+  own `/papi/forges` `base_url` instead of being told; that is not implemented.
 - **`--otp-command` is untested.** The account this was built against has no 2FA, so the
   `X-Forgejo-OTP` path has never run against a real forge. A TOTP code that expires
   between the command and the request would also fail with no useful diagnostic.

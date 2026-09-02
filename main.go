@@ -317,7 +317,7 @@ type forgeTokenFlags struct {
 
 func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&f.host, "host", "",
-		"forge hostname (e.g. forge.example.com)")
+		"hostname serving the forge API (and, for --card-login, the papi verifier) — NOT necessarily the host in your git remote, since a vanity plane may serve git only")
 	cmd.PersistentFlags().StringVar(&f.user, "user", "",
 		"forge account whose tokens are managed")
 	cmd.PersistentFlags().BoolVar(&f.cardLogin, "card-login", false,

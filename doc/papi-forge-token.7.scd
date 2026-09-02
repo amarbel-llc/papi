@@ -51,6 +51,14 @@ Two byte-exact details decide whether this works: the signature is bound to the 
 
 *--token-command* reaches only *list*.
 
+# WHICH HOST TO POINT AT
+
+*--host* names the host serving the forge *API* — and, under *--card-login*, the papi verifier. That is not necessarily the host in your git remote, and on a split deployment it will not be.
+
+A forge is commonly published on more than one plane: a public vanity plane that serves *git only*, often at owner-less paths, and a separate (frequently network-restricted) vhost carrying _/api/v1_ and the verifier's _/auth/*_ routes. Pointing *--host* at the vanity plane fails with a 404 on _/auth/login_ or _/api/v1_, because those routes simply are not there.
+
+This is safe to get right once and forget: a token minted against the API host authenticates for git against the vanity host, since both planes front the same forge. So a session manager keeps writing its credential for whatever host the remote names, and only the mint and revoke calls need the API host.
+
 # DEADLINES WITHOUT FORGE SUPPORT
 
 Forgejo tokens have *no native expiry*. "Ephemeral" is therefore not a property the forge maintains — it is a lifecycle the issuer owns: mint, revoke, and sweep whatever was never revoked because a session crashed.

@@ -515,6 +515,23 @@ debug-forge-swagger filter="." host="forge.starbrandshoes.com":
     # page, auth redirect) is inspectable instead of vanishing down the pipe.
     jq '{{filter}}' "$spec" || { echo "--- first 400 bytes of $spec ---" >&2; head -c 400 "$spec" >&2; echo >&2; exit 1; }
 
+# Explore: probe an arbitrary path on a forge host, anonymously, reporting only the
+# status and a short body prefix. Answers "which plane serves what" questions — the
+# vanity/read plane and the API/auth vhost are different nginx server blocks, and a
+# 404 from one says nothing about the other. e.g.
+#   just debug-forge-path /api/v1/version code.linenisgreat.com
+#   just debug-forge-path '/linenisgreat/papi/info/refs?service=git-upload-pack' code.linenisgreat.com
+#
+# probe an arbitrary path on a forge host, anonymously
+[group("debug")]
+debug-forge-path path="/" host="forge.starbrandshoes.com":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    body="$(mktemp)"
+    status="$(curl -sS -o "$body" -w '%{http_code}' "https://{{host}}{{path}}" </dev/null)"
+    echo "HTTP $status  https://{{host}}{{path}}"
+    head -c 200 "$body"; echo
+
 # Explore: make an authed call against the live forge API with the operator token
 # sealed in the eng piggy store (`forge/krone-api-token`) — the credential papi#73's
 # mint uses. Needs an unlocked piggy-agent. Read-only verbs only here; a mint/revoke
@@ -591,6 +608,47 @@ debug-forge-token-roundtrip repo public_control private_control cred host="forge
         echo "FAIL: the token survived revoke" >&2; exit 1
     fi
     echo "OK: minted, write confined to {{repo}}, revoked"
+
+# Live check that a token minted on the API host authenticates for GIT on a DIFFERENT
+# host — the fleet's split planes: the API and the papi verifier live on the tailnet
+# vhost, while remote.origin.url points at the owner-less vanity plane, which serves
+# git only. spinclass writes the credential for the vanity host, so the token has to
+# be accepted there or the whole [auth] feature stops at the first push.
+#
+# Uses a PRIVATE repo on purpose: a public one reads anonymously, so success would
+# prove nothing about authentication. Non-destructive — ls-remote only, never a push —
+# and it drives the credential through a mode-600 store file exactly as spinclass does,
+# so the token never reaches argv. e.g.
+#   just debug-forge-token-cross-plane fj-cg-conformance-canary "--card-login --signer agent"
+#
+# live check that a minted token authenticates for git on the vanity plane
+[group("debug")]
+debug-forge-token-cross-plane private_repo cred api_host="forge.starbrandshoes.com" git_host="code.linenisgreat.com" user="sasha":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    session="crossplane/$(date +%s)"
+    bin="$(mktemp -d)/papi"
+    nix develop --command go build -o "$bin" .
+    papi() { "$bin" forge token "$@" --host "{{api_host}}" --user "{{user}}" {{cred}}; }
+    token="$(papi mint --repo "{{private_repo}}" --session "$session" --ttl 5m)"
+    trap 'papi revoke --session "$session" >&2 || true' EXIT
+    creds="$(mktemp)"; chmod 600 "$creds"
+    printf 'https://spinclass:%s@%s\n' "$token" "{{git_host}}" > "$creds"
+    url="https://{{git_host}}/{{private_repo}}.git"
+    # Without this git blocks forever prompting for a username when auth is refused,
+    # which is the EXPECTED path for the control probe below.
+    export GIT_TERMINAL_PROMPT=0
+    # Control first: without the credential this MUST fail, or the test proves nothing.
+    if git -c credential.helper= ls-remote "$url" >/dev/null 2>&1; then
+        echo "INCONCLUSIVE: {{private_repo}} reads anonymously on {{git_host}} — pick a private repo" >&2
+        exit 1
+    fi
+    if git -c credential.helper="store --file=$creds" ls-remote "$url" >/dev/null; then
+        echo "OK: a token minted on {{api_host}} authenticates for git on {{git_host}}"
+    else
+        echo "FAIL: the token is NOT accepted for git on {{git_host}} — spinclass must rewrite pushes to {{api_host}}" >&2
+        exit 1
+    fi
 
 # Live check of the TTL backstop (FDR-0016): the forge has no native token expiry, so
 # a session that crashes without revoking is only cleaned up by `sweep` reading the
