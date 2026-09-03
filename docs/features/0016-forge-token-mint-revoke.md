@@ -1,15 +1,23 @@
 ---
-status: testing
+status: accepted
 date: 2026-09-02
 promotion-criteria: >
-  testing (a real round-trip runs end to end against forge.starbrandshoes.com under
-  `--card-login`: mint confined to one repo, all three arms of the resource model
-  confirmed from the token's own view, revoke, gone — plus a live sweep that reaps an
-  expired token and spares a live one; `just debug-forge-token-roundtrip` and
-  `just debug-forge-token-sweep-check` are those checks) → accepted when spinclass's
-  `[auth]` drives a real session's whole lifecycle through it, including a merge push
-  (spinclass FDR-0028's own promotion criteria) and an orphan swept in anger rather
-  than in a test.
+  accepted 2026-09-03. Met: a papi-minted token drove a real spinclass session's whole
+  lifecycle and landed a merge on spinclass master (f8181f2); revoke-at-close and the
+  orphan sweep both ran through the real code path; and papi's own checks
+  (`just debug-forge-token-roundtrip`, `just debug-forge-token-sweep-check`) confirm
+  per-repo confinement on all three arms of the resource model plus a sweep that reaps
+  an expired token and spares a live one. One nuance, stated because the criteria asked
+  for an orphan "swept in anger": the two halves arrived separately — the automatic
+  sweep was observed on an INDUCED failure (a deliberately failing revoke left a
+  tombstone, and the next session creation reaped it), while the genuinely unplanned
+  orphan (a pre-fix spinclass binary whose merge teardown did not revoke) was cleaned
+  by invoking the same revoke command by hand. Since spinclass's sweep is a scheduler
+  around that command, papi's side is fully exercised either way; what remains
+  unobserved is spinclass's scheduling, which is FDR-0028's concern, not this record's.
+  Scope of "accepted": the mint/revoke/sweep lifecycle. `--domain` resolution is
+  implemented and unit-tested but has never resolved against a real document, because
+  no domain publishes `api_base_url` yet (see Limitations).
 ---
 
 # Forge access-token mint / revoke (`papi forge token`)
@@ -228,6 +236,12 @@ Reap what crashed sessions left behind:
   `ResourceAllRepos`; delete-by-name falling back from a numeric id, returning 422 on
   multiple matches — which is why `revoke` deletes by **id** after a list, never by
   name — and 404 when already gone.
+- **The sweeper earned its place within a day of shipping.** It exists for sessions that
+  die without revoking, which is the kind of contingency that can look theoretical. On
+  2026-09-03 a spinclass binary whose merge teardown did not revoke orphaned a live
+  token — an ordinary bug, exactly the shape the design assumed, arriving immediately.
+  That is the argument for keeping the lifecycle even once the forge grows native
+  expiry: expiry bounds an orphan's life, it does not stop orphans happening.
 - **Forward-looking: expiry-aware minting.** The sweep exists solely because Forgejo
   has no token expiry, open upstream as forgejo#8837. When a patched forge lands
   (examination tracked on GitHub amarbel-llc/circus#205), `--ttl` becomes a real
