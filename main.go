@@ -314,9 +314,47 @@ type forgeTokenFlags struct {
 	// verifier's login flow with the card, so no forge secret is stored at all.
 	cardLogin  bool
 	authDomain string
+	signerFlags
+}
+
+// signerFlags is the slot-9A signing triple — --signer, --sign-guid, --pin — shared
+// by the two flag structs that spell the card selector `--sign-guid`: authFlags and
+// forgeTokenFlags (papi#79).
+//
+// It covers only those two. The three standalone signing commands (pigpen sign,
+// sign-challenge, sign-challenge-serve) spell the selector plain `--guid`, because
+// they have no command-level --guid to collide with, and sign-challenge-serve also
+// threads a real --agent-socket. Forcing all five through one registrar would mean
+// parameterising the flag NAME — a breaking CLI change dressed as a tidy-up — so the
+// extraction deliberately stops where the sites genuinely agree.
+type signerFlags struct {
 	signerMode string
 	signGUID   string
 	pin        string
+}
+
+// register adds the triple. purpose names the flag whose signing these serve, which
+// is the only wording that legitimately differs between the two sites; persistent
+// selects the flag set, since `forge token` registers persistently so its subcommands
+// inherit them while authFlags' commands do not.
+func (s *signerFlags) register(cmd *cobra.Command, purpose string, persistent bool) {
+	fs := cmd.Flags()
+	if persistent {
+		fs = cmd.PersistentFlags()
+	}
+	fs.StringVar(&s.signerMode, "signer", "auto",
+		"slot-9A signer for "+purpose+": auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
+	fs.StringVar(&s.signGUID, "sign-guid", "",
+		"GUID of the slot-9A card to sign the challenge with (default: the sole provisioned card)")
+	fs.StringVar(&s.pin, "pin", "",
+		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P)")
+}
+
+// signer builds the slot-9A signer these flags describe, returning it with the guid
+// it resolved to. Behind the signChallengeSignerFn seam so CLI tests can inject a
+// fake card.
+func (s *signerFlags) signer(ctx context.Context) (signchallenge.Signer, string, error) {
+	return signChallengeSignerFn(ctx, s.signerMode, s.signGUID, s.pin, "")
 }
 
 func (f *forgeTokenFlags) register(cmd *cobra.Command) {
@@ -334,12 +372,7 @@ func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 		"authenticate by signing the papi verifier's login challenge with the card, instead of storing a forge secret (§5)")
 	cmd.PersistentFlags().StringVar(&f.authDomain, "auth-domain", "",
 		"host the verifier binds §5.2 signatures to (default: --host); must match its external URL byte-exactly")
-	cmd.PersistentFlags().StringVar(&f.signerMode, "signer", "auto",
-		"slot-9A signer for --card-login: auto, agent, or pcsc")
-	cmd.PersistentFlags().StringVar(&f.signGUID, "sign-guid", "",
-		"GUID of the card to sign the login challenge with (default: the sole provisioned card)")
-	cmd.PersistentFlags().StringVar(&f.pin, "pin", "",
-		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P)")
+	f.signerFlags.register(cmd, "--card-login", true)
 	cmd.PersistentFlags().StringVar(&f.passwordCmd, "password-command", "",
 		"shell command printing the account password on stdout (e.g. `piggy pass show forge/...`) — required to mint or revoke")
 	cmd.PersistentFlags().StringVar(&f.otpCmd, "otp-command", "",
@@ -358,7 +391,7 @@ func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error
 	var cred forgetoken.Credential
 	switch {
 	case f.cardLogin:
-		signer, guid, err := signChallengeSignerFn(ctx, f.signerMode, f.signGUID, f.pin, "")
+		signer, guid, err := f.signerFlags.signer(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -426,7 +459,7 @@ func (f *forgeTokenFlags) apiBase(ctx context.Context) (string, error) {
 
 	opts := inspect.Options{AuthKeyID: f.authKeyID}
 	if f.authKeyID != "" {
-		signer, guid, err := signChallengeSignerFn(ctx, f.signerMode, f.signGUID, f.pin, "")
+		signer, guid, err := f.signerFlags.signer(ctx)
 		if err != nil {
 			return "", err
 		}
@@ -1985,10 +2018,8 @@ var pigpenSignSignerFn = signChallengeSigner
 // target server accepts.
 type authFlags struct {
 	// sign-challenge (piggy-sign-challenge)
-	authKeyID  string
-	signerMode string
-	signGUID   string
-	pin        string
+	authKeyID string
+	signerFlags
 	// decrypt-challenge (piggy-challenge-response, legacy)
 	recipient  string
 	decryptCmd string
@@ -2000,12 +2031,7 @@ type authFlags struct {
 func (a *authFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&a.authKeyID, "auth-key-id", "",
 		"slot-9A auth key id to authenticate as; runs the RECOMMENDED §5.2 sign-challenge handshake to fetch the full scoped projection")
-	cmd.Flags().StringVar(&a.signerMode, "signer", "auto",
-		"slot-9A signer for --auth-key-id: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
-	cmd.Flags().StringVar(&a.signGUID, "sign-guid", "",
-		"GUID of the slot-9A card to sign the challenge with (default: the sole provisioned card)")
-	cmd.Flags().StringVar(&a.pin, "pin", "",
-		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P)")
+	a.signerFlags.register(cmd, "--auth-key-id", false)
 	cmd.Flags().StringVar(&a.recipient, "recipient", "",
 		"slot-9D recipient id for the OPTIONAL, legacy decrypt-challenge scheme (servers advertising piggy-challenge-response)")
 	cmd.Flags().StringVar(&a.decryptCmd, "decrypt-cmd", "",
@@ -2025,7 +2051,7 @@ func (a *authFlags) options(ctx context.Context) (inspect.Options, error) {
 		DecryptCmd: a.decryptCmd,
 	}
 	if a.authKeyID != "" {
-		signer, guid, err := signChallengeSignerFn(ctx, a.signerMode, a.signGUID, a.pin, "")
+		signer, guid, err := a.signerFlags.signer(ctx)
 		if err != nil {
 			return inspect.Options{}, err
 		}

@@ -47,7 +47,7 @@ The practical consequence is that *a sealed forge API token cannot drive this fe
 
 Two byte-exact details decide whether this works: the signature is bound to the verifier's *own* external host, not necessarily the host being called (see *--auth-domain*), and papi sends *no* Authorization header on the API request, because the forge vhost deliberately routes header-authenticated requests away from the header-asserting location.
 
-*--password-command* (the stored-secret path) supplies an account password by running a shell command, canonically a *piggy*(1) read, so the secret never appears in argv or in any process environment. It works with no proxy configuration, but a standing account password read unattended is a larger blast radius than a scoped token, and it is not presence-bound. An account with WebAuthn keys enrolled cannot use basic auth at all; an account with TOTP needs *--otp-command*.
+*--password-command* (the stored-secret path) supplies an account password by running a shell command, canonically a *piggy*(1) read, so the secret never appears in argv or in any process environment. Its output is read as the *first line*, with only the line ending removed — the same rule *papi validate --decrypt-cmd* applies, so one wrapper script can serve both. Surrounding whitespace is preserved deliberately: a secret may carry it, and trimming would corrupt it silently. It works with no proxy configuration, but a standing account password read unattended is a larger blast radius than a scoped token, and it is not presence-bound. An account with WebAuthn keys enrolled cannot use basic auth at all; an account with TOTP needs *--otp-command*.
 
 *--token-command* reaches only *list*.
 

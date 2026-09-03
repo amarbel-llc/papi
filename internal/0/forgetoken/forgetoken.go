@@ -105,10 +105,19 @@ func (c TokenCredential) apply(r *http.Request) {
 
 func (c TokenCredential) canMint() bool { return false }
 
-// SecretFromCommand runs a shell command and returns its first output line with
-// surrounding space trimmed — the papi convention for keeping a secret out of argv
-// and the environment (cf. `papi validate --decrypt-cmd`). The canonical value is
-// a piggy read, e.g. `piggy pass show forge/krone-password`.
+// SecretFromCommand runs a shell command and returns its FIRST output line with only
+// the line ending removed — the papi convention for keeping a secret out of argv and
+// the environment. The canonical value is a piggy read, e.g.
+// `piggy pass show forge/krone-password`.
+//
+// Those two rules are deliberate and shared with inspect.runDecrypt, the §5
+// --decrypt-cmd runner, which reads its output identically (papi#78). Taking the
+// first line respects the pass-store convention of a secret on line one with notes
+// below. Stripping ONLY the line ending — not surrounding space — is what stops a
+// secret with significant leading or trailing whitespace being silently corrupted,
+// which an earlier TrimSpace here did. A first line that is empty is an error; one
+// that is entirely spaces is not, because that is a secret this function has no
+// business second-guessing.
 func SecretFromCommand(ctx context.Context, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", command)
 	out, err := cmd.Output()
@@ -120,7 +129,7 @@ func SecretFromCommand(ctx context.Context, command string) (string, error) {
 		return "", fmt.Errorf("secret command %q: %w", command, err)
 	}
 	line, _, _ := strings.Cut(string(out), "\n")
-	line = strings.TrimSpace(line)
+	line = strings.TrimSuffix(line, "\r")
 	if line == "" {
 		return "", fmt.Errorf("secret command %q produced no output", command)
 	}

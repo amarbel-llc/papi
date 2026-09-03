@@ -58,7 +58,14 @@ Minting and revoking need `--card-login` or `--password-command`; `--token-comma
 reaches only `list` (see Limitations). Secrets arrive as **shell commands**, never as
 flag values or environment variables, so nothing lands in argv (world-readable in
 `/proc`) or in a child's environment. The canonical value is a piggy read. This
-follows `papi validate --decrypt-cmd`.
+follows `papi validate --decrypt-cmd`, and since 2026-09-03 it follows it exactly:
+both read the command's **first line**, with only the line ending removed (papi#78).
+Taking the first line respects the pass-store convention of a secret on line one with
+notes below; stripping only the line ending — never surrounding space — stops a secret
+that legitimately carries whitespace being silently corrupted, which an earlier
+`TrimSpace` here did. The two runners stay separate functions because `--decrypt-cmd`
+must be piped its ebox on stdin and this one must not; mirrored tests in both packages
+hold them to the same reading.
 
 **`--card-login` is the presence-bound credential and stores no forge secret at
 all.** papi drives the FDR-0014 forward-auth verifier's login flow headlessly:

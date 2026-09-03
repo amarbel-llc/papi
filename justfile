@@ -515,6 +515,23 @@ debug-forge-swagger filter="." host="forge.starbrandshoes.com":
     # page, auth redirect) is inspectable instead of vanishing down the pipe.
     jq '{{filter}}' "$spec" || { echo "--- first 400 bytes of $spec ---" >&2; head -c 400 "$spec" >&2; echo >&2; exit 1; }
 
+# Explore: how many lines does a piggy entry actually print? Reports the COUNT and the
+# byte length of the first line only — never the content — so a secret is never echoed.
+# Settles whether papi's shell-secret runners can safely take all of stdout or must
+# take only the first line (papi#78): eng's own scripts pipe `piggy pass show` through
+# `head -1`, which hints at multi-line output but is not evidence of it.
+#
+# count the lines a piggy entry prints, without revealing it
+[group("debug")]
+debug-piggy-entry-shape entry:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    out="$(piggy pass show "{{entry}}" </dev/null)"
+    printf 'lines: %s\n' "$(printf '%s\n' "$out" | wc -l)"
+    printf 'first-line bytes: %s\n' "$(printf '%s' "$out" | head -1 | wc -c)"
+    printf 'trailing whitespace on first line: %s\n' \
+        "$(printf '%s' "$out" | head -1 | grep -qE '[[:space:]]$' && echo yes || echo no)"
+
 # Explore: probe an arbitrary path on a forge host, anonymously, reporting only the
 # status and a short body prefix. Answers "which plane serves what" questions — the
 # vanity/read plane and the API/auth vhost are different nginx server blocks, and a

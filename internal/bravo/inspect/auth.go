@@ -329,6 +329,16 @@ func scopedPoints(resp *papi.Response) []point {
 // runDecrypt pipes eboxB64 to the operator's decrypt command (sh -c cmd) and
 // returns the recovered nonce. The command is the card boundary — e.g. a wrapper
 // around `pivy-box stream decrypt` against the slot-9D key.
+//
+// It reads the command's output the same way forgetoken.SecretFromCommand does, and
+// that agreement is the point (papi#78): both flags take a shell command producing a
+// secret, an operator may reasonably point one wrapper script at both, and until
+// 2026-09-03 the two disagreed about multi-line output and surrounding whitespace
+// with nothing saying so. The shared rules are FIRST LINE ONLY, with only the line
+// ending removed — never surrounding space, which would corrupt a secret that
+// legitimately carries it. The two are separate functions because this one must pipe
+// stdin and that one must not; the mirrored tests in both packages hold them to the
+// same behaviour.
 func runDecrypt(ctx context.Context, cmd, eboxB64 string) (string, error) {
 	c := exec.CommandContext(ctx, "sh", "-c", cmd)
 	c.Stdin = strings.NewReader(eboxB64)
@@ -338,7 +348,8 @@ func runDecrypt(ctx context.Context, cmd, eboxB64 string) (string, error) {
 	if err := c.Run(); err != nil {
 		return "", fmt.Errorf("%w: %s", err, strings.TrimSpace(errBuf.String()))
 	}
-	nonce := strings.TrimRight(out.String(), "\r\n")
+	nonce, _, _ := strings.Cut(out.String(), "\n")
+	nonce = strings.TrimSuffix(nonce, "\r")
 	if nonce == "" {
 		return "", fmt.Errorf("decrypt command produced no nonce")
 	}

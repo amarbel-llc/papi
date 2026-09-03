@@ -6,30 +6,31 @@ import (
 	"testing"
 )
 
-// The mirror of internal/bravo/inspect's TestRunDecryptCharacterization, on the
-// SAME inputs. papi#78 proposes unifying these two shell-secret runners; read the
-// two files side by side to see exactly what "unifying" would have to decide.
+// The mirror of internal/bravo/inspect's TestRunDecryptOutputRules, on identical
+// inputs. Both flags take a shell command that prints a secret, and papi#78 was that
+// they read its output differently with nothing saying so — so an operator could
+// point one wrapper script at --password-command and --decrypt-cmd and get two
+// different secrets.
 //
-// The operator-visible consequence: one wrapper script handed to both
-// --password-command (this runner) and --decrypt-cmd (the other) does not
-// necessarily yield the same secret, and neither flag's help says so.
+// The shared rule is FIRST LINE ONLY, with only the line ending removed. The
+// duplication here is deliberate: a change to either runner fails the other's test,
+// which is the cheapest thing that keeps them honest without moving code across a
+// package tier. They stay separate functions because runDecrypt must pipe stdin and
+// this one must not.
 //
-// Characterization, not specification — these assert today's behaviour so the
-// consolidation is a visible decision rather than an accident.
-func TestSecretFromCommandCharacterization(t *testing.T) {
+// If you change either, change both, and expect the mirror to fail first.
+func TestSecretFromCommandOutputRules(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("no stdin is provided to the command", func(t *testing.T) {
-		// DIVERGES: runDecrypt pipes its ebox in, so `cat` echoes it back there.
-		// Here `cat` sees the inherited stdin, which under `go test` is empty, so
-		// the command produces nothing and that is an error.
+		// The one deliberate difference from runDecrypt: nothing is piped in, so a
+		// command that reads stdin gets nothing and produces nothing.
 		if _, err := SecretFromCommand(ctx, "cat </dev/null"); err == nil {
 			t.Fatal("a command given no input and printing nothing must error")
 		}
 	})
 
-	t.Run("multi-line output keeps only the first line", func(t *testing.T) {
-		// DIVERGES: runDecrypt returns "a\nb".
+	t.Run("first line only", func(t *testing.T) {
 		got, err := SecretFromCommand(ctx, `printf 'a\nb\n'`)
 		if err != nil {
 			t.Fatal(err)
@@ -49,32 +50,35 @@ func TestSecretFromCommandCharacterization(t *testing.T) {
 		}
 	})
 
-	t.Run("trailing spaces are STRIPPED", func(t *testing.T) {
-		// DIVERGES: runDecrypt preserves them.
-		got, err := SecretFromCommand(ctx, `printf 'x   \n'`)
+	t.Run("a CRLF line ending is stripped", func(t *testing.T) {
+		got, err := SecretFromCommand(ctx, `printf 'x\r\n'`)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got != "x" {
-			t.Fatalf("got %q, want the trailing spaces trimmed", got)
+			t.Fatalf("got %q, want the CR removed with the LF", got)
 		}
 	})
 
-	t.Run("leading whitespace is STRIPPED", func(t *testing.T) {
-		// DIVERGES: runDecrypt preserves it.
-		got, err := SecretFromCommand(ctx, `printf '  x\n'`)
+	t.Run("surrounding spaces are KEPT", func(t *testing.T) {
+		// This is the behaviour change papi#78 bought: an earlier TrimSpace here
+		// silently corrupted any secret carrying leading or trailing whitespace.
+		got, err := SecretFromCommand(ctx, `printf '  x   \n'`)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got != "x" {
-			t.Fatalf("got %q, want the leading spaces trimmed", got)
+		if got != "  x   " {
+			t.Fatalf("got %q, want the surrounding spaces preserved", got)
 		}
 	})
 
-	t.Run("whitespace-only output IS an error", func(t *testing.T) {
-		// DIVERGES, sharpest case: runDecrypt returns "   " successfully.
-		if _, err := SecretFromCommand(ctx, `printf '   \n'`); err == nil {
-			t.Fatal("whitespace-only output must error here")
+	t.Run("whitespace-only output is not an error", func(t *testing.T) {
+		got, err := SecretFromCommand(ctx, `printf '   \n'`)
+		if err != nil {
+			t.Fatalf("whitespace-only output should succeed, got %v", err)
+		}
+		if got != "   " {
+			t.Fatalf("got %q, want three spaces", got)
 		}
 	})
 
