@@ -107,6 +107,22 @@ A forge entry SHOULD carry `id`, `kind`, `base_url`, `identity`,
 `identity_type`, and `repos[]`. The server MAY include additional fields; clients
 MUST ignore members they do not recognize.
 
+A forge entry MAY carry an OPTIONAL `api_base_url` member — the base URL of the
+forge's **management API**, when it differs from `base_url`. A forge is commonly
+published on more than one plane: `base_url` names the plane a reader browses and
+clones from, which on a vanity or read-only plane may serve git alone. A consumer
+that must *call the forge's API* (rather than read this document's projection of it)
+has no way to discover the other plane, and today re-derives it out of band.
+
+When `api_base_url` is absent a consumer MUST assume the API, if any, is served at
+`base_url` — so the member is needed only by split deployments and changes nothing
+for single-plane forges. A server MAY expose it only on the §5-gated projection when
+the API plane is network-restricted and its hostname should not be advertised
+anonymously; a consumer therefore SHOULD read it from whichever projection it can
+see, and MUST NOT treat its absence from the anonymous projection as proof that no
+API plane exists. This member names a plane only; it grants nothing, and reaching it
+may still require credentials, a private network, or both.
+
 A forge entry MAY carry an OPTIONAL `canary` member — the `<owner>/<name>` of a
 repository the forge publishes with `visibility:"private"`. It is exposed on the
 (public) forge entry so a consumer can assert, **without credentials**, that the
@@ -1857,3 +1873,17 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   `papi repos` JSON output passes the field through (`omitempty`) so consumers
   such as doppelgang can use it verbatim. Additive and OPTIONAL — no version
   bump. papi#56.
+- **2026-09-03, Amendment 25 — Forge `api_base_url` member (§1.1).** Added the
+  OPTIONAL string member `api_base_url` to a forge entry: the base URL of the
+  forge's management API when it differs from `base_url`. Motivated by split
+  deployments, where the plane a reader clones from serves git alone and the API
+  lives on a separate (often network-restricted) vhost — a consumer that must call
+  the API cannot discover that from `base_url` and has to be told out of band.
+  Absent the member, a consumer MUST assume the API is at `base_url`, so
+  single-plane forges are unaffected. A server MAY publish it only on the §5-gated
+  projection when the API plane's hostname should not be advertised anonymously;
+  consumers SHOULD therefore read it from whichever projection they can see and MUST
+  NOT read its anonymous absence as proof no API plane exists. The member names a
+  plane and grants nothing. The consuming side is `papi forge token --domain`, which
+  resolves the mint/revoke endpoint from the document instead of taking a hardcoded
+  host (papi#73, FDR-0016). Additive and OPTIONAL — no version bump.

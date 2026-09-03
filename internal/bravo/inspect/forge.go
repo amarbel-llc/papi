@@ -22,6 +22,10 @@ type forgeEntry struct {
 	BaseURL  string `json:"base_url"`
 	SSHClone string `json:"ssh_clone"`
 	Canary   string `json:"canary"`
+	// APIBaseURL is the OPTIONAL §1.1 api_base_url (Amendment 25): where the
+	// forge's management API lives when that is not base_url. Absent means the
+	// API, if any, is at base_url.
+	APIBaseURL string `json:"api_base_url"`
 }
 
 func decodeForgeEntries(body []byte) ([]forgeEntry, error) {

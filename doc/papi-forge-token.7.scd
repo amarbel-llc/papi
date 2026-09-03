@@ -59,6 +59,12 @@ A forge is commonly published on more than one plane: a public vanity plane that
 
 This is safe to get right once and forget: a token minted against the API host authenticates for git against the vanity host, since both planes front the same forge. So a session manager keeps writing its credential for whatever host the remote names, and only the mint and revoke calls need the API host.
 
+*--domain* resolves that host from the domain's own forge model instead of naming it: papi reads _/papi/forges_ and takes the *api_base_url* a forge entry declares (RFC-0001 1.1, Amendment 25). This is what stops each consumer re-deriving forge topology out of band — the document already models the forge, so it is the place that should know where its API is.
+
+A forge that publishes no *api_base_url* is an error naming the forges papi did see, rather than a silent fall back to *base_url*: on the split deployment this exists for, that would aim mint and revoke at a plane serving git alone. Where several entries declare one, name the entry with *--forge*.
+
+Because the API plane is frequently network-restricted, a server MAY publish *api_base_url* only on the 5-gated projection. papi tries anonymously first, so the common case costs no card operation, and retries authenticated only when the member was absent and *--auth-key-id* was supplied.
+
 # DEADLINES WITHOUT FORGE SUPPORT
 
 Forgejo tokens have *no native expiry*. "Ephemeral" is therefore not a property the forge maintains — it is a lifecycle the issuer owns: mint, revoke, and sweep whatever was never revoked because a session crashed.

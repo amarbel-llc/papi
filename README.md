@@ -332,6 +332,13 @@ records a deadline in the token's *name* — papi keeps no state — and `sweep`
 it for sessions that crashed without revoking. `revoke` on a session with no tokens
 succeeds, so a caller that retries a failed revoke terminates.
 
+`--host` names the host serving the forge **API**, which on a split deployment is not
+the host in your git remote (a vanity plane may serve git alone). `--domain` resolves
+it from that domain's own forge model instead — the `api_base_url` a forge entry
+declares (RFC-0001 §1.1, Amendment 25) — so a consumer stops re-deriving forge
+topology out of band; add `--forge <id>` when several entries declare one, and
+`--auth-key-id` if the member is published only on the §5-gated projection.
+
 Minting and revoking need `--card-login` or `--password-command`: Forgejo gates both
 routes behind password basic-auth or a trusted reverse proxy and **refuses an access
 token however broadly scoped**, so a sealed API token can drive `list` but neither

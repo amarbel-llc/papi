@@ -35,7 +35,10 @@ non-expiring, all-repos token per run (circus#193).
 
 `papi forge token <mint|revoke|list|sweep>`, sharing connection and credential flags:
 
-    --host <forge-hostname>
+    --host <forge-hostname>   # name the forge API host directly
+    --domain <papi-domain>    # or resolve it from the domain's forge model (§1.1 api_base_url)
+    --forge <id>              # which forge entry, when several declare an API base
+    --auth-key-id <id>        # §5 handshake, if api_base_url is published only on the gated projection
     --user <forge-account>
     --card-login              # sign the papi verifier's login challenge with the card (no stored secret)
     --auth-domain <host>      # host the verifier binds §5.2 signatures to (default: --host)
@@ -164,6 +167,13 @@ Reap what crashed sessions left behind:
   session cookie the API then ignores, and the mint fails with a 401 rather than anything
   that names the missing config. `--password-command` needs no forge configuration and is
   the fallback.
+- **`--domain` resolution needs a member nobody publishes yet.** `linenisgreat.com`
+  declares no `api_base_url` on any forge entry — verified against both the anonymous
+  and the §5-gated projection — so `--domain` currently fails (with an error naming the
+  forges it saw and what to publish) and `--host` remains the working path. The papi
+  side is done and tested; what is outstanding is a data change in whatever renders
+  that domain's papi.json, which is not this repo. Until then the resolver is
+  implemented-but-unused, which is why FDR-0016 stays at `testing`.
 - **`--host` is the API host, which is not the git host on a split deployment.** The
   fleet publishes its forge on two planes: a public vanity plane serving *git only* at
   owner-less paths (`code.linenisgreat.com`), and a tailnet vhost carrying `/api/v1`

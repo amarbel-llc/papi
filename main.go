@@ -301,7 +301,11 @@ func newForgeCmd() *cobra.Command {
 // child process's environment. The canonical value is a piggy read — the eng
 // password store is where the fleet's forge credentials already live.
 type forgeTokenFlags struct {
-	host        string
+	host string
+	// domain resolves host from the PAPI forge model instead of naming it.
+	domain      string
+	forgeID     string
+	authKeyID   string
 	user        string
 	passwordCmd string
 	otpCmd      string
@@ -318,6 +322,12 @@ type forgeTokenFlags struct {
 func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&f.host, "host", "",
 		"hostname serving the forge API (and, for --card-login, the papi verifier) — NOT necessarily the host in your git remote, since a vanity plane may serve git only")
+	cmd.PersistentFlags().StringVar(&f.domain, "domain", "",
+		"PAPI domain to resolve the forge API host from (§1.1 api_base_url), instead of naming it with --host")
+	cmd.PersistentFlags().StringVar(&f.forgeID, "forge", "",
+		"forge entry id to resolve against, when --domain's document declares more than one API base")
+	cmd.PersistentFlags().StringVar(&f.authKeyID, "auth-key-id", "",
+		"slot-9A auth key id for the §5 handshake, if --domain's api_base_url is published only on the gated projection")
 	cmd.PersistentFlags().StringVar(&f.user, "user", "",
 		"forge account whose tokens are managed")
 	cmd.PersistentFlags().BoolVar(&f.cardLogin, "card-login", false,
@@ -341,6 +351,10 @@ func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 // client builds the forge client. Card login wins when several credentials are
 // supplied, then a password; a token is last because it drives only the read paths.
 func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error) {
+	base, err := f.apiBase(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var cred forgetoken.Credential
 	switch {
 	case f.cardLogin:
@@ -350,11 +364,15 @@ func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error
 		}
 		domain := f.authDomain
 		if domain == "" {
-			domain = f.host
+			// The §5.2 preimage binds a bare host, so strip the scheme a
+			// resolved api_base_url carries.
+			if domain, err = papi.NormalizeBaseHost(base); err != nil {
+				return nil, err
+			}
 		}
 		// The cookie name comes from the verifier's own constant rather than a
 		// copy, so the two halves of this flow cannot drift apart silently.
-		cred, err = forgetoken.CardLogin(ctx, f.host, domain, authproxy.DefaultCookieName,
+		cred, err = forgetoken.CardLogin(ctx, base, domain, authproxy.DefaultCookieName,
 			func(ctx context.Context, domain, nonce string) (string, error) {
 				resp, err := signchallenge.Sign(ctx, signer, guid, domain,
 					signchallenge.Challenge{ChallengeID: "forge-token-login", Nonce: nonce})
@@ -390,7 +408,40 @@ func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error
 		return nil, errors.New("no credential: pass --card-login or --password-command (mint/revoke), " +
 			"or --token-command (read-only)")
 	}
-	return forgetoken.NewClient(f.host, f.user, cred)
+	return forgetoken.NewClient(base, f.user, cred)
+}
+
+// apiBase yields the forge API base URL: --host names it directly, --domain resolves
+// it from the domain's own forge model (§1.1 api_base_url, Amendment 25) so a caller
+// need not hardcode a host it cannot derive from its git remote.
+func (f *forgeTokenFlags) apiBase(ctx context.Context) (string, error) {
+	switch {
+	case f.host != "" && f.domain != "":
+		return "", errors.New("--host and --domain both name the forge API; pass one")
+	case f.host != "":
+		return f.host, nil
+	case f.domain == "":
+		return "", errors.New("no forge API endpoint: pass --host to name it, or --domain to resolve it")
+	}
+
+	opts := inspect.Options{AuthKeyID: f.authKeyID}
+	if f.authKeyID != "" {
+		signer, guid, err := signChallengeSignerFn(ctx, f.signerMode, f.signGUID, f.pin, "")
+		if err != nil {
+			return "", err
+		}
+		opts.Signer, opts.SignGUID = signer, guid
+	}
+	base, err := inspect.ResolveForgeAPIBase(ctx, f.domain, f.forgeID, opts)
+	if err != nil {
+		if errors.Is(err, inspect.ErrNoForgeAPIBase) {
+			return "", fmt.Errorf("%w\n\n%s publishes no api_base_url on any forge entry, so papi cannot "+
+				"tell where its API lives. Either publish that member (RFC-0001 §1.1, Amendment 25) — adding "+
+				"it to the §5-gated projection alone is enough, with --auth-key-id here — or pass --host", err, f.domain)
+		}
+		return "", err
+	}
+	return base, nil
 }
 
 // authHint adds the actionable half to a bare 401 from the forge. A credential kind
