@@ -77,7 +77,12 @@ header-authenticated requests away from the header-asserting location.
   owner-less on the fleet's vanity remotes (`git@host:<name>.git`). An ambiguous name
   is an error naming the candidates, never a guess.
 - **`revoke --session <id>`** deletes every token minted for that session. Revoking a
-  session with no tokens **succeeds**.
+  session with no tokens **succeeds**. **`revoke --id <n>`** instead deletes exactly one
+  token by numeric id, and is the only way to reach a token papi did not mint — `--session`
+  and `sweep` match on papi's naming and structurally cannot see foreign tokens. Bypassing
+  that guard is safe here because the operator names one token explicitly, with no pattern
+  matching: it is the absence of pattern matching, not the absence of reach, that the
+  mass-revocation below argues for. The two selectors are mutually exclusive.
 - **`list [--session <id>] [--all]`** is the inventory, with the session and deadline
   decoded from each name. The one read-only path, so it works with `--token-command`.
 - **`sweep`** revokes every papi-minted token whose deadline has passed.

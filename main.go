@@ -544,21 +544,35 @@ func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
 }
 
 func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {
-	var session string
+	var (
+		session string
+		id      int64
+	)
 	cmd := &cobra.Command{
 		Use:   "revoke",
-		Short: "Revoke every token minted for a session",
+		Short: "Revoke every token minted for a session, or one token by id",
 		Long: "Revoke the tokens `mint` created for --session. Revoking a session that has no tokens " +
 			"succeeds silently rather than failing: a caller that retries a failed revoke — as a session " +
-			"manager's orphan sweep does — would otherwise retry forever once the token is gone.",
+			"manager's orphan sweep does — would otherwise retry forever once the token is gone.\n\n" +
+			"--id revokes ONE token by its numeric id, including a token papi did not mint — the only " +
+			"way to reach one, since --session and `sweep` match on papi's own naming and deliberately " +
+			"cannot see foreign tokens. That guard exists because a sweep once revoked thousands of " +
+			"unrelated tokens; it is safe to bypass here only because the caller names a single token " +
+			"explicitly, one id at a time, with no pattern matching involved. Use `list --all` to find ids.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if session == "" {
-				return errors.New("--session is required")
+			switch {
+			case session == "" && id == 0:
+				return errors.New("--session or --id is required")
+			case session != "" && id != 0:
+				return errors.New("--session and --id are different revocations; pass one")
 			}
 			c, err := f.client(cmd.Context())
 			if err != nil {
 				return err
+			}
+			if id != 0 {
+				return revokeForgeTokenByID(cmd, c, id)
 			}
 			revoked, err := c.RevokeSession(cmd.Context(), session)
 			if err != nil {
@@ -575,7 +589,37 @@ func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&session, "session", "", "session identifier whose tokens to revoke")
+	cmd.Flags().Int64Var(&id, "id", 0,
+		"revoke exactly one token by numeric id, including one papi did not mint (see `list --all`)")
 	return cmd
+}
+
+// revokeForgeTokenByID revokes a single token and says which of the two outcomes
+// happened. It reads the account's tokens first because DeleteByID reports an
+// already-absent token as success — correct for the retrying callers it was built
+// for, but here the operator wants to know whether anything was actually there.
+func revokeForgeTokenByID(cmd *cobra.Command, c *forgetoken.Client, id int64) error {
+	tokens, err := c.List(cmd.Context())
+	if err != nil {
+		return err
+	}
+	var found *forgetoken.Token
+	for i := range tokens {
+		if tokens[i].ID == id {
+			found = &tokens[i]
+			break
+		}
+	}
+	if found == nil {
+		fmt.Fprintf(cmd.OutOrStdout(), "no token with id %d (already gone)\n", id)
+		return nil
+	}
+	if err := c.DeleteByID(cmd.Context(), id); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "revoked %q (id %d), scopes %s\n",
+		found.Name, found.ID, strings.Join(found.Scopes, ","))
+	return nil
 }
 
 func newForgeTokenListCmd(f *forgeTokenFlags) *cobra.Command {

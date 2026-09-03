@@ -73,6 +73,8 @@ papi keeps *no state of its own* for this. A token's deadline and the session it
 
 The name is _papi-forge-token-<session>-<deadline>_, with the session reversibly escaped so that two different sessions can never produce the same name, and the deadline as a Unix timestamp (_0_ meaning none). Only names in this exact form are ever considered, so a token papi did not mint is invisible to *revoke* and untouchable by *sweep*.
 
+The one way past that confinement is *revoke --id*, which takes a single numeric token id and will revoke a token papi did not mint. It is deliberately the narrow case: one token, named explicitly by the operator, with no pattern matching anywhere in it — which is precisely what the sweep lacked when it went wrong. Find ids with *list --all*.
+
 That scoping is enforced by the *escape alphabet*, not by the prefix alone. The escaping encodes _-_ as ___2D_, so a papi-minted session part never contains a literal hyphen; a name shaped like _<something>-<epoch>-<pid>_ — the shape a great many ad-hoc minting scripts produce — is therefore excluded structurally. This is not hypothetical: an earlier version keyed on the bare prefix _papi-_ and a single *sweep* revoked over five thousand unrelated tokens whose trailing PID happened to parse as a long-past deadline.
 
 When upstream token expiry lands (forgejo#8837), the same _--ttl_ becomes a real expiry field the forge enforces, and the sweep degrades to a belt-and-suspenders prune rather than the mechanism.
