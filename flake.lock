@@ -174,11 +174,11 @@
     "hyphence": {
       "flake": false,
       "locked": {
-        "lastModified": 1788704092,
-        "narHash": "sha256-Eq1YsZx8zo3Ke39tg6rxjOy4tw6zuscFRFgz7l912po=",
-        "rev": "c6d224e0fe1b039bd06986a9c5558f3c8671c2f5",
+        "lastModified": 1788737912,
+        "narHash": "sha256-Hslhbfsy1w1qLaXEnwFquaCwjfiA4RsnIVKdblfhJBA=",
+        "rev": "7b6b5594e2721890673c0901824a99ca23ca5db9",
         "type": "tarball",
-        "url": "https://code.linenisgreat.com/hyphence/archive/c6d224e0fe1b039bd06986a9c5558f3c8671c2f5.tar.gz"
+        "url": "https://code.linenisgreat.com/hyphence/archive/7b6b5594e2721890673c0901824a99ca23ca5db9.tar.gz"
       },
       "original": {
         "type": "tarball",
