@@ -73,6 +73,7 @@
     langlang.inputs.tap.inputs.purse-first.follows = "purse-first";
     langlang.inputs.tap.inputs.treefmt-nix.follows = "igloo/treefmt-nix";
     langlang.inputs.tap.inputs.gomod2nix.follows = "purse-first/gomod2nix";
+    langlang.inputs.conformist.follows = "conformist";
 
     # hyphence: source-only input (flake = false) providing the single source
     # of truth for the pigpen grammar — docs/rfcs/hyphence-content.peg. A
