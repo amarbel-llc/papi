@@ -765,7 +765,7 @@ func newForgeCheckCmd() *cobra.Command {
 	var forgeID string
 	cmd := &cobra.Command{
 		Use:   "check <domain>",
-		Short: "Reconcile a domain's declared forge/repo visibility against verified anonymous access",
+		Short: "Reconcile a domain's declared repo visibility against anonymous access",
 		Long: "Reconcile what <domain>'s PAPI DECLARES about forge/repo visibility against what is " +
 			"VERIFIED to be anonymously accessible (papi#48, FDR-0010), emitting an ndjson-crap stream " +
 			"(pipe to crap-present) and exiting non-zero on a MUST violation. The card-free floor reads " +
@@ -795,7 +795,7 @@ func newPiggyIDsCmd() *cobra.Command {
 	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "piggy-ids <domain>",
-		Short: "Print a domain's PAPI piggy-ids file (optionally only encryption recipients)",
+		Short: "Print a domain's PAPI piggy-ids file",
 		Long: "Fetch <domain>'s GET /papi/piggy-ids and print it verbatim — the piggy-ids " +
 			"file: comment lines, then slot-9D encryption recipients and slot-9A SSH auth " +
 			"ids. With --recipients-only, emit just the slot-9D encryption recipients " +
@@ -901,7 +901,7 @@ func newPigpenSignCmd() *cobra.Command {
 	var guid, pin, signerMode string
 	cmd := &cobra.Command{
 		Use:   "sign",
-		Short: "Self-sign an unsigned PAPI pigpen document with slot-9A, emitting the signed document",
+		Short: "Self-sign an unsigned PAPI pigpen document with slot-9A",
 		Long: "Read an unsigned (or not-yet-self-signed) hyphence /papi/pigpen document on stdin, " +
 			"sign its RFC-0001 §14.2 strip-self bytes with the caller's PIV slot-9A key (ECDSA " +
 			"P-256, via `piggy sign-bytes --slot 9a` — the card must be physically present; no " +
@@ -1156,7 +1156,7 @@ func newGHAuthCmd() *cobra.Command {
 	var hostname string
 	cmd := &cobra.Command{
 		Use:   "gh-auth",
-		Short: "Grant gh the GitHub scopes papi needs (admin:public_key + admin:ssh_signing_key)",
+		Short: "Grant gh the GitHub OAuth scopes papi needs",
 		Long: "Launch `gh auth refresh` to add the OAuth scopes papi's GitHub integration uses — " +
 			"admin:public_key (SSH authentication keys: `papi enroll` registration and `papi " +
 			"gh-check`) and admin:ssh_signing_key (SSH signing keys) — to your existing gh login. " +
@@ -1181,7 +1181,7 @@ func newSSHKeysCmd() *cobra.Command {
 	var af authFlags
 	cmd := &cobra.Command{
 		Use:   "ssh-keys <domain>",
-		Short: "Print a domain's PAPI ssh-authorized-keys (optionally one slot-9A key by guid)",
+		Short: "Print a domain's PAPI ssh-authorized-keys file",
 		Long: "Fetch <domain>'s GET /papi/ssh-authorized-keys and print it verbatim — one " +
 			"OpenSSH authorized_keys line per visible slot-9A key, each annotated with " +
 			"guid=<HEX> and cn=<name> (RFC-0001 §4.2). With --guid <HEX>, print only the " +
@@ -1241,7 +1241,7 @@ func newSSHSyncCmd() *cobra.Command {
 	var authorizedKeysPath, guid string
 	cmd := &cobra.Command{
 		Use:   "ssh-sync <domain>",
-		Short: "Sync a PAPI domain's slot-9A keys into a local managed authorized_keys file",
+		Short: "Sync a PAPI domain's slot-9A keys into a local authorized_keys file",
 		Long: "Fetch ALL of <domain>'s published slot-9A SSH keys (GET /papi/ssh-authorized-keys, " +
 			"via the §8.1 discovery-following client) and (re)write them into a LOCAL managed file " +
 			"IN FULL — unlike `ssh-copy-id`, which appends to a remote authorized_keys and never " +
@@ -1778,7 +1778,7 @@ func newSSHCopyIDCmd() *cobra.Command {
 	var useSFTP bool
 	cmd := &cobra.Command{
 		Use:   "ssh-copy-id <destination>",
-		Short: "Install a PAPI domain's enrolled slot-9A keys into an SSH destination's authorized_keys",
+		Short: "Install a PAPI domain's slot-9A keys into a host's authorized_keys",
 		Long: "Fetch ALL of --domain's published slot-9A SSH keys (GET /papi/ssh-authorized-keys, " +
 			"via the §8.1 discovery-following client) and install them into <destination>'s " +
 			"~/.ssh/authorized_keys — like ssh-copy-id(1), but sourcing the keys from PAPI " +
@@ -1862,7 +1862,7 @@ func newVerifiedRecipientsCmd() *cobra.Command {
 	var strict bool
 	cmd := &cobra.Command{
 		Use:   "verified-recipients <receipt-file>...",
-		Short: "Emit the slot-9D recipients of enrollment receipts that verify against a domain",
+		Short: "Emit the slot-9D recipients of receipts that verify against a domain",
 		Long: "Verify each papi-enroll-receipt-v1 against --domain (the same self_proof + " +
 			"attestation checks as verify-receipt) and print the slot-9D recipient id " +
 			"(recipient.id) of every receipt that passes, one per line — the verified " +
@@ -2722,8 +2722,8 @@ func newVerifyReceiptCmd() *cobra.Command {
 	var domain string
 	cmd := &cobra.Command{
 		Use:   "verify-receipt <receipt-file>",
-		Short: "Verify a papi-enroll-receipt-v1 against a domain's published keys (FDR-0001)",
-		Long: "Verify a card-enrollment receipt (papi-enroll-receipt-v1) emitted by " +
+		Short: "Verify a papi-enroll-receipt-v1 against a domain's published keys",
+		Long: "Verify a card-enrollment receipt (papi-enroll-receipt-v1, FDR-0001) emitted by " +
 			"`papi enroll`: its self_proof binds the new card's slot-9D recipient to its " +
 			"slot-9A key (a §9.3 papi-proof-sig-v1 over the claim), and its attestation is " +
 			"signed by a slot-9A key ALREADY published on --domain's /papi/piggy-ids (a " +
@@ -2827,7 +2827,7 @@ func newSignChallengeCmd() *cobra.Command {
 	var fromResponse bool
 	cmd := &cobra.Command{
 		Use:   "sign-challenge --domain <domain>",
-		Short: "Sign a §5.2 auth challenge with slot-9A, emitting the /papi/auth/response body",
+		Short: "Sign a PAPI auth challenge with slot-9A, emitting the response body",
 		Long: "Read a §5.2 challenge — the bare challenge payload {challenge_id, nonce, " +
 			"expires_at} — on stdin, build the §5.2 domain-separated preimage " +
 			"papi-auth-v1\\n<domain>\\n<nonce>, sign SHA-256(preimage) with the caller's PIV " +
@@ -2907,9 +2907,10 @@ func newSignChallengeServeCmd() *cobra.Command {
 	var allowCallbacks []string
 	cmd := &cobra.Command{
 		Use:   "sign-challenge-serve [--domain <d> --origin <o>] [--allow-callback <url>]",
-		Short: "Run a §5.2 card oracle: /sign + /login for a browser SPA, and/or /authorize for FDR-0014 forward-auth",
+		Short: "Run a slot-9A card oracle over HTTP for browser and forward-auth login",
 		Long: "Serve the §5.2 sign-challenge producing side over HTTP so a browser SPA can obtain " +
-			"a slot-9A signature it cannot produce itself (no PCSC in a page). Two routes:\n\n" +
+			"a slot-9A signature it cannot produce itself (no PCSC in a page): /sign + /login for " +
+			"a browser SPA, and/or /authorize for FDR-0014 forward-auth. Two routes:\n\n" +
 			"  /sign  — POST a /papi/auth/challenge response {challenge_id, nonce, expires_at}; " +
 			"get back the /papi/auth/response body {challenge_id, signature}. The caller runs the " +
 			"network handshake; this signs only (the backend/plugin seam).\n" +

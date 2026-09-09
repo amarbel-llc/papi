@@ -303,6 +303,39 @@ debug-man page="papi":
     [ -e "$page" ] || page=build/man/share/man/man7/{{page}}.7
     man "$page"
 
+# Explore: sweep every man page's NAME line as lexgrog/whatis extract it and
+# flag descriptions over the fleet's 72-character index budget (spinclass renders
+# them into a system-prompt index). With no argument renders the working tree into
+# build/man like debug-man; pass a store path (`nix build --print-out-paths .#papi`)
+# to sweep the pages a nix build actually ships. Exits non-zero on any offender.
+#
+# list every man page's NAME description with its length; fail on any > 72
+[group("debug")]
+debug-man-names manroot="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    root="{{manroot}}"
+    if [[ -z "$root" ]]; then
+      rm -rf build/man && mkdir -p build/man/share/man/man7
+      nix develop --command go run . generate-man build/man
+      for f in doc/*.7.scd; do
+        [ -e "$f" ] || continue
+        nix develop --command scdoc < "$f" > "build/man/share/man/man7/$(basename "$f" .scd)"
+      done
+      root=build/man
+    fi
+    rc=0
+    for page in "$root"/share/man/man*/*; do
+      line="$(lexgrog "$page" | head -1 | sed 's/^[^:]*: //')"
+      line="${line#\"}"; line="${line%\"}"
+      desc="${line#* - }"
+      len=${#desc}
+      flag=""
+      if (( len > 72 )); then flag="  <-- OVER"; rc=1; fi
+      printf '%3d  %s%s\n' "$len" "$line" "$flag"
+    done
+    exit $rc
+
 # Read a card's slot-9D age recipient (read-only, PIN-free) to validate the
 # age-plugin-piggy readback parser. Serves the papi#15 live-test prep.
 #

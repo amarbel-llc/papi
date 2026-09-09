@@ -2,7 +2,7 @@ papi-ssh-sync(7) "papi"
 
 # NAME
 
-papi-ssh-sync - keep a local authorized_keys file in sync with a PAPI domain's slot-9A keys
+papi-ssh-sync - keep a local authorized_keys file in sync with a domain's slot-9A keys
 
 # DESCRIPTION
 

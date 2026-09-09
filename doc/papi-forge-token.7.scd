@@ -2,11 +2,11 @@ papi-forge-token(7) "papi"
 
 # NAME
 
-papi-forge-token - fine-grained, per-repository forge access tokens as an ephemeral push credential
+papi-forge-token - per-repository forge tokens as an ephemeral push credential
 
 # DESCRIPTION
 
-Fleet automation needs to push to a forge without a live card-backed ssh-agent: a forwarded agent drops mid-run and kills long unattended passes. The replacement is an HTTPS access token that is minted when a session starts, confined to the one repository that session works on, and revoked when the session ends.
+Fleet automation needs to push to a forge without a live card-backed ssh-agent: a forwarded agent drops mid-run and kills long unattended passes. The replacement is a fine-grained HTTPS access token that is minted when a session starts, confined to the one repository that session works on, and revoked when the session ends.
 
 *papi forge token* is the issuer for that lifecycle — mint, revoke, list, and the sweep that enforces a deadline the forge itself cannot. This page describes the model and the trust boundaries. For flags, see *papi-forge-token-mint*(1), *papi-forge-token-revoke*(1), *papi-forge-token-list*(1) and *papi-forge-token-sweep*(1).
 
