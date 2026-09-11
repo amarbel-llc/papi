@@ -50,8 +50,8 @@ six piggy/age-plugin-piggy invocations:
 | 2 | `piggy list --format=ndjson` | Enumerate cards/slots. papi parses per record: per-slot markl `id` (slot-9D ECDH recipient, slot-9A auth key), `guid`, `slot`, `cn`, `serial`, `reader`, `uninitialized`. |
 | 3 | `piggy list --format=ssh` | The slot-9A OpenSSH authorized_keys line (`ecdsa-sha2-nistp256 <b64> slot=9A guid=… cn=…`) — the published-key form. |
 | 4 | `age-plugin-piggy generate --guid <guid>` | The age recipient (`age1piggy…`) for the card's slot-9D ECDH key. |
-| 5 | `piggy card init` (blank-card provision) | Provision a factory-blank card (generate 9D/9A). |
-| 6 | `piggy card reset --serial <serial>` | Reset a provisioned card for re-provisioning (papi#15 `--allow-reprovision`). |
+| 5 | `piggy card init [--serial\|--guid\|--reader]` (blank-card provision) | Provision a factory-blank card (generate 9D/9A), selecting it by serial or — for a card whose serial can't be read (a pre-5.x YubiKey) — by reader/GUID (selectors added in piggy fc99b7c, papi#81). |
+| 6 | `piggy card init --allow-reprovision <selector>` | Re-initialize a provisioned card (papi#15 `--allow-reprovision`). There is no separate `piggy card reset`; piggy folds the reset into `card init --allow-reprovision`. |
 
 ## 2. Mapping onto `piggy-mgmt/1`
 
@@ -61,12 +61,13 @@ six piggy/age-plugin-piggy invocations:
 | 2 `list --format=ndjson` | `card.list {include_uninitialized}` → `{cards:[…]}` | **Covered iff the card record carries papi's fields** (§4.A). |
 | 3 `list --format=ssh` | — | **Gap A.** No SSH-wire projection in v1. |
 | 4 `age-plugin-piggy generate` | — | **Gap B.** Outside `piggy manage` (separate binary). |
-| 5 `card init` | `card.init {serial?}` → `{guid, generated_management_key?}` | **Covered.** |
-| 6 `card reset --serial` | — | **Gap C.** v1 provisions blank cards only. |
+| 5 `card init [--serial\|--guid\|--reader]` | `card.init {serial?, guid?, reader?}` → `{guid, generated_management_key?}` | **Covered** (fc99b7c added the `guid`/`reader` selectors). |
+| 6 `card init --allow-reprovision` | `card.init {…, allow_reprovision}` | **Resolved (fc99b7c).** No separate reset method — reprovision is folded into `card init --allow-reprovision`. |
 
 So `sign_bytes` and `card.init` are a clean fit. The remaining work is the
-`card.list` record shape (A), the age recipient (B), and a reset path (C), plus
-one cross-cutting interaction constraint (D).
+`card.list` record shape (A) and the age recipient (B); the reprovision path
+(formerly Gap C) is resolved (fc99b7c: `card init --allow-reprovision`, no separate
+reset), plus one cross-cutting interaction constraint (D).
 
 ## 3. Summary of asks
 
@@ -161,8 +162,9 @@ Remaining papi-side work:
 
 - papi-side spike: verify the `age1piggy` derivation from a slot-9D markl id
   against a real card (resolves Gap B's open question).
-- When piggy#204 merges: repoint `enroll.Reset()` at `card init --allow-reprovision`
-  and live-test the factory-cred reprovision path (tracked in the task list / papi#25).
+- Reprovision now targets `card init --allow-reprovision` (piggy fc99b7c) and
+  `enroll.Reset` was removed (papi#81); live-test the factory-cred reprovision path
+  against a real card (tracked in the task list / papi#25).
 - Sequenced after the schema firms up (do not build ahead of it): a piggy-mgmt
   Go client in papi (`internal/…`) behind the existing `enroll.Runner` seam, then
   the `papi pass` group — both tracked under [papi#22][papi-22].

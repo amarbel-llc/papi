@@ -412,18 +412,20 @@ sign commits — pass `--no-gh-register` to skip (e.g. enrolling for someone els
 
 - `--new-guid <G>` — enroll an **already-provisioned** card (skip the picker +
   provisioning).
-- `--new-serial <N>` — pick the blank card to provision non-interactively.
+- `--new-serial <N>` — pick the blank card to provision non-interactively, by serial.
+- `--new-reader <R>` — pick the target card by PCSC reader (a full name from
+  `piggy list`, or an unambiguous substring). The way to reach a card whose serial
+  can't be read — e.g. a pre-5.x YubiKey, which piggy can't read a serial for over
+  PIV. Combine with `--allow-reprovision` for a half/already-provisioned card.
+  (`--new-guid` / `--new-serial` / `--new-reader` are mutually exclusive.)
 - `--allow-reprovision` — also offer **provisioned** cards in the picker;
-  choosing one **resets** it (destroys its keys) and re-provisions from scratch,
-  behind a loud extra confirm. Off by default — re-provisioning is destructive
-  and never the silent default.
-- `--cn-prefix <name>` — name the new card's slot certs (`cn=…`, surfaces in
-  `piggy list` and `/papi/ssh-authorized-keys`), e.g. `laptop-alice`. Default:
-  piggy's `piv-auth@<guid8>`. Interactive runs prompt for it.
+  choosing one **re-initializes** it (destroys its keys) from scratch
+  (`piggy card init --allow-reprovision`), behind a loud extra confirm. Off by
+  default — re-provisioning is destructive and never the silent default.
 - `--no-gh-register` — do NOT register the new card's slot-9A key on GitHub
   (auth + signing). Registration is on by default; skip it when enrolling a card
   for someone else's account.
-- `--trusted-guid <G>` — the attester (default: the sole provisioned card).
+- `--trusted-guid <G>` — the attester (default: the sole card with a slot-9A key).
 
 Pair it with `verify-receipt` on the deploy side.
 

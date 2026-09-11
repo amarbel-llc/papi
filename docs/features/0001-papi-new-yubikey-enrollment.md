@@ -77,19 +77,18 @@ four steps over the low-level piggy primitives above and emits one artifact:
 > picker** (blank cards selectable, the provisioned trusted card shown but
 > unselectable) → confirm → `piggy card init`. `papi enroll <domain>` shows the
 > picker by default; `--new-guid <G>` enrolls an already-provisioned card,
-> `--new-serial <N>` picks the blank one non-interactively, `--trusted-guid` (or
-> the sole provisioned card) is the attester, and `--allow-reprovision`
+> `--new-serial <N>` / `--new-reader <R>` pick the target non-interactively (by
+> serial, or by PCSC reader for a card whose serial can't be read), `--trusted-guid`
+> (or the sole card with a slot-9A key) is the attester, and `--allow-reprovision`
 > ([papi#18](https://github.com/amarbel-llc/papi/issues/18)) makes provisioned
-> cards selectable too — choosing one resets it (destroys its keys) and
-> re-provisions, behind a loud extra confirm (the explicit, opt-in escape hatch).
-> `--cn-prefix <name>` ([papi#19](https://github.com/amarbel-llc/papi/issues/19))
-> names the new card's slot certs (else piggy derives `piv-auth@<guid8>`);
-> interactive runs prompt for it. **Gated on piggy** for the live
-> data: the blank card only appears once `piggy list` lists unprovisioned cards
-> (piggy#193) and is provisioned by piggy#194 (`piggy card init --serial`);
-> papi is wired to both and works the moment they ship
-> ([papi#17](https://github.com/amarbel-llc/papi/issues/17)). Card *selection*
-> is by serial (piggy's enumeration), since `pivy-tool` has no serial selector.
+> cards selectable too — choosing one re-initializes it (destroys its keys) via
+> `piggy card init --allow-reprovision`, behind a loud extra confirm (the explicit,
+> opt-in escape hatch). piggy derives the card's CN (`piv-auth@<guid8>`); `card
+> init` has no caller CN override. **piggy status:** fc99b7c ships `piggy card init`
+> with `--serial`/`--guid`/`--reader` selectors and `--allow-reprovision`, so
+> selection is by serial OR — for a card whose serial can't be read over PIV (a
+> pre-5.x YubiKey, papi#81) — by reader/GUID; a fully-blank card still depends on
+> `piggy list` listing unprovisioned cards (piggy#193).
 
 1. **Generate the fresh card** (the *new* YubiKey) — papi shells out to the C
    `pivy-tool` binary (piggy has no fresh-card command; it exposes `pivy-tool`

@@ -36,20 +36,28 @@ func (f *flexString) UnmarshalJSON(b []byte) error {
 
 // CardState is one attached PIV card, grouped from `piggy list --format=ndjson`
 // (which emits one record per populated slot, plus — per piggy#193 — a record for
-// each unprovisioned card). Provisioned is true once the card carries a slot-9D
-// or slot-9A key; an unprovisioned (blank) card has an all-zeros / empty GUID.
+// each unprovisioned card). Provisioned is true once the card carries a slot-9D or
+// slot-9A key; HasAuth is true only once it carries a slot-9A auth key — so a
+// half-provisioned card (a 9D but no 9A, e.g. a partially-initialized YubiKey) is
+// Provisioned yet not a usable attester. An unprovisioned (blank) card has an
+// all-zeros / empty GUID; a pre-5.x YubiKey has an empty Serial (piggy can't read
+// its serial over PIV), so it is addressed by Reader or GUID instead.
 type CardState struct {
 	Serial      string
 	GUID        string // "" or all-zeros when unprovisioned
 	Reader      string
-	Provisioned bool
+	Provisioned bool // carries any slot-9A/9D key
+	HasAuth     bool // carries a slot-9A auth key (a usable attester)
 }
 
 // parseCardList groups `piggy list --format=ndjson` output into one CardState per
-// attached card, keyed by serial (preserving first-seen order). A record bearing
-// a 9D/9A slot marks the card provisioned; an explicit state="uninitialized"
-// (piggy#193) marks it blank. NOTE: blank cards only appear once piggy#193 lists
-// them; against today's `piggy list` this yields only the provisioned cards.
+// attached card, keyed by serial (preserving first-seen order), falling back to the
+// GUID when a card reports no serial (a pre-5.x YubiKey, whose serial piggy can't
+// read over PIV). A 9A slot marks the card provisioned AND a usable attester; a
+// 9D-only card is provisioned but not an attester; an explicit
+// state="uninitialized" (piggy#193) marks it blank. NOTE: blank cards only appear
+// once piggy#193 lists them; against today's `piggy list` this yields only the
+// provisioned cards.
 func parseCardList(ndjson []byte) ([]CardState, error) {
 	byKey := map[string]*CardState{}
 	var order []string
@@ -80,11 +88,15 @@ func parseCardList(ndjson []byte) ([]CardState, error) {
 			cs.GUID = rec.GUID
 		}
 		switch strings.ToUpper(rec.Slot) {
-		case "9D", "9A":
+		case "9A":
+			cs.Provisioned = true
+			cs.HasAuth = true
+		case "9D":
 			cs.Provisioned = true
 		}
 		if rec.Uninitialized { // piggy#193's explicit blank marker
 			cs.Provisioned = false
+			cs.HasAuth = false
 		}
 	}
 	out := make([]CardState, 0, len(order))
@@ -94,24 +106,39 @@ func parseCardList(ndjson []byte) ([]CardState, error) {
 	return out, nil
 }
 
-// findCardToEnroll picks the card to enroll. With a serial it returns that card —
-// blank, or (only when allowReprovision) an already-provisioned one, which the
-// caller will reset + re-provision. Without a serial it auto-picks the SOLE blank
-// card and never an already-provisioned one: re-provisioning is destructive and
-// must be chosen explicitly (the picker or --new-serial), so it is never the
-// silent default even under --allow-reprovision.
-func findCardToEnroll(cards []CardState, serial string, allowReprovision bool) (CardState, error) {
-	if serial != "" {
-		for _, c := range cards {
-			if c.Serial != serial {
-				continue
-			}
-			if c.Provisioned && !allowReprovision {
-				return CardState{}, fmt.Errorf("card serial %q is already provisioned; pass --allow-reprovision to reset + re-provision it", serial)
-			}
-			return c, nil
+// cardTarget selects which attached card to provision. At most one field is set;
+// all-empty means "auto-pick the sole blank card". The three fields mirror the
+// selectors piggy's `card init` accepts (--serial / --guid / --reader, piggy
+// fc99b7c), so a card whose serial can't be read — a pre-5.x YubiKey — is still
+// addressable by reader.
+type cardTarget struct {
+	Serial string
+	GUID   string
+	Reader string
+}
+
+func (t cardTarget) empty() bool {
+	return t.Serial == "" && t.GUID == "" && t.Reader == ""
+}
+
+// findCardToEnroll picks the card to enroll. With a target it returns the matching
+// card — blank, or (only when allowReprovision) an already-provisioned one, which
+// the caller re-provisions. The target matches by serial, GUID, or reader (whichever
+// it carries); reader is the robust selector for a serial-less card. Without a
+// target it auto-picks the SOLE blank card and never an already-provisioned one:
+// re-provisioning is destructive and must be chosen explicitly (the picker,
+// --new-serial, or --new-reader), so it is never the silent default even under
+// --allow-reprovision.
+func findCardToEnroll(cards []CardState, target cardTarget, allowReprovision bool) (CardState, error) {
+	if !target.empty() {
+		match, err := matchCard(cards, target)
+		if err != nil {
+			return CardState{}, err
 		}
-		return CardState{}, fmt.Errorf("no card with serial %q attached", serial)
+		if match.Provisioned && !allowReprovision {
+			return CardState{}, fmt.Errorf("card %s is already provisioned; pass --allow-reprovision to re-provision it (destroys its keys)", cardLabel(match))
+		}
+		return match, nil
 	}
 	var blanks []CardState
 	for _, c := range cards {
@@ -125,7 +152,99 @@ func findCardToEnroll(cards []CardState, serial string, allowReprovision bool) (
 	case 1:
 		return blanks[0], nil
 	default:
-		return CardState{}, fmt.Errorf("%d unprovisioned cards attached; disambiguate with --new-serial", len(blanks))
+		return CardState{}, fmt.Errorf("%d unprovisioned cards attached; disambiguate with --new-reader (or --new-serial)", len(blanks))
+	}
+}
+
+// matchCard returns the single attached card matching target's set selector (serial,
+// else GUID, else reader). A reader matches by exact string, or — failing that — an
+// unambiguous case-insensitive substring, so an operator can pass "01 00" rather than
+// the full PCSC reader name. No match, or an ambiguous reader substring, errors with
+// the attached cards listed so the caller can pick a working selector.
+func matchCard(cards []CardState, target cardTarget) (CardState, error) {
+	switch {
+	case target.Serial != "":
+		for _, c := range cards {
+			if c.Serial == target.Serial {
+				return c, nil
+			}
+		}
+		return CardState{}, fmt.Errorf("no card with serial %q attached%s", target.Serial, candidateList(cards))
+	case target.GUID != "":
+		for _, c := range cards {
+			if guidEqual(c.GUID, target.GUID) {
+				return c, nil
+			}
+		}
+		return CardState{}, fmt.Errorf("no card with guid %q attached%s", target.GUID, candidateList(cards))
+	default:
+		want := strings.TrimSpace(target.Reader)
+		for _, c := range cards {
+			if readerEqual(c.Reader, want) {
+				return c, nil
+			}
+		}
+		var subs []CardState
+		for _, c := range cards {
+			if strings.Contains(strings.ToLower(c.Reader), strings.ToLower(want)) {
+				subs = append(subs, c)
+			}
+		}
+		switch len(subs) {
+		case 1:
+			return subs[0], nil
+		case 0:
+			return CardState{}, fmt.Errorf("no card whose reader matches %q%s", target.Reader, candidateList(cards))
+		default:
+			return CardState{}, fmt.Errorf("reader %q matches %d attached cards; be more specific%s", target.Reader, len(subs), candidateList(cards))
+		}
+	}
+}
+
+// candidateList renders the attached cards (serial/guid/reader) for a no-match or
+// ambiguity error, so the operator can pick a working selector.
+func candidateList(cards []CardState) string {
+	if len(cards) == 0 {
+		return " (no cards attached)"
+	}
+	var b strings.Builder
+	b.WriteString("; attached cards:")
+	for _, c := range cards {
+		fmt.Fprintf(&b, "\n  - %s guid=%s reader=%q", cardLabel(c), displayGUID(c), c.Reader)
+	}
+	return b.String()
+}
+
+// cardLabel is a short human identifier for a card: its serial when it has one, else
+// its reader (a serial-less pre-5.x YubiKey).
+func cardLabel(c CardState) string {
+	if c.Serial != "" {
+		return "serial=" + c.Serial
+	}
+	return "reader=" + c.Reader
+}
+
+// readerEqual compares two PCSC reader names case-insensitively after trimming.
+func readerEqual(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// piggyCardSelector maps a chosen card to the single selector `piggy card init`
+// needs (piggy fc99b7c: --serial / --guid / --reader are mutually exclusive). It
+// prefers the serial when the card has one; otherwise the reader — the robust choice
+// for a serial-less card, and the one identifier stable across the init (piggy
+// reassigns the GUID, and two factory-blank cards share the all-zeros GUID). Reader
+// is always present in `piggy list`, so this always yields a selector.
+func piggyCardSelector(c CardState) []string {
+	switch {
+	case c.Serial != "":
+		return []string{"--serial", c.Serial}
+	case c.Reader != "":
+		return []string{"--reader", c.Reader}
+	case !isZeroGUID(c.GUID):
+		return []string{"--guid", c.GUID}
+	default:
+		return nil
 	}
 }
 
@@ -148,57 +267,67 @@ func displayGUID(c CardState) string {
 }
 
 // SelectNewCard runs an interactive huh picker over the attached cards and returns
-// the chosen card's serial. Blank cards are always selectable. Provisioned cards
-// are selectable ONLY under allowReprovision (flagged ⚠ — choosing one resets +
-// re-provisions it, destroying its keys); otherwise they are shown read-only in
-// the description as the trusted attester (huh has no disabled-option support, so
-// this keeps them genuinely unselectable). Errors if no card is selectable.
-func SelectNewCard(cards []CardState, allowReprovision bool) (string, error) {
-	opts := make([]huh.Option[string], 0, len(cards))
+// the chosen card. Blank cards are always selectable. Provisioned cards are
+// selectable ONLY under allowReprovision (flagged ⚠ — choosing one re-initializes it,
+// destroying its keys); otherwise they are shown read-only in the description as the
+// trusted attester (huh has no disabled-option support, so this keeps them genuinely
+// unselectable). Selection is by index so serial-less cards (whose Serial is "") stay
+// distinct. Errors if no card is selectable.
+func SelectNewCard(cards []CardState, allowReprovision bool) (CardState, error) {
+	type choice struct {
+		card  CardState
+		label string
+	}
+	var choices []choice
 	var readonly []string
 	for _, c := range cards {
 		switch {
 		case !c.Provisioned:
-			opts = append(opts, huh.NewOption(fmt.Sprintf("serial=%s   guid=%s", c.Serial, displayGUID(c)), c.Serial))
+			choices = append(choices, choice{c, fmt.Sprintf("%s   guid=%s", cardLabel(c), displayGUID(c))})
 		case allowReprovision:
-			opts = append(opts, huh.NewOption(fmt.Sprintf("serial=%s   guid=%s   ⚠ REPROVISION (destroys keys)", c.Serial, displayGUID(c)), c.Serial))
+			choices = append(choices, choice{c, fmt.Sprintf("%s   guid=%s   ⚠ REPROVISION (destroys keys)", cardLabel(c), displayGUID(c))})
 		default:
-			readonly = append(readonly, fmt.Sprintf("serial=%s guid=%s", c.Serial, displayGUID(c)))
+			readonly = append(readonly, fmt.Sprintf("%s guid=%s", cardLabel(c), displayGUID(c)))
 		}
 	}
-	if len(opts) == 0 {
-		return "", fmt.Errorf("no card available to enroll (pass --allow-reprovision to re-provision a provisioned card)")
+	if len(choices) == 0 {
+		return CardState{}, fmt.Errorf("no card available to enroll (pass --allow-reprovision to re-provision a provisioned card)")
+	}
+
+	opts := make([]huh.Option[int], 0, len(choices))
+	for i, ch := range choices {
+		opts = append(opts, huh.NewOption(ch.label, i))
 	}
 
 	desc := "Pick a blank card to provision + enroll."
 	if allowReprovision {
-		desc = "Pick a card to enroll. ⚠ choosing a provisioned card RESETS it (destroys its keys) before re-provisioning."
+		desc = "Pick a card to enroll. ⚠ choosing a provisioned card RE-INITIALIZES it (destroys its keys) before re-provisioning."
 	}
 	if len(readonly) > 0 {
 		desc += "\nNot selectable (trusted attester): " + strings.Join(readonly, "; ")
 	}
 
-	var serial string
+	var idx int
 	err := huh.NewForm(huh.NewGroup(
-		huh.NewSelect[string]().
+		huh.NewSelect[int]().
 			Title("New YubiKey to enroll").
 			Description(desc).
 			Options(opts...).
-			Value(&serial),
+			Value(&idx),
 	)).Run()
 	if err != nil {
-		return "", err
+		return CardState{}, err
 	}
-	return serial, nil
+	return choices[idx].card, nil
 }
 
-// ConfirmProvision asks the operator to confirm the destructive provisioning of
-// the blank card before `piggy card init` runs.
-func ConfirmProvision(serial, domain string) (bool, error) {
+// ConfirmProvision asks the operator to confirm the destructive provisioning of the
+// blank card before `piggy card init` runs.
+func ConfirmProvision(card CardState, domain string) (bool, error) {
 	var ok bool
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().
-			Title(fmt.Sprintf("Provision card serial=%s and enroll it into %s?", serial, domain)).
+			Title(fmt.Sprintf("Provision card %s and enroll it into %s?", cardLabel(card), domain)).
 			Description("This initializes the blank card (init + generate slot 9D/9A) — destructive.").
 			Affirmative("Provision").
 			Negative("Cancel").
@@ -210,17 +339,17 @@ func ConfirmProvision(serial, domain string) (bool, error) {
 	return ok, nil
 }
 
-// ConfirmReprovision asks the operator to confirm RESETTING and re-provisioning an
-// already-provisioned card before `piggy card reset` runs. It is the loud,
-// destructive counterpart of ConfirmProvision — gated behind --allow-reprovision —
-// and spells out that the card's existing keys are destroyed.
-func ConfirmReprovision(serial, guid, domain string) (bool, error) {
+// ConfirmReprovision asks the operator to confirm re-initializing an
+// already-provisioned card before `piggy card init --allow-reprovision` runs. It is
+// the loud, destructive counterpart of ConfirmProvision — gated behind
+// --allow-reprovision — and spells out that the card's existing keys are destroyed.
+func ConfirmReprovision(card CardState, domain string) (bool, error) {
 	var ok bool
 	err := huh.NewForm(huh.NewGroup(
 		huh.NewConfirm().
-			Title(fmt.Sprintf("RESET + re-provision card serial=%s (guid=%s) and enroll it into %s?", serial, guid, domain)).
-			Description("⚠ This FACTORY-RESETS the card: its existing slot-9D/9A keys are DESTROYED, and any recipient/auth key already published for this card becomes unusable. This cannot be undone.").
-			Affirmative("Reset + reprovision").
+			Title(fmt.Sprintf("RE-INITIALIZE card %s (guid=%s) and enroll it into %s?", cardLabel(card), displayGUID(card), domain)).
+			Description("⚠ This re-initializes the card (piggy card init --allow-reprovision): its existing slot-9D/9A keys are DESTROYED, and any recipient/auth key already published for this card becomes unusable. This cannot be undone.").
+			Affirmative("Re-initialize").
 			Negative("Cancel").
 			Value(&ok),
 	)).Run()
@@ -230,28 +359,10 @@ func ConfirmReprovision(serial, guid, domain string) (bool, error) {
 	return ok, nil
 }
 
-// PromptCN asks the operator for the card's CN (name) before provisioning. A
-// blank answer means "let piggy derive its default" (piv-auth@<guid8>), so the
-// behavior is unchanged unless the operator types a name.
-func PromptCN() (string, error) {
-	var cn string
-	err := huh.NewForm(huh.NewGroup(
-		huh.NewInput().
-			Title("Card name (CN)").
-			Description("Names the card's slot certs; surfaces in piggy list and ssh-authorized-keys (cn=…). Blank = the default piv-auth@<guid8>.").
-			Placeholder("e.g. laptop-alice").
-			Value(&cn),
-	)).Run()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(cn), nil
-}
-
 // InteractiveRunner runs a command with the process's own stdio attached, so a
-// child's PIN/admin-key prompt reaches the operator's terminal. The provisioning
-// step uses it (rather than the capturing Runner) precisely so `piggy card init`
-// can prompt; papi reads the result back afterward via `piggy list`.
+// child's PIN/admin-key prompt reaches the operator's terminal. The provisioning step
+// uses it (rather than the capturing Runner) precisely so `piggy card init` can
+// prompt; papi reads the result back afterward via `piggy list`.
 type InteractiveRunner func(ctx context.Context, name string, args ...string) error
 
 // ExecInteractive is the production InteractiveRunner: it runs name with the
@@ -264,26 +375,32 @@ func ExecInteractive(ctx context.Context, name string, args ...string) error {
 	return cmd.Run()
 }
 
-// Provision provisions the blank card with the given serial via `piggy card init
-// --serial <serial> [--cn-prefix <cnPrefix>]` (piggy#194), run interactively so
-// the operator enters the PIN/admin-key, then reads the freshly-assigned GUID back
-// via `piggy list`. An empty cnPrefix lets piggy derive its default CN
-// (piv-auth@<guid8> / piv-key-mgmt@<guid8>). It DEPENDS ON piggy#194's interface
-// and piggy#193's blank-card listing; the exact flags and read-back are finalized
-// when those ship.
-func Provision(ctx context.Context, irun InteractiveRunner, list Runner, serial, cnPrefix string) (string, error) {
+// cardInit provisions the given card via `piggy card init [--allow-reprovision]
+// <selector>` (piggy fc99b7c), run interactively so the operator enters the
+// PIN/admin-key, then reads the freshly-assigned GUID back via `piggy list`. The card
+// is selected by the robust identifier it carries (serial, else reader).
+// allowReprovision permits re-initializing an already-provisioned card (destroying
+// its keys). The CN is derived by piggy (piv-auth@<guid8> / piv-key-mgmt@<guid8>);
+// `card init` has no caller CN override. Read-back matches by reader, the one
+// identifier stable across the init (piggy reassigns the GUID).
+func cardInit(ctx context.Context, irun InteractiveRunner, list Runner, card CardState, allowReprovision bool) (string, error) {
 	if irun == nil {
 		irun = ExecInteractive
 	}
 	if list == nil {
 		list = ExecRunner
 	}
-	args := []string{"card", "init", "--serial", serial}
-	if cnPrefix != "" {
-		args = append(args, "--cn-prefix", cnPrefix)
+	sel := piggyCardSelector(card)
+	if sel == nil {
+		return "", fmt.Errorf("cannot select card to provision: %s has no serial, reader, or guid", cardLabel(card))
 	}
+	args := []string{"card", "init"}
+	if allowReprovision {
+		args = append(args, "--allow-reprovision")
+	}
+	args = append(args, sel...)
 	if err := irun(ctx, "piggy", args...); err != nil {
-		return "", fmt.Errorf("piggy card init --serial %s: %w", serial, err)
+		return "", fmt.Errorf("piggy %s: %w", strings.Join(args, " "), err)
 	}
 	out, err := list(ctx, nil, "piggy", "list", "--format=ndjson")
 	if err != nil {
@@ -294,38 +411,26 @@ func Provision(ctx context.Context, irun InteractiveRunner, list Runner, serial,
 		return "", err
 	}
 	for _, c := range cards {
-		if c.Serial == serial && c.Provisioned && c.GUID != "" {
+		if readerEqual(c.Reader, card.Reader) && c.Provisioned && c.GUID != "" {
 			return c.GUID, nil
 		}
 	}
-	return "", fmt.Errorf("card serial %s is not provisioned after init", serial)
+	return "", fmt.Errorf("card %s is not provisioned after init", cardLabel(card))
 }
 
-// Reset factory-resets the PIV applet of the card with the given serial via `piggy
-// card reset --serial <serial>` (run interactively for the admin/PIN), destroying
-// its existing keys. It DEPENDS ON piggy#194's reset path (the same `piggy card`
-// interface Provision's init uses); today's manual equivalent is a pivy-tool /
-// ykman factory-reset.
-func Reset(ctx context.Context, irun InteractiveRunner, serial string) error {
-	if irun == nil {
-		irun = ExecInteractive
-	}
-	if err := irun(ctx, "piggy", "card", "reset", "--serial", serial); err != nil {
-		return fmt.Errorf("piggy card reset --serial %s: %w", serial, err)
-	}
-	return nil
+// Provision provisions a blank card (init + generate slot 9D/9A) and returns its
+// freshly-assigned GUID.
+func Provision(ctx context.Context, irun InteractiveRunner, list Runner, card CardState) (string, error) {
+	return cardInit(ctx, irun, list, card, false)
 }
 
-// ReprovisionCard resets an already-provisioned card and then provisions it afresh
-// (reset → init + generate 9d/9a), returning the freshly-assigned GUID. It is the
-// --allow-reprovision path: the reset MUST precede provisioning so the new keys
-// land on a clean applet. cnPrefix names the new slot certs (empty = piggy's
-// default).
-func ReprovisionCard(ctx context.Context, irun InteractiveRunner, list Runner, serial, cnPrefix string) (string, error) {
-	if err := Reset(ctx, irun, serial); err != nil {
-		return "", err
-	}
-	return Provision(ctx, irun, list, serial, cnPrefix)
+// ReprovisionCard re-initializes an already-provisioned card
+// (`piggy card init --allow-reprovision`), destroying its existing keys and returning
+// the freshly-assigned GUID. There is no separate `piggy card reset`: piggy folds the
+// reset into `card init --allow-reprovision`, which requires the card still at its
+// factory-default PIN/PUK/mgmt-key.
+func ReprovisionCard(ctx context.Context, irun InteractiveRunner, list Runner, card CardState) (string, error) {
+	return cardInit(ctx, irun, list, card, true)
 }
 
 // ListCards runs `piggy list --format=ndjson` and groups it into CardStates.
@@ -340,76 +445,69 @@ func ListCards(ctx context.Context, run Runner) ([]CardState, error) {
 	return parseCardList(out)
 }
 
-// ResolveNewCard determines the GUID of the new card to enroll. With newGUID set
-// it is returned as-is (post-init). Otherwise papi provisions a card: it picks one
-// by newSerial (or, when empty, the huh selector), confirms the destructive step,
-// and returns the freshly-assigned GUID. A blank card is provisioned (init);
-// under allowReprovision a chosen provisioned card is reset THEN provisioned (a
-// louder confirm). cnPrefix names the new slot certs; in the interactive flow it
-// is prompted when empty (blank = piggy's default). cards is the current `piggy
-// list` so it can be reused.
-func ResolveNewCard(ctx context.Context, irun InteractiveRunner, run Runner, cards []CardState, newGUID, newSerial, domain string, allowReprovision bool, cnPrefix string) (string, error) {
+// ResolveNewCard determines the GUID of the new card to enroll. With newGUID set it
+// is returned as-is (an already-provisioned card, skipping provisioning). Otherwise
+// papi provisions a card: it picks one by newSerial or newReader (or, when both are
+// empty, the huh selector), confirms the destructive step, and returns the
+// freshly-assigned GUID. A blank card is provisioned (init); under allowReprovision a
+// chosen provisioned card is re-initialized (a louder confirm). cards is the current
+// `piggy list` so it can be reused.
+func ResolveNewCard(ctx context.Context, irun InteractiveRunner, run Runner, cards []CardState, newGUID, newSerial, newReader, domain string, allowReprovision bool) (string, error) {
 	if newGUID != "" {
 		return newGUID, nil
 	}
-	serial := newSerial
-	interactive := serial == ""
-	if interactive {
-		var err error
-		if serial, err = SelectNewCard(cards, allowReprovision); err != nil {
+	target := cardTarget{Serial: newSerial, Reader: newReader}
+	var card CardState
+	var err error
+	if target.empty() {
+		if card, err = SelectNewCard(cards, allowReprovision); err != nil {
 			return "", err
 		}
-	}
-	card, err := findCardToEnroll(cards, serial, allowReprovision)
-	if err != nil {
-		return "", err
-	}
-	// In the interactive flow, prompt for the CN (unless --cn-prefix already set it).
-	if interactive && cnPrefix == "" {
-		if cnPrefix, err = PromptCN(); err != nil {
+	} else {
+		if card, err = findCardToEnroll(cards, target, allowReprovision); err != nil {
 			return "", err
 		}
 	}
 	if card.Provisioned {
-		// --allow-reprovision: a loud confirm, then reset + provision.
-		ok, err := ConfirmReprovision(card.Serial, card.GUID, domain)
+		ok, err := ConfirmReprovision(card, domain)
 		if err != nil {
 			return "", err
 		}
 		if !ok {
 			return "", fmt.Errorf("reprovisioning cancelled")
 		}
-		return ReprovisionCard(ctx, irun, run, card.Serial, cnPrefix)
+		return ReprovisionCard(ctx, irun, run, card)
 	}
-	ok, err := ConfirmProvision(card.Serial, domain)
+	ok, err := ConfirmProvision(card, domain)
 	if err != nil {
 		return "", err
 	}
 	if !ok {
 		return "", fmt.Errorf("provisioning cancelled")
 	}
-	return Provision(ctx, irun, run, card.Serial, cnPrefix)
+	return Provision(ctx, irun, run, card)
 }
 
-// ResolveTrustedGUID determines the trusted attester's GUID: trustedGUID as-is,
-// or the sole provisioned card when empty. It errors rather than guess among
-// several provisioned cards.
+// ResolveTrustedGUID determines the trusted attester's GUID: trustedGUID as-is, or the
+// sole card carrying a usable slot-9A key when empty. A card without a slot-9A key
+// cannot attest (ReadCard needs the 9A), so a 9D-only half-provisioned card is never
+// eligible. Errors rather than guess among several attesters.
 func ResolveTrustedGUID(cards []CardState, trustedGUID string) (string, error) {
 	if trustedGUID != "" {
 		return trustedGUID, nil
 	}
-	var provisioned []CardState
+	var attesters []CardState
 	for _, c := range cards {
-		if c.Provisioned {
-			provisioned = append(provisioned, c)
+		if c.HasAuth {
+			attesters = append(attesters, c)
 		}
 	}
-	switch len(provisioned) {
+	switch len(attesters) {
 	case 0:
-		return "", fmt.Errorf("no provisioned card attached to attest; pass --trusted-guid")
+		return "", fmt.Errorf("no card with a slot-9A key attached to attest; pass --trusted-guid")
 	case 1:
-		return provisioned[0].GUID, nil
+		return attesters[0].GUID, nil
 	default:
-		return "", fmt.Errorf("%d provisioned cards attached; pass --trusted-guid to choose the attester", len(provisioned))
+		return "", fmt.Errorf("%d cards with a slot-9A key attached; pass --trusted-guid to choose the attester", len(attesters))
 	}
 }
