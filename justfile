@@ -265,6 +265,15 @@ debug-sample-receipt:
 debug-signed-doc:
     PAPI_GEN_SIGNED_DOC=1 nix develop --command go test ./internal/bravo/inspect/ -run TestGenerateSignedDocFixture -v
 
+# Regenerate the committed RFC-0001 §15 signed-hyphence conformance vector
+# (docs/rfcs/vectors/rfc0001-s15-hyphence-sig-v1.json) that non-papi verifiers
+# such as conformist copy verbatim. Test key; normal `test-go` only checks it.
+#
+# regenerate the committed §15 signed-hyphence conformance vector
+[group("debug")]
+debug-hyphence-sig-vector:
+    PAPI_GEN_HYPHENCE_SIG_VECTOR=1 nix develop --command go test ./internal/bravo/inspect/ -run TestGenerateHyphenceSigVector -v
+
 # Inspect attached PIV cards (read-only, PIN-free) to verify provisioning state
 # before a live `papi enroll` run — which card is provisioned (slot 9D+9A) vs
 # blank. Runs via the PINNED piggy (the flake input papi uses), so blank cards

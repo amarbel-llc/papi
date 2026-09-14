@@ -1,0 +1,10 @@
+{
+  "description": "Test vector for RFC-0001 §15 signed hyphence documents. The key is a deterministic TEST key; never trust it. signed_input_hex is the §15.1 signed input of unsigned_document; unsigned_document_noncanonical_order and signed_document MUST yield the same signed input; signed_document MUST verify against public_key under purpose.",
+  "spec": "papi RFC-0001 §15.1-§15.2 (Amendment 26)",
+  "purpose": "conformist-profile-sig-v1",
+  "public_key": "piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-q0xr4jwmxnwsf9hkp923ay99rg0c3gaxaepj0ua0f6sds3pxdtc0uxh26y4",
+  "unsigned_document": "---\n# house lint profile\n% pins reviewed by the operator\n- lint-profile-example\n! toml-conformist_profile-v1\n---\n\n[meta]\ndescription = \"the house's lint profile\"\n\n[linters.shellcheck]\nenabled = true\n",
+  "unsigned_document_noncanonical_order": "---\n! toml-conformist_profile-v1\n% pins reviewed by the operator\n- lint-profile-example\n# house lint profile\n---\n\n[meta]\ndescription = \"the house's lint profile\"\n\n[linters.shellcheck]\nenabled = true\n",
+  "signed_input_hex": "2d2d2d0a2320686f757365206c696e742070726f66696c650a252070696e7320726576696577656420627920746865206f70657261746f720a2d206c696e742d70726f66696c652d6578616d706c650a2120746f6d6c2d636f6e666f726d6973745f70726f66696c652d76310a2d2d2d0a0a5b6d6574615d0a6465736372697074696f6e203d202274686520686f7573652773206c696e742070726f66696c65220a0a5b6c696e746572732e7368656c6c636865636b5d0a656e61626c6564203d20747275650a",
+  "signed_document": "---\n# house lint profile\n% pins reviewed by the operator\n- lint-profile-example\n- conformist-profile-sig-v1@ecdsa_p256_sig-8j5lhc0nwykla8yfjaw09ls9m333g5ujnx60jtwnrnjmx8w2u004fd93n8lpv53yvfantqz5rj2jc2xymgtry7yn9jnsuhqdl54vttqmt6dc4\n! toml-conformist_profile-v1\n---\n\n[meta]\ndescription = \"the house's lint profile\"\n\n[linters.shellcheck]\nenabled = true\n"
+}

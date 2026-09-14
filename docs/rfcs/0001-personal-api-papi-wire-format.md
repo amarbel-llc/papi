@@ -1452,6 +1452,13 @@ removed. It is produced with `papi hyphence sign --purpose
 conformist-profile-sig-v1` and checked with `papi hyphence resolve <domain>
 --path /papi/conformist-profile --purpose conformist-profile-sig-v1`.
 
+A machine-readable conformance vector —
+`docs/rfcs/vectors/rfc0001-s15-hyphence-sig-v1.json` — pins, for a test key, an
+unsigned body-bearing document, the same document with its metadata out of
+canonical order, their exact signed-input bytes, the published key, and the
+signed document. An independent §15 implementation SHOULD reproduce its signed
+input byte-for-byte and verify its signed document.
+
 ## Security Considerations
 
 **Trust boundary on the document.** The document and the principal registry are
