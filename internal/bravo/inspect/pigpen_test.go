@@ -95,13 +95,11 @@ func newPigpenSigner(t *testing.T) pigpenSigner {
 // bytes via FormatBodyEmitter, the same encoder pigpenStripSelfBytes uses.
 func renderPigpenDoc(t *testing.T, lines []hyphence.MetadataLine) []byte {
 	t.Helper()
-	doc := &hyphence.Document{Metadata: append([]hyphence.MetadataLine(nil), lines...)}
-	var buf bytes.Buffer
-	emitter := &hyphence.FormatBodyEmitter{Doc: doc, Out: &buf}
-	if _, err := emitter.ReadFrom(strings.NewReader("")); err != nil {
+	out, err := emitHyphence(append([]hyphence.MetadataLine(nil), lines...), nil)
+	if err != nil {
 		t.Fatal(err)
 	}
-	return buf.Bytes()
+	return out
 }
 
 // buildPigpenDoc assembles a payload-less pigpen document publishing s's

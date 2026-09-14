@@ -18,12 +18,10 @@
 package inspect
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 
 	"code.linenisgreat.com/hyphence/go/hyphence"
 	"code.linenisgreat.com/papi/internal/0/markl"
@@ -40,18 +38,8 @@ import (
 // `piggy-recipient-v1@...` and `! pigpen-v1` lines, verifying the
 // provisional self-signature) is Task B3.
 func parsePigpenMetadataLines(data []byte) ([]hyphence.MetadataLine, error) {
-	doc := &hyphence.Document{}
-	reader := hyphence.Reader{
-		RequireMetadata: true,
-		Metadata:        &hyphence.MetadataBuilder{Doc: doc},
-		Blob:            &hyphence.CountingDiscardReaderFrom{},
-	}
-
-	if _, err := reader.ReadFrom(bytes.NewReader(data)); err != nil {
-		return nil, err
-	}
-
-	return doc.Metadata, nil
+	lines, _, err := parseHyphenceDocument(data)
+	return lines, err
 }
 
 // findPigpenSelfSig returns the first `-`-prefixed line whose value carries
@@ -75,12 +63,10 @@ func parsePigpenMetadataLines(data []byte) ([]hyphence.MetadataLine, error) {
 // an identifier the type system can't resolve degrades to a plain tag, not
 // a decode error) — see linenisgreat/hyphence#6 and piggy commit ff4eb12.
 func findPigpenSelfSig(lines []hyphence.MetadataLine) (value string, ok bool) {
-	prefix := markl.PurposePigpenSelfSig + "@"
 	for _, l := range lines {
-		if l.Prefix != '-' || !strings.HasPrefix(l.Value, prefix) {
-			continue
+		if isHyphenceSigLine(l, markl.PurposePigpenSelfSig) {
+			return l.Value, true
 		}
-		return l.Value, true
 	}
 	return "", false
 }
@@ -456,43 +442,9 @@ func SignPigpen(ctx context.Context, signer PigpenSigner, guid string, data []by
 		return nil, errPigpenNoAuthKey
 	}
 
-	typeLineIdx := -1
-	for i, l := range lines {
-		if l.Prefix == '!' {
-			typeLineIdx = i
-			break
-		}
-	}
-	if typeLineIdx < 0 {
+	signed, err := SignHyphence(ctx, signer, guid, markl.PurposePigpenSelfSig, data)
+	if errors.Is(err, ErrHyphenceNoTypeLine) {
 		return nil, errPigpenNoTypeLine
 	}
-
-	input, err := pigpenStripSelfBytes(lines)
-	if err != nil {
-		return nil, fmt.Errorf("pigpen: sign: reconstruct strip-self bytes: %w", err)
-	}
-
-	raw, err := signer.SignSlot9A(ctx, guid, input)
-	if err != nil {
-		return nil, fmt.Errorf("pigpen: sign: %w", err)
-	}
-
-	sigID, err := markl.Build(markl.PurposePigpenSelfSig, markl.FormatEcdsaP256Sig, raw)
-	if err != nil {
-		return nil, fmt.Errorf("pigpen: sign: build self-signature markl-id: %w", err)
-	}
-
-	signed := make([]hyphence.MetadataLine, 0, len(lines)+1)
-	signed = append(signed, lines[:typeLineIdx]...)
-	signed = append(signed, hyphence.MetadataLine{Prefix: '-', Value: sigID})
-	signed = append(signed, lines[typeLineIdx:]...)
-
-	doc := &hyphence.Document{Metadata: signed}
-	var buf bytes.Buffer
-	emitter := &hyphence.FormatBodyEmitter{Doc: doc, Out: &buf}
-	if _, err := emitter.ReadFrom(strings.NewReader("")); err != nil {
-		return nil, fmt.Errorf("pigpen: sign: re-encode signed document: %w", err)
-	}
-
-	return buf.Bytes(), nil
+	return signed, err
 }

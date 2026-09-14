@@ -1,8 +1,8 @@
 ---
 status: proposed
 date: 2026-06-16
-amended: 2026-07-16
-amendments: 24
+amended: 2026-09-14
+amendments: 26
 ---
 
 # Personal API (PAPI) Wire Format and HTTP Interface

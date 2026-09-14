@@ -7,8 +7,8 @@ import (
 )
 
 // Every command that can sign with the card registers the same three flags, and it
-// does so in FIVE separate places (papi#79): authFlags.register, forgeTokenFlags.register,
-// newPigpenSignCmd, newSignChallengeCmd and newSignChallengeServeCmd. Nothing tested
+// does so in SIX separate places (papi#79): authFlags.register, forgeTokenFlags.register,
+// newPigpenSignCmd, newHyphenceSignCmd, newSignChallengeCmd and newSignChallengeServeCmd. Nothing tested
 // that they all still exist, so an extraction could drop one and only a user would
 // find out.
 //

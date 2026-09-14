@@ -5,8 +5,11 @@ package inspect
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"math/big"
 	"net/http"
 	"strings"
 
@@ -144,6 +147,12 @@ func SignHyphence(ctx context.Context, signer HyphenceSigner, guid, purpose stri
 // slot-9A key in publishedIDs (the bare ids of /papi/piggy-ids), returning the
 // markl-id of the key that verified.
 func VerifyHyphenceSignature(data []byte, purpose string, publishedIDs []string) (string, error) {
+	return verifyHyphence(data, purpose, func() []string { return publishedIDs })
+}
+
+// verifyHyphence calls fetchPublishedIDs only once a well-formed signature line
+// is found, so malformed or unsigned documents cost no /papi/piggy-ids fetch.
+func verifyHyphence(data []byte, purpose string, fetchPublishedIDs func() []string) (string, error) {
 	if err := validateHyphenceSigPurpose(purpose); err != nil {
 		return "", err
 	}
@@ -175,8 +184,15 @@ func VerifyHyphenceSignature(data []byte, purpose string, publishedIDs []string)
 		return "", fmt.Errorf("reconstruct signed input: %w", err)
 	}
 
+	if len(sigID.Payload) != 64 {
+		return "", ErrHyphenceSigMalformed
+	}
+	digest := sha256.Sum256(input)
+	r := new(big.Int).SetBytes(sigID.Payload[:32])
+	s := new(big.Int).SetBytes(sigID.Payload[32:])
+
 	sawKey := false
-	for _, id := range publishedIDs {
+	for _, id := range fetchPublishedIDs() {
 		keyID, err := markl.Parse(id)
 		if err != nil || keyID.Purpose != markl.PurposePIVAuth || keyID.Format != markl.FormatSSHEcdsaNistp256Pub {
 			continue
@@ -186,7 +202,7 @@ func VerifyHyphenceSignature(data []byte, purpose string, publishedIDs []string)
 			continue
 		}
 		sawKey = true
-		if ecdsaVerifyRaw(pub, input, sigID.Payload) {
+		if ecdsa.Verify(pub, digest[:], r, s) {
 			return id, nil
 		}
 	}
@@ -198,7 +214,7 @@ func VerifyHyphenceSignature(data []byte, purpose string, publishedIDs []string)
 
 // VerifyHyphenceForDomain verifies data against c's live /papi/piggy-ids.
 func VerifyHyphenceForDomain(ctx context.Context, c *papi.Client, data []byte, purpose string) (string, error) {
-	return VerifyHyphenceSignature(data, purpose, fetchPiggyAuthIDs(ctx, c))
+	return verifyHyphence(data, purpose, func() []string { return fetchPiggyAuthIDs(ctx, c) })
 }
 
 // ResolveHyphence fetches path from c, verifies its signature under purpose
