@@ -74,6 +74,7 @@ func main() {
 	root.AddCommand(newValidateCmd())
 	root.AddCommand(newPiggyIDsCmd())
 	root.AddCommand(newPigpenCmd())
+	root.AddCommand(newHyphenceCmd())
 	root.AddCommand(newSSHKeysCmd())
 	root.AddCommand(newSSHCopyIDCmd())
 	root.AddCommand(newSSHSyncCmd())
@@ -904,8 +905,9 @@ func newPigpenSignCmd() *cobra.Command {
 		Short: "Self-sign an unsigned PAPI pigpen document with slot-9A",
 		Long: "Read an unsigned (or not-yet-self-signed) hyphence /papi/pigpen document on stdin, " +
 			"sign its RFC-0001 §14.2 strip-self bytes with the caller's PIV slot-9A key (ECDSA " +
-			"P-256, via `piggy sign-bytes --slot 9a` — the card must be physically present; no " +
-			"agent), and print the same document on stdout with a fresh " +
+			"P-256; --signer auto, the default, signs through the $SSH_AUTH_SOCK agent when set " +
+			"and otherwise directly over PCSC via `piggy sign-bytes --slot 9a`; agent and pcsc " +
+			"force one path), and print the same document on stdout with a fresh " +
 			"papi-pigpen-self-sig-v1@ecdsa_p256_sig markl id inserted as its own `-` line, " +
 			"immediately before the `! pigpen-v1` type line. Refuses an " +
 			"input that is already self-signed (won't clobber an existing signature line) or that " +
@@ -2833,8 +2835,9 @@ func newSignChallengeCmd() *cobra.Command {
 		Long: "Read a §5.2 challenge — the bare challenge payload {challenge_id, nonce, " +
 			"expires_at} — on stdin, build the §5.2 domain-separated preimage " +
 			"papi-auth-v1\\n<domain>\\n<nonce>, sign SHA-256(preimage) with the caller's PIV " +
-			"slot-9A key (ECDSA P-256, via `piggy sign-bytes --slot 9a` — the card must be " +
-			"physically present; no agent), and print the POST /papi/auth/response body " +
+			"slot-9A key (ECDSA P-256; --signer auto, the default, signs through the " +
+			"$SSH_AUTH_SOCK agent when set and otherwise directly over PCSC via `piggy " +
+			"sign-bytes --slot 9a`), and print the POST /papi/auth/response body " +
 			"{challenge_id, signature} on stdout, where signature is a " +
 			"papi-auth-sig-v1@ecdsa_p256_sig markl id (raw 64-byte r‖s). A live server wraps " +
 			"its POST /papi/auth/challenge response in the §4.2 {data, meta} envelope; pass " +

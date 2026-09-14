@@ -484,8 +484,9 @@ Answer a [§5.2 sign-challenge](docs/rfcs/0001-personal-api-papi-wire-format.md)
 (the RECOMMENDED `papi/v0` auth scheme). It is a strict signing **primitive**: read
 the **bare challenge payload** (`{challenge_id, nonce, expires_at}`) on **stdin**,
 build the domain-separated preimage `papi-auth-v1\n<domain>\n<nonce>`, sign
-`SHA-256(preimage)` with your PIV **slot-9A** key (ECDSA P-256, via `piggy
-sign-bytes --slot 9a` — the card must be present; no agent), and print the `POST
+`SHA-256(preimage)` with your PIV **slot-9A** key (ECDSA P-256; `--signer auto`,
+the default, signs through the `$SSH_AUTH_SOCK` agent when set and otherwise
+directly over PCSC via `piggy sign-bytes --slot 9a`), and print the `POST
 /papi/auth/response` body `{challenge_id, signature}` on **stdout**, where
 `signature` is a `papi-auth-sig-v1@ecdsa_p256_sig` markl id (raw 64-byte `r‖s`).
 A live server wraps its `POST /papi/auth/challenge` response in the
@@ -508,6 +509,27 @@ $ echo '{"challenge_id":"a1b2…","nonce":"3f9c…","expires_at":1750000000}' \
 $ curl -fsS https://api.example.com/papi/auth/challenge -d '{"auth_key_id":"…"}' \
     | papi sign-challenge --domain example.com --from-response --pin ******
 {"challenge_id":"a1b2…","signature":"papi-auth-sig-v1@ecdsa_p256_sig-qqqsyq…"}
+```
+
+### `papi hyphence sign|verify|resolve`
+
+Sign and check [RFC-0001 §15](docs/rfcs/0001-personal-api-papi-wire-format.md)
+signed hyphence documents — a slot-9A ECDSA P-256 signature over the **whole**
+document, body included, carried as a `- <purpose>@ecdsa_p256_sig-…` metadata line.
+The signed input is the metadata with that purpose's line removed, re-emitted in
+hyphence canonical form, followed (when there is a body) by the blank separator
+line and the body bytes verbatim; a body-less document signs exactly like
+`papi pigpen sign`. `--purpose` is owned by the document's domain (conformist's
+profile uses `conformist-profile-sig-v1`). `sign` reads stdin and writes the signed
+document to stdout; `--signer auto` (the default) uses the `$SSH_AUTH_SOCK` agent
+when set and otherwise `piggy sign-bytes` over PCSC. `verify` checks a document on
+stdin against a domain's `/papi/piggy-ids`; `resolve` fetches a path and does the
+same. Both print the bytes verbatim on success.
+
+```console
+$ papi hyphence sign --purpose conformist-profile-sig-v1 < profile.hyphence > signed.hyphence
+$ papi hyphence verify --purpose conformist-profile-sig-v1 --domain linenisgreat.com < signed.hyphence
+$ papi hyphence resolve linenisgreat.com --path /papi/conformist-profile --purpose conformist-profile-sig-v1
 ```
 
 ### `papi gh-check <domain>`

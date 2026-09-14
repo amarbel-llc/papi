@@ -104,34 +104,10 @@ func findPigpenAuthKey(lines []hyphence.MetadataLine) (keyMarklID string, keyPoi
 	return "", nil, false
 }
 
-// pigpenStripSelfBytes reconstructs the §14.2 strip-self signing input:
-// lines with the self-signature `-` line omitted entirely (as if it were
-// never added, mirroring §10.2's JSON strip-and-canonicalize recipe),
-// canonicalized and re-encoded via hyphence's own FormatBodyEmitter — the
-// same canonicalization a signer applies before signing — so a verifier
-// reconstructing these bytes from a parsed document lands on identical
-// bytes regardless of the source line order. Unlike the earlier `!`-line
-// lock scheme (which always kept the type line, only clearing its lock
-// suffix), the self-signature now has no "present but empty" state of its
-// own on the wire — an unsigned document simply has no such line, so
-// omitting it entirely from the signing input is the exact analogue.
+// pigpenStripSelfBytes is the §14.2 strip-self signing input: the body-less
+// case of the generic §15.1 signed input under the pigpen self-sig purpose.
 func pigpenStripSelfBytes(lines []hyphence.MetadataLine) ([]byte, error) {
-	prefix := markl.PurposePigpenSelfSig + "@"
-	stripped := make([]hyphence.MetadataLine, 0, len(lines))
-	for _, l := range lines {
-		if l.Prefix == '-' && strings.HasPrefix(l.Value, prefix) {
-			continue
-		}
-		stripped = append(stripped, l)
-	}
-
-	doc := &hyphence.Document{Metadata: stripped}
-	var buf bytes.Buffer
-	emitter := &hyphence.FormatBodyEmitter{Doc: doc, Out: &buf}
-	if _, err := emitter.ReadFrom(strings.NewReader("")); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+	return HyphenceStripSelfBytes(lines, nil, markl.PurposePigpenSelfSig)
 }
 
 // Sentinel errors returned by verifyPigpenSelfSignature, letting callers
@@ -427,20 +403,6 @@ var errPigpenAlreadySigned = errors.New("pigpen document already has a self-sign
 // before ever invoking the signer if there isn't one (no point spending a
 // card signature on input that can't be completed).
 var errPigpenNoTypeLine = errors.New("no `! pigpen-v1` type line to insert the self-signature line before")
-
-// PigpenSigner signs message bytes with the slot-9A key of the card
-// identified by guid, returning the raw 64-byte r‖s ECDSA P-256 signature —
-// structurally identical to signchallenge.Signer (same method, same
-// contract: msg is the bare preimage, NOT a pre-hash, since the card hashes
-// SHA-256 internally). Defined locally rather than imported from
-// signchallenge: Go's structural typing means any value already satisfying
-// signchallenge.Signer's method set (e.g. enroll.PiggySignBytesSigner,
-// enroll.AgentSignBytesSigner) also satisfies this interface with zero
-// adapter code, so there's no reason to import that package just for its
-// interface declaration.
-type PigpenSigner interface {
-	SignSlot9A(ctx context.Context, guid string, msg []byte) (rs []byte, err error)
-}
 
 // SignPigpen produces a self-signed pigpen document (RFC-0001 §14.2,
 // papi#54): the producer-side inverse of verifyPigpenSelfSignature. data is

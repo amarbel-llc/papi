@@ -134,6 +134,11 @@ must preserve:
   just-us. conformist self-lints via a fixed-output source pin of just-us
   (`justUsSrc`/`justUsPkg` in its flake), the cycle-free pattern that inspired
   the "central injection" question this record answers.
+- RFC-0001 §15 (Signed Hyphence Documents), §15.3 `GET /papi/conformist-profile`
+  — the house conformist lint profile served as a signed hyphence document
+  (`conformist-profile-sig-v1`, body included), produced with
+  `papi hyphence sign`. It publishes the canonical profile as DATA with a
+  document-bound signature; the brownfield injection problem above is unchanged.
 - eng#280 — the justfile-linter rollout this adoption channel would enable.
 - The near-term fleet-flip options (fold the roster into `conformist.lib.presets.eng`
   vs a separate preset vs the template-composition path) are a conformist-side

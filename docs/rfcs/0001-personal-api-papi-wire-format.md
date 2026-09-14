@@ -244,6 +244,7 @@ precedence over any generic collection/item route that could otherwise capture
 | GET    | `/papi/profiles`            | projected `profiles[]`, JSON                | projected          |
 | GET    | `/papi/piggy-ids`           | `text/plain` piggy-ids file (recipients + auth ids) | projected          |
 | GET    | `/papi/pigpen`              | `text/vnd.pigpen` self-signed payload-less pigpen doc (OPTIONAL) | projected          |
+| GET    | `/papi/conformist-profile`  | `text/plain` §15 signed conformist profile doc (OPTIONAL) | no                 |
 | GET    | `/papi/ssh-authorized-keys` | `text/plain` authorized_keys body           | projected          |
 | GET    | `/papi/bootstrap`           | `text/plain` self-bootstrap shim (OPTIONAL) | no                 |
 | POST   | `/papi/auth/challenge`      | challenge JSON (§5)                         | no                 |
@@ -267,7 +268,8 @@ unauthenticated request, the registered principal for an authenticated one.
   `/papi/caches`, (when its public projection is non-empty, §13)
   `/papi/profiles`, (when its public projection is non-empty, §14)
   `/papi/pigpen`, (when the document serves a self-bootstrap shim, §4.2)
-  `/papi/bootstrap`, and
+  `/papi/bootstrap`, (when the server serves a conformist profile, §15.3, under
+  the key `conformist_profile`) `/papi/conformist-profile`, and
 - `auth` — `{scheme, challenge, response, present_session_as}`, where
 `challenge`/`response` are absolute URLs and `scheme` is the §5 scheme the server
 offers: `"piggy-sign-challenge"` (the RECOMMENDED slot-9A signature scheme) or
@@ -316,8 +318,8 @@ The `text/plain` endpoints (`/papi/piggy-ids`, `/papi/ssh-authorized-keys`, and
 the OPTIONAL `/papi/bootstrap`) MUST NOT use the envelope; they return a raw body
 with `Content-Type: text/plain`. The OPTIONAL `/papi/pigpen` (§14), whose
 `Content-Type: text/vnd.pigpen` payload is likewise unenveloped, similarly
-returns a raw, non-JSON body. Clients MUST NOT assume every PAPI response is
-the JSON envelope.
+returns a raw, non-JSON body, as does the OPTIONAL `/papi/conformist-profile`
+(§15.3). Clients MUST NOT assume every PAPI response is the JSON envelope.
 
 - `/papi/piggy-ids` MUST emit a piggy-ids file: comment lines beginning with `#`,
   then one piggy `id` per line (each OPTIONALLY followed by `  # <label>`) — the
@@ -1325,14 +1327,130 @@ self-signature is SHOULD not MUST:
     ! pigpen-v1
     ---
 
-A self-signed variant — shown with a placeholder lock, since the exact
-markl purpose is RESERVED per §14.2:
+A self-signed variant, as `papi pigpen sign` produces it — the body-less
+instance of the §15.1 signed-document scheme under the purpose
+`papi-pigpen-self-sig-v1`, on its own `-` line (piggy RFC 0008 §2.6 reserves
+the `!`-line lock slot for a sealed document's header MAC):
 
     ---
     - piggy-recipient-v1@pivy_ecdh_p256_pub-<blech32>  # primary yubikey (9D)
     - piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<blech32>
-    ! pigpen-v1@<RESERVED-self-signature-markl-id>
+    - papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>
+    ! pigpen-v1
     ---
+
+### 15. Signed Hyphence Documents
+
+A PAPI server MAY serve documents authored as hyphence documents **with a
+body** (hyphence RFC 0001), signed by one of the subject's published slot-9A
+keys, so a cached, mirrored, or vendored copy is tamper-evident and verifiable
+against a key rather than the host that served it. §14's pigpen document is the
+body-less instance of this scheme; §15.3 defines the first body-bearing one.
+
+#### 15.1. Signature line and signed input
+
+A **document signature** is a `-` metadata line whose whole value is a markl-id
+(madder [RFC-0002]) `<purpose>@ecdsa_p256_sig-<blech32>`: a raw 64-byte `r‖s`
+ECDSA P-256 signature over SHA-256 of the **signed input** below, made with a
+slot-9A key.
+
+`<purpose>` names what is signed and is **owned by the domain that owns the
+document's type** (the `!` line), not by this RFC. This RFC uses
+`papi-pigpen-self-sig-v1` (§14) and `conformist-profile-sig-v1` (§15.3, owned by
+conformist). A new signed document picks its purpose in its own specification.
+
+The **signed input** for `<purpose>` is constructed from the parsed document:
+
+1. Take the metadata lines, and remove every `-` line whose value begins with
+   `<purpose>@`.
+2. Emit them in hyphence canonical form: the boundary line `---\n`; each
+   remaining metadata line in hyphence canonical line order, preceded by its
+   leading comment lines (`% <comment>\n`), as `<prefix> <value>\n`; then the
+   boundary line `---\n`. Trailing comments after the last metadata line are
+   **not** part of the signed input.
+3. If the document has a body (one or more bytes after the metadata's blank
+   separator line), append the separator `\n` and then the body bytes exactly as
+   they follow the separator, with no normalization of line endings, trailing
+   newline, or encoding. A body-less document appends nothing.
+
+For a body-less document the signed input is therefore the §14.2 pigpen input
+unchanged, and every existing pigpen self-signature remains valid.
+
+A producer MUST insert exactly one signature line, SHOULD place it immediately
+before the `!` type line (where hyphence canonical order puts `-` lines anyway),
+and MUST refuse to sign a document that already carries a line for the same
+purpose. A document SHOULD carry at most one signature line of **any** §15
+purpose: a second signature's input would include the first signature's line
+while the first's input would include the second's, so they cannot both verify.
+
+A server SHOULD serve the signed bytes verbatim. A byte-preserving round trip is
+not required — a verifier reconstructs the signed input from the parsed
+document — but the body bytes MUST NOT be altered.
+
+#### 15.2. Verification
+
+A verifier, given a document, a purpose, and the domain it was fetched from:
+
+1. parses the document; finds the `-` lines whose value begins with
+   `<purpose>@` — none is **unsigned**; more than one is **invalid**;
+2. parses that value as a markl-id; a purpose other than `<purpose>` or a
+   format other than `ecdsa_p256_sig` is **unverifiable**;
+3. collects every `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub` id the same domain
+   publishes on `/papi/piggy-ids` (§4.2); none is **unverifiable**;
+4. reconstructs the §15.1 signed input and verifies the signature against each
+   collected key; the document is **authentic** if any key verifies and
+   **invalid** otherwise.
+
+Unlike §14, the document need not carry its own key line: the key set is the
+domain's published slot-9A keys. A consumer that fetches both the document and
+`/papi/piggy-ids` from one host is only as safe as that host; it SHOULD pin the
+verifying key (trust on first use, or a key configured out of band) and require
+the same key on later fetches, exactly as §14.2 recommends for a pigpen
+resolver. Whether an unsigned document is acceptable is consumer policy; the
+reference resolvers (`papi hyphence resolve`, `papi pigpen resolve`) reject it.
+
+#### 15.3. `GET /papi/conformist-profile`
+
+A server MAY serve the subject's house **conformist lint profile** (conformist
+RFC 0005) at `GET /papi/conformist-profile`: a hyphence document whose type line
+is `! toml-conformist_profile-v1` and whose TOML body pins artifacts and carries
+lint rules, signed per §15.1 under the purpose `conformist-profile-sig-v1`.
+
+- The response MUST NOT use the §4.2 envelope; the body is the document bytes
+  with `Content-Type: text/plain; charset=utf-8`. A client MUST identify the
+  document by its `!` type line, not by `Content-Type`.
+- The endpoint is **public and unprojected**: it is the same for every requester
+  and MUST NOT carry content the §2 projection would gate. Like `/papi/bootstrap`
+  it feeds tooling that runs before (or without) a §5 session.
+- The served document SHOULD be signed. A server that does not implement the
+  endpoint MUST answer `404`.
+- When served, the discovery document (§4.1) MUST list its absolute URL under
+  the `resources` key `conformist_profile`.
+
+The profile gets its own endpoint rather than a `templates[]` (§7) entry:
+`templates[]` entries are JSON pointers (`flakeref`s) resolved by
+`nix flake init`, whereas a profile's value is its own signed body, which would
+otherwise ride inside every `GET /papi` response under the JSON §10 signature
+instead of carrying a document-bound one. The name is qualified because §13
+already uses "profiles" for host profiles. Further signed document types SHOULD
+follow the same shape — one `/papi/<name>` endpoint per type, naming its type
+line and signature purpose — each added by amendment.
+
+#### 15.4. Worked example
+
+    ---
+    # linenisgreat house lint profile
+    - conformist-profile-sig-v1@ecdsa_p256_sig-<blech32>
+    ! toml-conformist_profile-v1
+    ---
+
+    [linters.shellcheck]
+    enabled = true
+
+Its signed input is the same bytes with the `- conformist-profile-sig-v1@…` line
+removed. It is produced with `papi hyphence sign --purpose
+conformist-profile-sig-v1` and checked with `papi hyphence resolve <domain>
+--path /papi/conformist-profile --purpose conformist-profile-sig-v1`.
 
 ## Security Considerations
 
@@ -1529,6 +1647,12 @@ and echoed in `meta.version` on `GET /papi`.
   `caches[]` is unchanged, a client predating §11 ignores both, and the discovery
   `caches` resource appears only when the document advertises caches. No version
   bump is required.
+- The §15 signed hyphence documents and the `/papi/conformist-profile` endpoint
+  (§15.3) are an additive OPTIONAL extension within `papi/v0`: a server without
+  them is unchanged, a client predating §15 ignores the endpoint and its
+  discovery resource, and §15.1's signed input for a body-less document equals
+  §14.2's, so existing pigpen self-signatures still verify. No version bump is
+  required.
 - The `localsend` block is reserved for `papi/v1`; in `papi/v0`
   `localsend.enabled` MUST be `false`. (The slot-9A signature auth strategy once
   reserved here is now the RECOMMENDED `papi/v0` §5 sign-challenge scheme — §5,
@@ -1887,3 +2011,20 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   plane and grants nothing. The consuming side is `papi forge token --domain`, which
   resolves the mint/revoke endpoint from the document instead of taking a hardcoded
   host (papi#73, FDR-0016). Additive and OPTIONAL — no version bump.
+- **2026-09-14, Amendment 26 — Signed hyphence documents and
+  `/papi/conformist-profile` (§15).** Added §15, generalizing §14's pigpen
+  self-signature to hyphence documents **with a body**: a
+  `- <purpose>@ecdsa_p256_sig-…` line whose signed input is the canonical
+  metadata minus that purpose's lines, followed — when a body exists — by the
+  blank separator line and the body bytes verbatim (§15.1), verified against
+  the domain's published `/papi/piggy-ids` slot-9A keys (§15.2). The purpose is
+  owned by the document type's domain. Added the OPTIONAL public, unprojected,
+  unenveloped `GET /papi/conformist-profile` (§15.3), serving conformist's RFC
+  0005 `toml-conformist_profile-v1` profile signed under conformist's
+  `conformist-profile-sig-v1`, with the `conformist_profile` discovery resource
+  (§4, §4.1, §4.2) and a Compatibility note; chosen over a `templates[]` entry
+  because a profile's value is its signed body, not a flakeref. Corrected the
+  §14.3 self-signed example to the `-`-line form `papi pigpen sign` emits. A
+  body-less document's §15.1 input equals §14.2's, so existing pigpen signatures
+  still verify. Producer `papi hyphence sign`; consumers `papi hyphence
+  verify|resolve`. Additive and OPTIONAL — no version bump.

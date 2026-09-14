@@ -39,6 +39,7 @@ func TestSignerFlagsRegisteredAtEverySite(t *testing.T) {
 		{"forgeTokenFlags (via forge token)", newForgeTokenCmd, "sign-guid"},
 		// The three standalone signing commands.
 		{"pigpen sign", newPigpenSignCmd, "guid"},
+		{"hyphence sign", newHyphenceSignCmd, "guid"},
 		{"sign-challenge", newSignChallengeCmd, "guid"},
 		{"sign-challenge-serve", newSignChallengeServeCmd, "guid"},
 	}
