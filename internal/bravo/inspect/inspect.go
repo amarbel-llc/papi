@@ -72,6 +72,7 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 	pts = append(pts, coLocationChecks(ctx, c)...)
 	pts = append(pts, signaturePoints(ctx, c)...)
 	pts = append(pts, pigpenSignaturePoints(ctx, c)...)
+	pts = append(pts, conformistProfilePoints(ctx, c, disc)...)
 
 	emit(rep, pts)
 	if rep.Err() != nil {

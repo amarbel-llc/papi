@@ -27,3 +27,8 @@ import (
 func pigpenSignaturePoints(_ context.Context, _ *papi.Client) []point {
 	return nil
 }
+
+// conformistProfilePoints is a no-op stub for the same reason (conformistprofile.go).
+func conformistProfilePoints(_ context.Context, _ *papi.Client, _ *papi.Discovery) []point {
+	return nil
+}

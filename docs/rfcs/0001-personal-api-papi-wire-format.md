@@ -1620,7 +1620,10 @@ The **verification** side of §9.4 and §10.3 — fetching `proof_uri`, checking
 backlink, and verifying the `signatures` — is the introspection/validation tool's
 own conformance surface (this repository, amarbel-llc/papi), not the server's. The
 validator's checks against a live or fixtured domain are the executable form of
-the §9.4 three-outcome verdict and the §10.3 signed/invalid/unsigned verdict.
+the §9.4 three-outcome verdict, the §10.3 signed/invalid/unsigned verdict, the
+§14.2 pigpen self-signature verdict, and the §15.2–§15.3 conformist-profile
+checks (served iff advertised, raw unenveloped body, type line, signature), with
+`docs/rfcs/vectors/rfc0001-s15-hyphence-sig-v1.json` pinning the §15.1 bytes.
 
 A language-agnostic introspection/validation tool — a conformance checker that
 fetches a domain's PAPI endpoints and verifies them against this RFC — is the

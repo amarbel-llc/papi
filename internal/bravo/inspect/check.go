@@ -56,8 +56,11 @@ func resourcePath(raw string) string {
 	return u.Path
 }
 
+const conformistProfilePath = "/papi/conformist-profile"
+
 func isTextEndpoint(path string) bool {
-	return strings.HasSuffix(path, "/piggy-ids") || strings.HasSuffix(path, "/ssh-authorized-keys")
+	return strings.HasSuffix(path, "/piggy-ids") || strings.HasSuffix(path, "/ssh-authorized-keys") ||
+		strings.HasSuffix(path, conformistProfilePath)
 }
 
 // discoveryVerdicts checks the discovery document's required fields (§4.1) and
