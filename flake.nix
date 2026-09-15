@@ -6,7 +6,10 @@
     # library (conformist.lib), and the eng-convention presets.
     conformist.url = "https://code.linenisgreat.com/conformist/archive/master.tar.gz";
     # igloo's legacyPackages carries the gomod2nix overlay's buildGoApplication /
-    # mkGoEnv and the shared pkgs.go; the fork's buildGoApplication auto-injects
+    # mkGoEnv and igloo's Go compiler, pkgs.goToolchain.go (igloo FDR-0012: the
+    # toolchain is scoped to igloo's builders; pkgs.go is plain nixpkgs' go, so
+    # builds and the devShell name goToolchain.go explicitly to agree). The
+    # fork's buildGoApplication auto-injects
     # `-X main.version` from version.env and `-X main.commit` from src.rev
     # (eng-versioning(7)). Follow conformist's nixpkgs-master so the closure is
     # shared rather than duplicated.
@@ -106,7 +109,7 @@
       system:
       let
         # igloo's flake path (not the `import igloo {}` shim): applies the fork
-        # overlay (buildGoApplication, mkGoEnv, pkgs.go) over our pinned
+        # overlay (buildGoApplication, mkGoEnv, pkgs.goToolchain.go) over our pinned
         # nixpkgs-master.
         pkgs = igloo.legacyPackages.${system};
 
@@ -160,7 +163,7 @@
             "."
             "cmd/pigpen-resolver-papi-http"
           ];
-          go = pkgs.go;
+          go = pkgs.goToolchain.go;
           GOTOOLCHAIN = "local";
           # Unit tests run via `just test-go` (some reach the network); keep the
           # package build hermetic.
@@ -211,7 +214,7 @@
           src = self;
           pwd = ./.;
           modules = ./gomod2nix.toml;
-          go = pkgs.go;
+          go = pkgs.goToolchain.go;
           GOTOOLCHAIN = "local";
           doCheck = false;
           buildPhase = ''
@@ -223,7 +226,7 @@
             runHook preInstall
             mkdir -p $out
             cp papi-client.wasm $out/papi-client.wasm
-            cp ${pkgs.go}/share/go/lib/wasm/wasm_exec.js $out/wasm_exec.js
+            cp ${pkgs.goToolchain.go}/share/go/lib/wasm/wasm_exec.js $out/wasm_exec.js
             cp clients/ts/papi.ts $out/papi.ts
             runHook postInstall
           '';
@@ -241,7 +244,7 @@
           pwd = ./.;
           modules = ./gomod2nix.toml;
           subPackages = [ "cmd/papi-installer" ];
-          go = pkgs.go;
+          go = pkgs.goToolchain.go;
           GOTOOLCHAIN = "local";
           CGO_ENABLED = "0";
           doCheck = false;
@@ -299,7 +302,7 @@
             # mkGoEnv puts the gomod2nix-regen `go` wrapper + the gomod2nix CLI
             # on PATH, so `just build-gomod2nix` / `just update-go` work.
             (pkgs.mkGoEnv { pwd = ./.; })
-            pkgs.go
+            pkgs.goToolchain.go
             pkgs.just
             conformistPkg
             # The spinclass hook pair (see packages.conformist-pre-commit /
