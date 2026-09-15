@@ -32,8 +32,8 @@ func conformanceChecks(ctx context.Context, c *papi.Client, disc *papi.Discovery
 			pts = append(pts, mustFail("conformance: GET "+path, map[string]any{"error": err.Error()}))
 			continue
 		}
-		if isTextEndpoint(path) {
-			pts = append(pts, textEndpointPoint(resp))
+		if wantType, raw := rawEndpointContentType(path); raw {
+			pts = append(pts, rawEndpointPoint(resp, wantType))
 			continue
 		}
 		pts = append(pts, envelopePoints(resp)...)
@@ -57,11 +57,6 @@ func resourcePath(raw string) string {
 }
 
 const conformistProfilePath = "/papi/conformist-profile"
-
-func isTextEndpoint(path string) bool {
-	return strings.HasSuffix(path, "/piggy-ids") || strings.HasSuffix(path, "/ssh-authorized-keys") ||
-		strings.HasSuffix(path, conformistProfilePath)
-}
 
 // discoveryVerdicts checks the discovery document's required fields (§4.1) and
 // that its resource links are absolute (MUST) and https (SHOULD; http:// is
@@ -208,24 +203,6 @@ func hasPrivateVisibility(v any) bool {
 		}
 	}
 	return false
-}
-
-// textEndpointPoint checks a text/plain endpoint: 200, a raw body that is NOT the
-// JSON envelope (§4.2), and (SHOULD) a text/plain Content-Type.
-func textEndpointPoint(resp *papi.Response) point {
-	if resp.Status != http.StatusOK {
-		return mustFail("conformance: "+resp.Path+" status 200", map[string]any{"got": resp.Status})
-	}
-	var env map[string]json.RawMessage
-	if json.Unmarshal(resp.Body, &env) == nil && hasKey(env, "data") && hasKey(env, "meta") {
-		return mustFail("conformance: "+resp.Path+" MUST NOT use the {data,meta} envelope (§4.2)",
-			map[string]any{"content_type": resp.ContentType})
-	}
-	if !strings.HasPrefix(resp.ContentType, "text/plain") {
-		return shouldFail("conformance: "+resp.Path+" Content-Type text/plain (§4.2)",
-			map[string]any{"got": resp.ContentType})
-	}
-	return ok("conformance: " + resp.Path + " raw text/plain, not enveloped (§4.2)")
 }
 
 // authProbes checks the auth endpoints' error codes (§5.1, §5.2) without a card:

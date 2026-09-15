@@ -95,7 +95,7 @@ func TestConformistProfilePoints(t *testing.T) {
 }
 
 func TestConformistProfileIsTextEndpoint(t *testing.T) {
-	if !isTextEndpoint(conformistProfilePath) {
+	if wantType, raw := rawEndpointContentType(conformistProfilePath); !raw || wantType != "text/plain" {
 		t.Errorf("%s must be probed as a raw text endpoint, not a JSON envelope", conformistProfilePath)
 	}
 }

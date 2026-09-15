@@ -46,7 +46,7 @@ func conformistProfilePoints(ctx context.Context, c *papi.Client, disc *papi.Dis
 		// The conformance loop only probes advertised resources, so check the raw body here.
 		pts = append(pts,
 			mustFail(label+": served but discovery does not list resources."+conformistProfileResourceKey+" (§4.1)", nil),
-			textEndpointPoint(resp))
+			rawEndpointPoint(resp, "text/plain"))
 	}
 
 	lines, _, perr := parseHyphenceDocument(resp.Body)

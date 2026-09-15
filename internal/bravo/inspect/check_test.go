@@ -81,19 +81,19 @@ func TestEnvelopePoints(t *testing.T) {
 	}
 }
 
-func TestTextEndpointPoint(t *testing.T) {
+func TestRawEndpointPoint(t *testing.T) {
 	enveloped := &papi.Response{
 		Path: "/papi/piggy-ids", Status: 200, ContentType: "application/json",
 		Body: []byte(`{"data":[],"meta":{}}`),
 	}
-	if p := textEndpointPoint(enveloped); p.ok || !p.must {
+	if p := rawEndpointPoint(enveloped, "text/plain"); p.ok || !p.must {
 		t.Errorf("enveloped text endpoint not a MUST failure: %+v", p)
 	}
 	raw := &papi.Response{
 		Path: "/papi/piggy-ids", Status: 200, ContentType: "text/plain; charset=utf-8",
 		Body: []byte("# ids\npiggy-recipient-v1@pivy_ecdh_p256_pub-aaa\n"),
 	}
-	if p := textEndpointPoint(raw); !p.ok {
+	if p := rawEndpointPoint(raw, "text/plain"); !p.ok {
 		t.Errorf("raw text/plain endpoint flagged: %s", p.desc)
 	}
 }
