@@ -1310,6 +1310,118 @@ func TestReposURLFromFlattenedRepos(t *testing.T) {
 	}
 }
 
+// TestCloneURLPathIncludesIdentity covers the §1.1 path_includes_identity derivation
+// (Amendment 27) at the unit level, across both clone channels. The absent case is the
+// one that matters most: every forge entry published before the member existed omits
+// it and MUST keep the conventional <identity>/<name> path, which is why the field is
+// a *bool — a plain bool would read all of them as identity-free.
+func TestCloneURLPathIncludesIdentity(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name  string
+		forge cloneForge
+		want  string
+	}{
+		{
+			name:  "absent means identity in path (pre-Amendment-27 entry)",
+			forge: cloneForge{SSHClone: "ssh://git@code.example.com"},
+			want:  "ssh://git@code.example.com/myorg/myrepo.git",
+		},
+		{
+			name:  "explicit true means identity in path",
+			forge: cloneForge{SSHClone: "ssh://git@code.example.com", PathIncludesIdentity: &yes},
+			want:  "ssh://git@code.example.com/myorg/myrepo.git",
+		},
+		{
+			name:  "false drops the identity segment on the ssh_clone channel",
+			forge: cloneForge{SSHClone: "ssh://git@code.example.com", PathIncludesIdentity: &no},
+			want:  "ssh://git@code.example.com/myrepo.git",
+		},
+		{
+			name:  "false drops it on the base_url-derived channel too",
+			forge: cloneForge{BaseURL: "https://code.example.com", PathIncludesIdentity: &no},
+			want:  "git@code.example.com:myrepo.git",
+		},
+		{
+			name:  "absent on the base_url-derived channel keeps it",
+			forge: cloneForge{BaseURL: "https://github.com"},
+			want:  "git@github.com:myorg/myrepo.git",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.forge.cloneURL("myorg", "myrepo"); got != tc.want {
+				t.Errorf("cloneURL = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestReposURLIdentityFreeForge is the papi#85 regression, mirroring the live
+// linenisgreat shape: a single-tenant vanity forge declares path_includes_identity
+// false, so --url must emit the identity-free clone url. The identity-bearing url it
+// emitted before is not merely non-canonical — the same path 404s on that forge's
+// HTTPS plane (RFC-0001 §1.1.1). The github entry in the same document is the control:
+// it omits the member and MUST be unaffected.
+func TestReposURLIdentityFreeForge(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/papi/forges", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[`+
+			`{"id":"github-primary","kind":"github","base_url":"https://github.com","identity":"friedenberg","repos":[]},`+
+			`{"id":"forgejo-code-linenisgreat","kind":"forgejo","base_url":"https://code.linenisgreat.com","ssh_clone":"ssh://git@code.linenisgreat.com","identity":"linenisgreat","path_includes_identity":false,"repos":[]}`+
+			`],"meta":{"type":"forges","visibility":"public"}}`)
+	})
+	mux.HandleFunc("/papi/repos", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[`+
+			`{"name":"madder","url":"https://code.linenisgreat.com/madder","owner":"linenisgreat","forge":"forgejo-code-linenisgreat","kind":"forgejo","visibility":"public","default_branch":"master"},`+
+			`{"name":"xdg","url":"https://github.com/friedenberg/xdg","owner":"friedenberg","forge":"github-primary","kind":"github","visibility":"public","default_branch":"master"}`+
+			`],"meta":{"type":"repos","visibility":"public","count":2}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	out, err := runRepos(t, srv.URL, "--url")
+	if err != nil {
+		t.Fatalf("repos --url: %v", err)
+	}
+	if !strings.Contains(out, "ssh://git@code.linenisgreat.com/madder.git") {
+		t.Errorf("want the identity-free clone url for the vanity forge:\n%s", out)
+	}
+	// The exact string the bug emitted. Asserting its ABSENCE is the point of the
+	// test: a derivation that kept the segment would still produce a plausible,
+	// SSH-reachable url, so only its absence proves the declaration was honored.
+	if strings.Contains(out, "ssh://git@code.linenisgreat.com/linenisgreat/madder.git") {
+		t.Errorf("identity segment must be dropped when the forge declares path_includes_identity false:\n%s", out)
+	}
+	// Control: a forge that omits the member is untouched.
+	if !strings.Contains(out, "git@github.com:friedenberg/xdg.git") {
+		t.Errorf("a forge omitting path_includes_identity must keep <identity>/<name>:\n%s", out)
+	}
+}
+
+// TestCloneURLForRepoFallbackHonorsIdentityFree pins the last-resort branch: when a
+// KNOWN forge declares identity-free paths but publishes no clone channel, the url
+// derived from the repo's own host must not silently regain the identity segment the
+// forge said it does not serve.
+func TestCloneURLForRepoFallbackHonorsIdentityFree(t *testing.T) {
+	no := false
+	byID := map[string]cloneForge{
+		"vanity": {ID: "vanity", BaseURL: "", SSHClone: "", PathIncludesIdentity: &no},
+	}
+	r := papi.Repo{
+		Name: "madder", Owner: "linenisgreat", Forge: "vanity",
+		URL: "https://code.linenisgreat.com/madder",
+	}
+	if got, want := cloneURLForRepo(r, byID), "git@code.linenisgreat.com:madder.git"; got != want {
+		t.Errorf("cloneURLForRepo = %q, want %q", got, want)
+	}
+	// An UNKNOWN forge has made no declaration, so the fallback keeps the segment.
+	if got, want := cloneURLForRepo(r, nil), "git@code.linenisgreat.com:linenisgreat/madder.git"; got != want {
+		t.Errorf("unknown-forge fallback = %q, want %q", got, want)
+	}
+}
+
 // TestReposURLWarnsAndStrict is the papi#50 safety net: a published repo with no
 // derivable clone url is reported on stderr and omitted (exit 0), and --strict turns
 // that omission into a nonzero exit.

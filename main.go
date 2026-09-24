@@ -2125,6 +2125,29 @@ type cloneForge struct {
 	BaseURL  string `json:"base_url"`
 	SSHClone string `json:"ssh_clone"`
 	Identity string `json:"identity"`
+	// PathIncludesIdentity is the OPTIONAL §1.1 path_includes_identity (Amendment
+	// 27). A POINTER because absent and false mean different things: absent is the
+	// conventional <identity>/<name> layout, false declares identity-free paths. A
+	// plain bool would read every pre-Amendment-27 forge as identity-free.
+	PathIncludesIdentity *bool `json:"path_includes_identity"`
+}
+
+// identityInPath reports whether this forge's clone paths carry `identity` as a
+// leading segment (RFC-0001 §1.1, Amendment 27). Absent — every forge entry published
+// before the member existed — MUST read as true; only an explicit false declares the
+// identity-free layout of a single-tenant vanity plane.
+func (f cloneForge) identityInPath() bool {
+	return f.PathIncludesIdentity == nil || *f.PathIncludesIdentity
+}
+
+// clonePath is a repository's path on this forge: <identity>/<name> conventionally,
+// <name> alone on a forge that declared identity-free paths. It is the one place the
+// declaration is applied, so every transport below derives the same path.
+func (f cloneForge) clonePath(owner, name string) string {
+	if f.identityInPath() {
+		return owner + "/" + name
+	}
+	return name
 }
 
 // cloneURL synthesizes a git clone url for owner/name on this forge. It prefers the
@@ -2133,7 +2156,7 @@ type cloneForge struct {
 // git@<host> url from base_url (github/gitlab/codeberg …). Returns "" when neither is
 // available, so there is nothing to clone from.
 func (f cloneForge) cloneURL(owner, name string) string {
-	repo := owner + "/" + name
+	repo := f.clonePath(owner, name)
 	if f.SSHClone != "" {
 		return strings.TrimRight(f.SSHClone, "/") + "/" + repo + ".git"
 	}
@@ -2190,13 +2213,23 @@ func fetchRepos(ctx context.Context, c *papi.Client, af authFlags) ([]papi.Repo,
 // when the forge entry is absent or carries no channel — from the repo's own published
 // url host. Returns "" when no host is available anywhere (the caller warns + omits).
 func cloneURLForRepo(r papi.Repo, byID map[string]cloneForge) string {
-	if f, ok := byID[r.Forge]; ok {
+	f, known := byID[r.Forge]
+	if known {
 		if u := f.cloneURL(r.Owner, r.Name); u != "" {
 			return u
 		}
 	}
-	if u, err := url.Parse(r.URL); err == nil && u.Host != "" && r.Owner != "" && r.Name != "" {
-		return "git@" + u.Host + ":" + r.Owner + "/" + r.Name + ".git"
+	// Last resort: the repo's own published url host. A KNOWN forge's path declaration
+	// still applies here — only its clone channel was missing, not its layout — so a
+	// repo on an identity-free forge keeps the identity-free path rather than silently
+	// regaining the segment the forge said it does not serve.
+	if u, err := url.Parse(r.URL); err == nil && u.Host != "" && r.Name != "" {
+		if known && !f.identityInPath() {
+			return "git@" + u.Host + ":" + r.Name + ".git"
+		}
+		if r.Owner != "" {
+			return "git@" + u.Host + ":" + r.Owner + "/" + r.Name + ".git"
+		}
 	}
 	return ""
 }
@@ -2287,7 +2320,10 @@ func newReposCmd() *cobra.Command {
 			"and joins each entry to its forge's clone channel by `forge` id — the forge's " +
 			"published ssh_clone base, else an scp-style git@<host> from base_url or the repo's " +
 			"own url host — so a consumer can `git clone` each line as-is, including §5-gated " +
-			"forges whose /papi/repos url is only the SSO-gated web url. A published repo with no " +
+			"forges whose /papi/repos url is only the SSO-gated web url. The repository's path on " +
+			"that channel is <owner>/<name>, or <name> alone when the forge declares " +
+			"`path_includes_identity: false` (§1.1) — a single-tenant vanity plane whose clone " +
+			"paths omit the owner segment. A published repo with no " +
 			"derivable clone url is reported on stderr and omitted; --strict makes that a nonzero " +
 			"exit. Anonymously only public repos project; pass --auth-key-id <slot-9A id> to run " +
 			"the §5.2 sign-challenge handshake and get the full scoped set (e.g. a private forgejo " +
@@ -2306,8 +2342,10 @@ func newReposCmd() *cobra.Command {
 			// even when a forge publishes an empty repos[]) and joins each entry to its
 			// forge's clone channel by `forge` id: the ssh_clone base from /papi/forges,
 			// else an scp-style url from base_url or the repo's own url host
-			// (amarbel-llc/papi#50). A repo with no derivable clone url is reported on
-			// stderr and omitted; --strict makes that a nonzero exit.
+			// (amarbel-llc/papi#50), with the identity segment included or dropped per
+			// the forge's path_includes_identity (papi#85). A repo with no derivable
+			// clone url is reported on stderr and omitted; --strict makes that a
+			// nonzero exit.
 			if urlOnly {
 				repos, byID, err := urlData(cmd.Context(), c, af)
 				if err != nil {

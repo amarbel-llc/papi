@@ -131,6 +131,77 @@ canary). The named repository itself is still projected per §2 — only its
 `<owner>/<name>` is exposed here. The consuming side is the access asserter
 (`papi forge check`, amarbel-llc/papi#48).
 
+A forge entry MAY carry an OPTIONAL boolean member `path_includes_identity` —
+whether the forge's git clone paths carry the entry's `identity` as a leading path
+segment. When the member is absent or `true`, a clone path is `<identity>/<name>`:
+the conventional forge layout, and the behavior of every entry published before this
+member existed. When it is `false`, the forge serves **identity-free** clone paths
+and a client MUST derive `<name>` alone, omitting the identity segment.
+
+The member describes the forge's path layout rather than any one channel, so it
+governs BOTH transports: a client joins the same derived path to the `ssh_clone` base
+for SSH, and to `base_url` for HTTPS. It does not change ownership. `identity`
+remains the repository's real owner on the forge — an identity-free path is a routing
+choice by the host, not an assertion that the repository is unowned — and a server
+MUST continue to project `owner` on the repository's `/papi/repos` entry (§4). That
+projection is load-bearing here: once the path no longer carries the identity, the
+flattened entry is the only place a consumer can still recover it.
+
+A consumer MUST NOT infer this member from `kind`. The same forge software is
+deployed both ways, and a host MAY serve identity-free paths on the plane it
+publishes as `base_url` while its management API (`api_base_url`) keeps the
+conventional layout. A consumer that ignores the member derives an identity-bearing
+path; against a forge that declared `false` that path MAY be unroutable, which
+surfaces as a failed clone rather than as a silent clone of the wrong thing.
+
+#### 1.1.1. Worked example: an identity-free forge
+
+For the forge entry
+
+```json
+{
+  "id": "forgejo-code-example",
+  "kind": "forgejo",
+  "base_url": "https://code.example.com",
+  "identity": "myorg",
+  "ssh_clone": "ssh://git@code.example.com",
+  "path_includes_identity": false
+}
+```
+
+and a repository `myrepo`, a conformant client derives
+
+| Transport | Derived clone url |
+|---|---|
+| SSH   | `ssh://git@code.example.com/myrepo.git` |
+| HTTPS | `https://code.example.com/myrepo.git` |
+
+and MUST NOT derive `ssh://git@code.example.com/myorg/myrepo.git` or
+`https://code.example.com/myorg/myrepo.git`, which are what the same client derives
+for a forge that omits the member.
+
+The two transports are not equally forgiving, which is why the declaration is needed
+rather than merely tidy. Measured against the motivating deployment
+(`code.linenisgreat.com`, `identity` `linenisgreat`, repository `madder`, 2026-09-24,
+reproducible via `just debug-vanity-clone-forms`):
+
+| Form | Result |
+|---|---|
+| `https://code.linenisgreat.com/madder.git` | serves |
+| `https://code.linenisgreat.com/linenisgreat/madder.git` | **404 — not found** |
+| `ssh://git@code.linenisgreat.com/madder.git` | serves |
+| `ssh://git@code.linenisgreat.com/linenisgreat/madder.git` | serves |
+
+The HTTPS plane is strict and the SSH plane tolerates both, so a client deriving the
+identity-bearing path gets a working SSH url and a broken HTTPS one from the same
+forge entry — an asymmetry no consumer can discover from the document without this
+member.
+
+A clone url's SSH spelling is a rendering, not a separate declaration: the scp-short
+form `git@code.example.com:myrepo.git` and the `ssh://git@code.example.com/myrepo.git`
+form above name the same repository, and a server publishes the layout once via
+`ssh_clone` plus this member rather than enumerating spellings.
+
 Each entry of the `/papi/repos` flattened list (§4) MAY carry an OPTIONAL boolean
 member `canonical`. When `true`, it marks that forge's entry as the **canonical**
 source for that repository — the one a consumer SHOULD prefer when it needs a
@@ -2038,3 +2109,24 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   body-less document's §15.1 input equals §14.2's, so existing pigpen signatures
   still verify. Producer `papi hyphence sign`; consumers `papi hyphence
   verify|resolve`. Additive and OPTIONAL — no version bump.
+- **2026-09-24, Amendment 27 — Forge `path_includes_identity` member (§1.1, §1.1.1).**
+  Added the OPTIONAL boolean member `path_includes_identity` to a forge entry:
+  whether the forge's clone paths carry `identity` as a leading path segment. Absent
+  or `true` means the conventional `<identity>/<name>` layout, so every entry
+  published before this member is unchanged; `false` declares identity-free paths and
+  a client derives `<name>` alone, for BOTH transports (joined to `ssh_clone` for SSH,
+  to `base_url` for HTTPS). Motivated by a single-tenant vanity plane whose HTTPS
+  clone paths are strictly identity-free while its SSH plane tolerates both spellings:
+  a client deriving the identity-bearing path gets a working SSH url and a 404 on
+  HTTPS from the same forge entry, an asymmetry the document had no way to express
+  (§1.1.1 records the measured forms). Ownership is untouched — the member is a
+  routing fact, and a server MUST still project `owner` on the `/papi/repos` entry,
+  which becomes the only place a consumer can recover an identity the path no longer
+  carries. A consumer MUST NOT infer the member from `kind`, since the same software
+  is deployed both ways and a host's `api_base_url` plane may keep the conventional
+  layout. Declared on the forge rather than per repository because it is one property
+  of the host's routing, uniform across every repository it serves; a per-repository
+  declared clone url (the `clone_url`/`ssh_url` pair a forge API would carry) stays
+  available as a later additive amendment, deferred here for want of a consumer that
+  needs a per-repository exception. Producer/consumer `papi repos --url`. Additive and
+  OPTIONAL — no version bump. papi#85.

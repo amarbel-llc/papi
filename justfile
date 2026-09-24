@@ -102,6 +102,18 @@ test: test-go test-grammar test-ts test-ts-bundle test-nix-hm-module test-nix-or
 test-go:
     nix develop --command go test ./...
 
+# Debug: run the Go tests whose names match a regex, verbosely. The dev-loop for
+# "did MY test pass" when the full `test-go` is red for an unrelated reason — e.g. a
+# card-dependent test failing on a locked piggy-agent (papi#84) makes the whole
+# package FAIL, and a passing test is invisible in that output. e.g.
+#   just debug-test-go-run TestCloneURL
+#   just debug-test-go-run 'TestRepos.*Identity' ./...
+#
+# run Go tests matching a name regex, verbosely
+[group("debug")]
+debug-test-go-run pattern packages=".":
+    nix develop --command go test -run '{{pattern}}' -v {{packages}}
+
 # Enforced pigpen grammar-conformance gate (papi#54/#58/#60): feed the
 # SignPigpen fixture's metadata lines through langlang's parse of hyphence's
 # canonical hyphence-content.peg. Hermetic — both the langlang binary and the
@@ -587,6 +599,87 @@ debug-piggy-entry-shape entry:
     printf 'first-line bytes: %s\n' "$(printf '%s' "$out" | head -1 | wc -c)"
     printf 'trailing whitespace on first line: %s\n' \
         "$(printf '%s' "$out" | head -1 | grep -qE '[[:space:]]$' && echo yes || echo no)"
+
+# Debug: report every git url-rewrite rule in effect here, with the file that set it.
+# A rewrite silently turns one transport into another, so a clone-url probe can end up
+# measuring local config instead of the forge — `debug-vanity-clone-forms` disagreeing
+# between two sessions on the same host is the signature. Run this in the disagreeing
+# worktree first.
+#
+# show git url-rewrite rules in effect, with their origin
+[group("debug")]
+debug-git-url-rewrites:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # --get-regexp exits 1 when nothing matches, which is the common (good) case.
+    out="$(git config --show-origin --get-regexp '^url\.' 2>/dev/null)"
+    if [[ -z $out ]]; then
+        echo "no url.* rewrite rules in effect"
+    else
+        printf '%s\n' "$out"
+    fi
+    # GIT_CONFIG_* can inject config no file records, so a clean list above is not by
+    # itself proof that nothing is rewriting.
+    echo "--- GIT_CONFIG* env ---"
+    env | grep -E '^GIT_CONFIG' || echo "(none)"
+
+# Debug: measure which clone-url forms a vanity (identity-free) forge actually serves,
+# by `git ls-remote`-ing each candidate. This is the ground truth behind RFC-0001
+# Amendment 27 (§1.1 `path_includes_identity`) and the §1.1.1 worked example — rerun it
+# before changing the derivation or the committed vector, so the spec keeps asserting
+# forms that were measured rather than assumed.
+#
+# The ssh:// forms need an UNLOCKED piggy-agent; with a locked one they fail
+# `Permission denied (publickey)`, which is an auth failure and says nothing about
+# whether the path routes. Read the reason, not just the verdict: "repository not
+# found" is the forge answering, "Permission denied" is this machine failing to ask.
+#
+# Each line is FORM then ok/FAIL. e.g.
+#   just debug-vanity-clone-forms madder
+#   just debug-vanity-clone-forms papi code.linenisgreat.com linenisgreat
+#
+# probe which clone-url forms an identity-free forge serves
+[group("debug")]
+debug-vanity-clone-forms repo host="code.linenisgreat.com" identity="linenisgreat":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    # GIT_TERMINAL_PROMPT/BatchMode: a form that would prompt for credentials counts as
+    # FAIL, not as a hung probe. Anonymous reachability is what is being measured.
+    export GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND='ssh -o BatchMode=yes'
+    # A url.*.insteadOf rule silently rewrites a form before it leaves the machine, so
+    # the verdict below would be about local config, not the forge. This bit us for
+    # real (papi#85): a spinclass worktree-scoped rule rewrote scp-form vanity remotes
+    # to https, and two sessions on the SAME host disagreed about whether the
+    # identity-bearing scp form works. Disclose the rules rather than mislead.
+    rewrites="$(git config --get-regexp '^url\..*\.insteadof$' 2>/dev/null | grep -F '{{host}}')"
+    if [[ -n $rewrites ]]; then
+        echo "WARNING: url rewrites match {{host}} — scp/https verdicts below may be measuring config, not the forge:"
+        printf '  %s\n' "$rewrites"
+        echo "  (see: just debug-git-url-rewrites)"
+    fi
+    rc=0
+    for form in \
+        "https://{{host}}/{{repo}}.git" \
+        "https://{{host}}/{{identity}}/{{repo}}.git" \
+        "git@{{host}}:{{repo}}.git" \
+        "git@{{host}}:{{identity}}/{{repo}}.git" \
+        "ssh://git@{{host}}/{{repo}}.git" \
+        "ssh://git@{{host}}/{{identity}}/{{repo}}.git"
+    do
+        if err="$(git ls-remote "$form" 2>&1 >/dev/null)"; then
+            printf 'ok    %s\n' "$form"
+        else
+            # Print the reason inline: "which forms work" is only half the answer —
+            # a 404 from the http plane and a shim rejection over ssh are different
+            # facts about the forge, and the next reader needs to tell them apart.
+            printf 'FAIL  %s\n      %s\n' "$form" "$(printf '%s' "$err" | tr '\n' ' ')"
+            rc=1
+        fi
+    done
+    # Nonzero when ANY form failed: this probe reports a mixed picture by design (the
+    # identity-bearing https form is expected to fail on a vanity host), so read the
+    # per-line verdicts — the exit code is a "something here is not ok" tripwire only.
+    exit "$rc"
 
 # Explore: probe an arbitrary path on a forge host, anonymously, reporting only the
 # status and a short body prefix. Answers "which plane serves what" questions — the
