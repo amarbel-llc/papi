@@ -257,7 +257,11 @@ joins each repo to its forge's clone channel — the forge's published `ssh_clon
 base, else an scp-style `git@<host>` derived from `base_url` — so each line is
 `git clone`-able as-is, including §5-gated forges whose published `url` is only the
 SSO-gated web url. The owner segment is the forge's `identity` (one identity per
-forge, RFC-0001 §1.1). Anonymously only public forges project; pass `--auth-key-id`
+forge, RFC-0001 §1.1) — unless the forge declares `path_includes_identity: false`
+(§1.1, Amendment 27), a single-tenant vanity plane whose clone paths omit the owner
+entirely, where the path is the bare repository name. Either way the repo's `owner`
+is still projected in the JSON view, which is where a consumer should read it rather
+than parsing it back out of the url. Anonymously only public forges project; pass `--auth-key-id`
 (the §5.2 sign-challenge) to run the §5 handshake and get the full scoped set (e.g. a
 private forgejo over SSH):
 
@@ -271,6 +275,7 @@ $ papi repos linenisgreat.com \
     --auth-key-id piggy-auth-v1@... --url
 git@github.com:friedenberg/papi.git
 ssh://git@krone:2222/friedenberg/private-forgejo-repo.git   # + §5-gated forgejo, over SSH
+ssh://git@code.linenisgreat.com/madder.git                  # path_includes_identity:false — no owner segment
 ```
 
 So a clone loop is just `papi repos … --url | while read -r u; do git clone "$u"; done`.
