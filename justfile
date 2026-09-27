@@ -585,11 +585,13 @@ debug-forge-swagger filter="." host="forge.starbrandshoes.com":
 # Explore: run the Go suite with the SSH agent taken away, to find tests that claim to
 # be hermetic but actually reach a real card. `test-go` advertises "no network, no
 # card"; any failure here is a test that does not hold to that, and presents as a
-# mysterious breakage whenever the operator's agent restarts. Today it fails exactly
-# one test, TestSignChallengeFromResponse — papi#84, where newSignChallengeCmd calls
-# signChallengeSigner directly so the test's signChallengeSignerFn injection is
-# silently ineffective. Once #84 is fixed this should pass clean, and staying clean is
-# the property worth keeping the recipe around to check.
+# mysterious breakage whenever the operator's agent restarts. It passes clean as of
+# papi#84's fix (newSignChallengeCmd called signChallengeSigner directly, so
+# TestSignChallengeFromResponse's signChallengeSignerFn injection did nothing and the
+# test only passed while a real card happened to be reachable). Staying clean is the
+# property worth keeping this recipe around to check: run it after touching any
+# signer-resolution site, since a direct call compiles and passes WITH an agent and
+# only shows up here.
 #
 # run the Go suite with no SSH agent, exposing card-dependent tests
 [group("debug")]

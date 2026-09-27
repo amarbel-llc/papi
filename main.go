@@ -2000,6 +2000,16 @@ func authedBody(ctx context.Context, c *papi.Client, opts inspect.Options, path 
 
 // signChallengeSignerFn is the slot-9A signer constructor behind a seam so CLI
 // tests can inject a fake card without a real PIV device (mirrors verifiedRecipientsFn).
+//
+// Every sign-challenge signer construction MUST go through this var rather than
+// calling signChallengeSigner directly. A direct call still compiles and behaves
+// identically at runtime, so the omission is invisible — but it silently disconnects
+// any test that injects here, which is exactly how papi#84 happened: the
+// `sign-challenge` command called through and its test's injection did nothing, so
+// the test passed only while a real card was reachable and failed whenever the
+// operator's agent dropped, presenting as a papi regression. `just
+// debug-test-hermetic` is the guard: it runs the suite with no agent, and a new
+// direct call shows up there as a failure.
 var signChallengeSignerFn = signChallengeSigner
 
 // pigpenSignSignerFn is newPigpenSignCmd's own instance of the same seam
@@ -2921,7 +2931,7 @@ func newSignChallengeCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin, "")
+			signer, signGUID, err := signChallengeSignerFn(ctx, signerMode, guid, pin, "")
 			if err != nil {
 				return err
 			}
@@ -3021,7 +3031,7 @@ func newSignChallengeServeCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
-			signer, signGUID, err := signChallengeSigner(ctx, signerMode, guid, pin, agentSocket)
+			signer, signGUID, err := signChallengeSignerFn(ctx, signerMode, guid, pin, agentSocket)
 			if err != nil {
 				return err
 			}
