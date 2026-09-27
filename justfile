@@ -613,6 +613,34 @@ debug-piggy-entry-shape entry:
     printf 'trailing whitespace on first line: %s\n' \
         "$(printf '%s' "$out" | head -1 | grep -qE '[[:space:]]$' && echo yes || echo no)"
 
+# Debug: list what the SSH agent at $SSH_AUTH_SOCK currently holds. The diagnostic for
+# papi#84's flakiness: several tests need a slot-9A ecdsa key from the agent, and when a
+# forwarded agent drops the key the failure reads as a papi bug. This separates the
+# three states that look alike from a test failure — no agent reachable, agent up but
+# holding no slot-9A key, or agent fine (so the failure is something else). Local card
+# probes like `debug-cards` do NOT answer this: the key may be forwarded from another
+# host, where pcscd being down here says nothing.
+#
+# list the keys the SSH agent currently holds
+[group("debug")]
+debug-agent-keys:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    printf 'SSH_AUTH_SOCK=%s\n' "${SSH_AUTH_SOCK:-(unset)}"
+    if [[ -z ${SSH_AUTH_SOCK:-} ]]; then
+        echo "no agent in the environment"; exit 1
+    fi
+    if ! out="$(ssh-add -l 2>&1)"; then
+        printf 'agent unusable or empty: %s\n' "$out"; exit 1
+    fi
+    printf '%s\n' "$out"
+    # nistp256 is the slot-9A curve the §5.2 sign-challenge path needs.
+    if printf '%s' "$out" | grep -q 'ecdsa-sha2-nistp256'; then
+        echo "=> slot-9A-capable ecdsa key present"
+    else
+        echo "=> NO ecdsa nistp256 key: card-dependent tests (papi#84) will fail"; exit 1
+    fi
+
 # Debug: report whether recent commits are actually signed, and with what. `git commit`
 # succeeding is NOT evidence of a signature — if commit.gpgsign is unset, or the repo
 # never required one, an unsigned commit lands silently. Worth checking whenever the
