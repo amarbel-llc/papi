@@ -2143,11 +2143,23 @@ func (f cloneForge) identityInPath() bool {
 // clonePath is a repository's path on this forge: <identity>/<name> conventionally,
 // <name> alone on a forge that declared identity-free paths. It is the one place the
 // declaration is applied, so every transport below derives the same path.
-func (f cloneForge) clonePath(owner, name string) string {
-	if f.identityInPath() {
-		return owner + "/" + name
+//
+// It reports false when no path is derivable. A forge that puts the identity in the
+// path needs an owner, and joining an empty one yields a double slash — an unclonable
+// url that is nonetheless non-empty, so it would satisfy cloneURLForRepo, escape
+// --strict, and be printed as though it were good. `owner` is not REQUIRED of a
+// /papi/repos entry, so this is reachable from a conformant-enough server.
+func (f cloneForge) clonePath(owner, name string) (string, bool) {
+	if name == "" {
+		return "", false
 	}
-	return name
+	if !f.identityInPath() {
+		return name, true
+	}
+	if owner == "" {
+		return "", false
+	}
+	return owner + "/" + name, true
 }
 
 // cloneURL synthesizes a git clone url for owner/name on this forge. It prefers the
@@ -2156,7 +2168,10 @@ func (f cloneForge) clonePath(owner, name string) string {
 // git@<host> url from base_url (github/gitlab/codeberg …). Returns "" when neither is
 // available, so there is nothing to clone from.
 func (f cloneForge) cloneURL(owner, name string) string {
-	repo := f.clonePath(owner, name)
+	repo, ok := f.clonePath(owner, name)
+	if !ok {
+		return ""
+	}
 	if f.SSHClone != "" {
 		return strings.TrimRight(f.SSHClone, "/") + "/" + repo + ".git"
 	}

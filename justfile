@@ -112,7 +112,20 @@ test-go:
 # run Go tests matching a name regex, verbosely
 [group("debug")]
 debug-test-go-run pattern packages=".":
-    nix develop --command go test -run '{{pattern}}' -v {{packages}}
+    #!/usr/bin/env bash
+    set -uo pipefail
+    out="$(nix develop --command go test -run '{{pattern}}' -v {{packages}} 2>&1)"
+    rc=$?
+    printf '%s\n' "$out"
+    # `go test -run <typo>` prints "no tests to run" and exits 0. Since the whole point
+    # of this recipe is to tell a passing test apart from a red package, a regex that
+    # matched nothing must NOT report green — that is the exact confusion it exists to
+    # remove (e.g. TestCloneUrl vs TestCloneURL…).
+    if [[ $rc -eq 0 ]] && ! printf '%s' "$out" | grep -qE '^(=== RUN|--- PASS|--- FAIL)'; then
+        echo "ERROR: pattern '{{pattern}}' matched no tests in {{packages}} — check spelling/anchoring" >&2
+        exit 2
+    fi
+    exit "$rc"
 
 # Enforced pigpen grammar-conformance gate (papi#54/#58/#60): feed the
 # SignPigpen fixture's metadata lines through langlang's parse of hyphence's
@@ -600,6 +613,25 @@ debug-piggy-entry-shape entry:
     printf 'trailing whitespace on first line: %s\n' \
         "$(printf '%s' "$out" | head -1 | grep -qE '[[:space:]]$' && echo yes || echo no)"
 
+# Debug: report whether recent commits are actually signed, and with what. `git commit`
+# succeeding is NOT evidence of a signature — if commit.gpgsign is unset, or the repo
+# never required one, an unsigned commit lands silently. Worth checking whenever the
+# card stack is degraded (pcscd down, piggy-agent locked), which is exactly when
+# signing fails and is easiest to miss. %G? is G=good, U=good-untrusted, B=bad,
+# N=NO SIGNATURE, E=cannot check.
+#
+# show signature status of recent commits
+[group("debug")]
+debug-git-signing-status count="5":
+    #!/usr/bin/env bash
+    set -uo pipefail
+    echo "=== config ==="
+    for k in commit.gpgsign gpg.format user.signingkey; do
+        printf '%s = %s\n' "$k" "$(git config --get "$k" || echo '(unset)')"
+    done
+    echo "=== last {{count}} commits (%G? then subject) ==="
+    git log -n {{count}} --format='%G? %h %s'
+
 # Debug: report every git url-rewrite rule in effect here, with the file that set it.
 # A rewrite silently turns one transport into another, so a clone-url probe can end up
 # measuring local config instead of the forge — `debug-vanity-clone-forms` disagreeing
@@ -657,7 +689,6 @@ debug-vanity-clone-forms repo host="code.linenisgreat.com" identity="linenisgrea
         printf '  %s\n' "$rewrites"
         echo "  (see: just debug-git-url-rewrites)"
     fi
-    rc=0
     for form in \
         "https://{{host}}/{{repo}}.git" \
         "https://{{host}}/{{identity}}/{{repo}}.git" \
@@ -673,13 +704,12 @@ debug-vanity-clone-forms repo host="code.linenisgreat.com" identity="linenisgrea
             # a 404 from the http plane and a shim rejection over ssh are different
             # facts about the forge, and the next reader needs to tell them apart.
             printf 'FAIL  %s\n      %s\n' "$form" "$(printf '%s' "$err" | tr '\n' ' ')"
-            rc=1
         fi
     done
-    # Nonzero when ANY form failed: this probe reports a mixed picture by design (the
-    # identity-bearing https form is expected to fail on a vanity host), so read the
-    # per-line verdicts — the exit code is a "something here is not ok" tripwire only.
-    exit "$rc"
+    # Deliberately exits 0 even with FAIL lines. A healthy identity-free forge is
+    # SUPPOSED to fail the identity-bearing https form, so a nonzero exit would make
+    # every correct run look like a broken recipe and would need inverting to compose.
+    # The per-line verdicts are the output; there is no single pass/fail to report.
 
 # Explore: probe an arbitrary path on a forge host, anonymously, reporting only the
 # status and a short body prefix. Answers "which plane serves what" questions — the

@@ -142,10 +142,12 @@ The member describes the forge's path layout rather than any one channel, so it
 governs BOTH transports: a client joins the same derived path to the `ssh_clone` base
 for SSH, and to `base_url` for HTTPS. It does not change ownership. `identity`
 remains the repository's real owner on the forge — an identity-free path is a routing
-choice by the host, not an assertion that the repository is unowned — and a server
-MUST continue to project `owner` on the repository's `/papi/repos` entry (§4). That
-projection is load-bearing here: once the path no longer carries the identity, the
-flattened entry is the only place a consumer can still recover it.
+choice by the host, not an assertion that the repository is unowned. A server that
+declares `path_includes_identity: false` MUST therefore project `owner` on the
+`/papi/repos` entry of every repository on that forge (§4). That projection is
+load-bearing: once the path no longer carries the identity, the flattened entry is the
+only place a consumer can still recover it. The requirement is scoped to forges making
+this declaration, so a server that omits the member is bound by nothing new here.
 
 A consumer MUST NOT infer this member from `kind`. The same forge software is
 deployed both ways, and a host MAY serve identity-free paths on the plane it
@@ -169,16 +171,26 @@ For the forge entry
 }
 ```
 
-and a repository `myrepo`, a conformant client derives
+and a repository `myrepo`, the derived path is `myrepo` — not `myorg/myrepo` — and a
+conformant client joins it to whichever base its transport uses:
 
-| Transport | Derived clone url |
+| Base | Joined to `myrepo` |
 |---|---|
-| SSH   | `ssh://git@code.example.com/myrepo.git` |
-| HTTPS | `https://code.example.com/myrepo.git` |
+| `ssh_clone` (`ssh://git@code.example.com`) | `ssh://git@code.example.com/myrepo.git` |
+| `base_url`, over HTTPS | `https://code.example.com/myrepo.git` |
+| `base_url`'s host, scp-short | `git@code.example.com:myrepo.git` |
 
-and MUST NOT derive `ssh://git@code.example.com/myorg/myrepo.git` or
-`https://code.example.com/myorg/myrepo.git`, which are what the same client derives
-for a forge that omits the member.
+A client MUST NOT derive `myorg/myrepo` for this forge, so none of
+`ssh://git@code.example.com/myorg/myrepo.git`,
+`https://code.example.com/myorg/myrepo.git` or
+`git@code.example.com:myorg/myrepo.git` is conformant here — each is what the same
+client derives for a forge that omits the member.
+
+Which base a client picks is its own choice, not something this member constrains: it
+declares the path, and every row above is the same repository. `papi repos --url`
+emits one clonable url per repository and so prefers `ssh_clone` when the forge
+publishes one, falling back to the scp-short rendering of `base_url`'s host; a
+consumer wanting the anonymous HTTPS form joins `base_url` itself.
 
 The two transports are not equally forgiving, which is why the declaration is needed
 rather than merely tidy. Measured against the motivating deployment
@@ -2120,9 +2132,10 @@ decrypt`, slot-9A SSH auth. <https://github.com/amarbel-llc/piggy>
   a client deriving the identity-bearing path gets a working SSH url and a 404 on
   HTTPS from the same forge entry, an asymmetry the document had no way to express
   (§1.1.1 records the measured forms). Ownership is untouched — the member is a
-  routing fact, and a server MUST still project `owner` on the `/papi/repos` entry,
-  which becomes the only place a consumer can recover an identity the path no longer
-  carries. A consumer MUST NOT infer the member from `kind`, since the same software
+  routing fact, and a server declaring `false` MUST project `owner` on that forge's
+  `/papi/repos` entries, which become the only place a consumer can recover an identity
+  the path no longer carries; a server omitting the member is bound by nothing new.
+  A consumer MUST NOT infer the member from `kind`, since the same software
   is deployed both ways and a host's `api_base_url` plane may keep the conventional
   layout. Declared on the forge rather than per repository because it is one property
   of the host's routing, uniform across every repository it serves; a per-repository

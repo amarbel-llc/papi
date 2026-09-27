@@ -1318,10 +1318,25 @@ func TestReposURLFromFlattenedRepos(t *testing.T) {
 func TestCloneURLPathIncludesIdentity(t *testing.T) {
 	yes, no := true, false
 	for _, tc := range []struct {
-		name  string
-		forge cloneForge
-		want  string
+		name        string
+		forge       cloneForge
+		owner, repo string
+		want        string
 	}{
+		{
+			name:  "identity in path with no owner derives nothing",
+			forge: cloneForge{SSHClone: "ssh://git@krone:2222"},
+			owner: "", repo: "myrepo",
+			// Not "ssh://git@krone:2222//myrepo.git": a non-empty but unclonable url
+			// would satisfy cloneURLForRepo, escape --strict, and print as if good.
+			want: "",
+		},
+		{
+			name:  "identity-free needs no owner",
+			forge: cloneForge{SSHClone: "ssh://git@code.example.com", PathIncludesIdentity: &no},
+			owner: "", repo: "myrepo",
+			want: "ssh://git@code.example.com/myrepo.git",
+		},
 		{
 			name:  "absent means identity in path (pre-Amendment-27 entry)",
 			forge: cloneForge{SSHClone: "ssh://git@code.example.com"},
@@ -1349,8 +1364,12 @@ func TestCloneURLPathIncludesIdentity(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.forge.cloneURL("myorg", "myrepo"); got != tc.want {
-				t.Errorf("cloneURL = %q, want %q", got, tc.want)
+			owner, repo := tc.owner, tc.repo
+			if repo == "" {
+				owner, repo = "myorg", "myrepo"
+			}
+			if got := tc.forge.cloneURL(owner, repo); got != tc.want {
+				t.Errorf("cloneURL(%q, %q) = %q, want %q", owner, repo, got, tc.want)
 			}
 		})
 	}
