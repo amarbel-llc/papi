@@ -16,7 +16,7 @@
     igloo.url = "https://code.linenisgreat.com/igloo/archive/master.tar.gz";
     igloo.inputs.nixpkgs-master.follows = "nixpkgs";
     nixpkgs.follows = "conformist/nixpkgs-master";
-    nixpkgs-master.url = "github:NixOS/nixpkgs/7a0f122f5090cf4c2ade2a13a0e229d4e19ba71f";
+    nixpkgs-master.url = "github:NixOS/nixpkgs/b4fd65b198c599cbe814fcb9f42d25d021595ec9";
     utils.follows = "conformist/utils";
 
     # purse-first provides `dagnabit`, the code-organization tool that tiers
