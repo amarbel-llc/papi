@@ -82,14 +82,14 @@ let
   # either platform.
   unitExec =
     unitName: result:
-    if pkgs.stdenv.isLinux then
+    if pkgs.stdenv.hostPlatform.isLinux then
       result.config.systemd.user.services.${unitName}.Service.ExecStart
     else
       lib.concatStringsSep " " result.config.launchd.agents.${unitName}.config.ProgramArguments;
 
   unitInterval =
     unitName: result:
-    if pkgs.stdenv.isLinux then
+    if pkgs.stdenv.hostPlatform.isLinux then
       result.config.systemd.user.timers.${unitName}.Timer.OnUnitActiveSec
     else
       toString result.config.launchd.agents.${unitName}.config.StartInterval;

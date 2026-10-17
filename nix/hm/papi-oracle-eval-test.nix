@@ -67,7 +67,7 @@ let
 
   unitExec =
     result:
-    if pkgs.stdenv.isLinux then
+    if pkgs.stdenv.hostPlatform.isLinux then
       result.config.systemd.user.services.papi-oracle.Service.ExecStart
     else
       lib.concatStringsSep " " result.config.launchd.agents.papi-oracle.config.ProgramArguments;
