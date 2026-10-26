@@ -21,8 +21,16 @@ their deadline passes **and** someone sweeps after you return.
 ## 1. Write the rows file
 
 One `<repo> <session>` per line; `#` comments and blank lines are fine. `repo`
-is `owner/name` (preferred: it must match, character for character, the repo
-as the spawn resolves it) or a bare name (papi looks up the owner). `session` is a **slot
+is `owner/name` or a bare name (papi resolves the owner); either way papi's writer
+records the **resolved** `owner/name` in the manifest (`MintPool`,
+`PoolEntry.Repo`, R). For a repo whose origin is on the vanity plane
+(code.linenisgreat.com), both `linenisgreat/<name>` and `<name>` work. With
+spinclass fae0c6d (on spinclass master; deployed with the next bump), an
+owner-less session repo (the origin path, e.g. `spinclass` for
+`ssh://git@code.linenisgreat.com/spinclass.git`) is matched against the
+manifest's last path segment, and an owner-qualified session repo still matches
+exactly. If two slots share a last segment under different owners, spinclass
+refuses the match as ambiguous. `session` is a **slot
 name you choose**. It must be unique in the file and must not already own a papi
 token. Size the pool to the workers you expect, per repo, and list only the repos
 the coordinator actually works in.
@@ -89,13 +97,34 @@ papi forge token mint --host forge.starbrandshoes.com --user sasha --card-login 
   and that directory must be mode 0700 (spinclass side; confirmed by
   spinclass/light-cedar's review of `auth/pool.go`). Any other `--out` is
   invisible to spinclass.
-- Each manifest row's `repo` must be `OWNER/NAME` exactly as the spawn's repo
-  resolves; use the full `owner/name` form in the rows file rather than a bare
-  name, so the manifest's `repo` matches what spinclass looks up.
-- Sweatfile prerequisites (spinclass side; mentioned here, not changed by papi):
-  `[auth].forge-hosts` must list the forge host
-  (`forge.starbrandshoes.com`), and `allow-stale-base` must be set for the trip
-  repos, or spawns will not use the pool.
+- Each manifest row's `repo` is the resolved `owner/name` (see section 1 for how
+  spinclass matches it against the session's origin).
+- Sweatfile prerequisites (spinclass side; mentioned here, not changed by papi),
+  in the sweatfile layer above the repos, **deployed before the mint**:
+  - `[auth].forge-hosts` must contain the **git plane**,
+    `code.linenisgreat.com`.
+  - The pinned `[auth].revoke-command` must carry `--host <H>`, where `<H>` is
+    exactly the host passed to `papi forge token mint --host` (here
+    `forge.starbrandshoes.com`). The manifest's `forge` is papi's API host
+    (`https://forge.starbrandshoes.com`); it is **not** in `forge-hosts`, and
+    spinclass accepts it because it equals the `--host` of the pinned
+    revoke-command. Do **not** add the API host to `forge-hosts`: that makes
+    origins on that host mint tokens, and every https push then fails.
+  - `allow-stale-base` must be set for the trip repos, or spawns will not use
+    the pool.
+- **Order matters:** with a pool present and the host unaccepted, every
+  vanity-origin session creation errors. Deploy the sweatfile settings first,
+  then mint.
+- Verify after any real mint (read-only): list the manifest's repos and compare
+  each with the repo's origin path.
+
+  ```
+  jq -r '.tokens[].repo' "${XDG_STATE_HOME:-$HOME/.local/state}/spinclass/token-pool/manifest.json"
+  git remote get-url origin        # in each trip repo
+  ```
+
+  In the spinclass checkout, `just explore-pool-check <pooldir> '<dir1> <dir2>'`
+  (read-only) prints PASS or NO MATCH per repo directory.
 - Check after: `papi forge token list --host … --user sasha --token-command '…'
   | grep pool/` (read-only) should show each slot as `live` with the deadline.
 
