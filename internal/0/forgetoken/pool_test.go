@@ -52,6 +52,7 @@ type poolForge struct {
 	fakeForge
 	failMintAt int // 1-based mint number that fails with 500; 0 = never
 	mints      int
+	onMint     func(n int) // runs as mint n arrives, before the token is created
 	cookies    []string
 }
 
@@ -64,6 +65,9 @@ func (f *poolForge) handler(t *testing.T) http.Handler {
 				f.cookies = append(f.cookies, c.Value)
 			}
 			f.mints++
+			if f.onMint != nil {
+				f.onMint(f.mints)
+			}
 			if f.mints == f.failMintAt {
 				writeJSON(t, w, http.StatusInternalServerError, map[string]string{"message": "boom"})
 				return
@@ -215,6 +219,40 @@ func TestMintPoolPartialFailureKeepsAnAccurateManifest(t *testing.T) {
 	raw, _ := os.ReadFile(filepath.Join(dir, ManifestName))
 	if err := json.Unmarshal(raw, &onDisk); err != nil || len(onDisk.Tokens) != 1 {
 		t.Fatalf("manifest on disk after partial failure: %v / %s", err, raw)
+	}
+}
+
+// A token whose secret cannot be saved is unrecoverable, so a write failure must
+// revoke it: no live credential may be left that nobody holds.
+func TestMintPoolWriteFailureRevokesTheUnsavedToken(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pool")
+	f := &poolForge{}
+	// Occupy the second slot's file name, so its exclusive create fails.
+	f.onMint = func(n int) {
+		if n == 2 {
+			blocker := filepath.Join(dir, escapeSession("pool/spinclass/01")+".token")
+			if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+				t.Errorf("plant blocker: %v", err)
+			}
+		}
+	}
+	c := newPoolClient(t, f, basic)
+
+	m, err := c.MintPool(context.Background(), dir, twoRows(), time.Time{}, []string{"write:repository"})
+	if err == nil {
+		t.Fatal("expected the second token's write failure")
+	}
+	if !strings.Contains(err.Error(), "pool/spinclass/01") {
+		t.Errorf("error should name the slot that failed to save, got %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-") {
+		t.Fatalf("error carries a secret: %v", err)
+	}
+	if len(f.deleted) != 1 || f.deleted[0] != "2" {
+		t.Fatalf("deleted %v, want exactly the unsaved token [2]", f.deleted)
+	}
+	if len(m.Tokens) != 1 || m.Tokens[0].Session != "pool/papi/01" {
+		t.Fatalf("manifest %+v, want only the saved first token", m.Tokens)
 	}
 }
 

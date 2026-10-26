@@ -21,7 +21,8 @@ their deadline passes **and** someone sweeps after you return.
 ## 1. Write the rows file
 
 One `<repo> <session>` per line; `#` comments and blank lines are fine. `repo`
-is `owner/name` or a bare name (papi looks up the owner). `session` is a **slot
+is `owner/name` (preferred: it must match, character for character, the repo
+as the spawn resolves it) or a bare name (papi looks up the owner). `session` is a **slot
 name you choose**. It must be unique in the file and must not already own a papi
 token. Size the pool to the workers you expect, per repo, and list only the repos
 the coordinator actually works in.
@@ -30,8 +31,8 @@ the coordinator actually works in.
 # trip pool 2026-11
 linenisgreat/papi       pool/papi/01
 linenisgreat/papi       pool/papi/02
-spinclass               pool/spinclass/01
-spinclass               pool/spinclass/02
+linenisgreat/spinclass  pool/spinclass/01
+linenisgreat/spinclass  pool/spinclass/02
 ```
 
 The slot name is the token's session on the forge: `revoke --session
@@ -46,7 +47,7 @@ connection or creates `--out`:
 
 ```
 papi forge token mint --host forge.starbrandshoes.com --user sasha \
-  --batch ./trip-rows --out ~/.local/state/spinclass/pool --ttl 336h
+  --batch ./trip-rows --out "${XDG_STATE_HOME:-$HOME/.local/state}/spinclass/token-pool" --ttl 336h
 ```
 
 - Good file → `papi: no credential: pass --card-login or --password-command
@@ -68,20 +69,33 @@ from the moment of minting. Mint as close to departure as practical.
 
 ```
 papi forge token mint --host forge.starbrandshoes.com --user sasha --card-login \
-  --batch ./trip-rows --out ~/.local/state/spinclass/pool --ttl 336h
+  --batch ./trip-rows --out "${XDG_STATE_HOME:-$HOME/.local/state}/spinclass/token-pool" --ttl 336h
 ```
 
 - The card signs **once** for the whole file (tested with an injected signer,
   V; not yet run against the live forge with a real card).
-- `--out` must not exist. papi creates it mode 0700, writes one mode-0600
+- `--out` must not exist, but its **parent** must (papi uses `mkdir`, not
+  `mkdir -p`; create `$XDG_STATE_HOME/spinclass` first if it is missing). papi
+  creates `--out` mode 0700 itself and chmods it to 0700 regardless of umask
+  (`MintPool`, R); it never accepts a pre-existing directory of any mode, so a
+  wider-than-0700 pool directory cannot arise from papi. Writes one mode-0600
   `<escaped-session>.token` per token, plus `manifest.json`. stdout lists
   `id  session  repo  deadline  file` per token and **never** a secret.
 - If a mint fails part-way, the tokens already minted are in `manifest.json`
   and the error names the slots that were not minted. Fix the cause, then mint
   the rest with a new rows file and a **new** `--out`.
-- Use the `--out` path that spinclass's pool intake reads (spinclass's lane,
-  spinclass/firm-mulberry). The path above is a placeholder until that intake
-  exists.
+- `--out` must be exactly the fixed path spinclass reads,
+  `$XDG_STATE_HOME/spinclass/token-pool` (default `~/.local/state/spinclass/token-pool`),
+  and that directory must be mode 0700 (spinclass side; confirmed by
+  spinclass/light-cedar's review of `auth/pool.go`). Any other `--out` is
+  invisible to spinclass.
+- Each manifest row's `repo` must be `OWNER/NAME` exactly as the spawn's repo
+  resolves; use the full `owner/name` form in the rows file rather than a bare
+  name, so the manifest's `repo` matches what spinclass looks up.
+- Sweatfile prerequisites (spinclass side; mentioned here, not changed by papi):
+  `[auth].forge-hosts` must list the forge host
+  (`forge.starbrandshoes.com`), and `allow-stale-base` must be set for the trip
+  repos, or spawns will not use the pool.
 - Check after: `papi forge token list --host … --user sasha --token-command '…'
   | grep pool/` (read-only) should show each slot as `live` with the deadline.
 
