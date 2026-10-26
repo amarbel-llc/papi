@@ -520,6 +520,8 @@ func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
 		scopes  []string
 		ttl     time.Duration
 		session string
+		batch   string
+		out     string
 	)
 	cmd := &cobra.Command{
 		Use:   "mint",
@@ -529,9 +531,20 @@ func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
 			"creation, so this output is the only chance to capture it; keep it out of logs and shell " +
 			"history. The token is named after --session, which is how `revoke` and `sweep` address it " +
 			"later. --repo takes owner/name, or a bare name whose owner is resolved against the forge " +
-			"(a session manager deriving the repo from a vanity remote has no owner to pass).",
+			"(a session manager deriving the repo from a vanity remote has no owner to pass).\n\n" +
+			"--batch FILE --out DIR mints a POOL under one login — one card signature with --card-login — " +
+			"for consumers that will need tokens while the card is away (papi#80). FILE holds " +
+			"`<repo> <session>` lines (`#` comments allowed; - reads stdin), each session used once so it " +
+			"revokes alone. The sessions are slot names the operator picks (e.g. pool/papi/01); a consumer " +
+			"that takes a slot records the slot's session and revokes by it. DIR is created mode 0700 and " +
+			"gets one mode-0600 `<escaped-session>.token` file per token plus a secret-free manifest.json; " +
+			"stdout lists id, session, repo, deadline and file, never a secret. Repos and session " +
+			"collisions are checked before the first mint.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if batch != "" || out != "" {
+				return mintForgeTokenPool(cmd, f, batch, out, repo, session, scopes, ttl)
+			}
 			if session == "" {
 				return errors.New("--session is required: it names the token so it can be revoked later")
 			}
@@ -574,7 +587,57 @@ func newForgeTokenMintCmd(f *forgeTokenFlags) *cobra.Command {
 	cmd.Flags().DurationVar(&ttl, "ttl", 12*time.Hour,
 		"how long the token should live; recorded in its name and enforced by `sweep` (0 = no deadline)")
 	cmd.Flags().StringVar(&session, "session", "", "session identifier the token is minted for")
+	cmd.Flags().StringVar(&batch, "batch", "",
+		"mint a POOL instead of one token: a file (or - for stdin) of `<repo> <session>` lines, all minted under one login")
+	cmd.Flags().StringVar(&out, "out", "",
+		"with --batch: directory to create (mode 0700, must not exist) holding one mode-0600 secret file per token plus manifest.json")
 	return cmd
+}
+
+// mintForgeTokenPool is `mint --batch`: one credential — so one card interaction
+// with --card-login — mints every row, and the secrets go to files under --out,
+// never to stdout (papi#80). What stdout carries is the manifest's secret-free view.
+func mintForgeTokenPool(cmd *cobra.Command, f *forgeTokenFlags, batch, out, repo, session string,
+	scopes []string, ttl time.Duration,
+) error {
+	switch {
+	case batch == "" || out == "":
+		return errors.New("--batch and --out go together: the batch names the tokens, --out receives their secrets")
+	case repo != "" || session != "":
+		return errors.New("--batch names each token's repo and session; drop --repo and --session")
+	}
+	var in io.Reader = cmd.InOrStdin()
+	if batch != "-" {
+		file, err := os.Open(batch)
+		if err != nil {
+			return err
+		}
+		defer file.Close()
+		in = file
+	}
+	rows, err := forgetoken.ParsePoolRows(in)
+	if err != nil {
+		return err
+	}
+	c, err := f.client(cmd.Context())
+	if err != nil {
+		return err
+	}
+	var deadline time.Time
+	if ttl > 0 {
+		deadline = time.Now().UTC().Add(ttl)
+	}
+	m, mintErr := c.MintPool(cmd.Context(), out, rows, deadline, scopes)
+	for _, e := range m.Tokens {
+		fmt.Fprintf(cmd.OutOrStdout(), "%d\t%s\t%s\t%s\t%s\n", e.ID, e.Session, e.Repo,
+			deadlineText(deadline), filepath.Join(out, e.File))
+	}
+	if mintErr != nil {
+		return f.authHint(mintErr)
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "minted %d token(s) into %s, scopes %s, expires %s\n",
+		len(m.Tokens), out, strings.Join(scopes, ","), deadlineText(deadline))
+	return nil
 }
 
 func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {

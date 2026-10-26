@@ -89,6 +89,16 @@ The reference consumer is spinclass's _[auth]_ section (its FDR 0028). At sessio
 
 Because mint prints the token and nothing else on stdout, *every diagnostic from mint goes to stderr* — a caller treats all of stdout as the secret.
 
+# POOLS
+
+*mint --batch* _rows_ *--out* _dir_ mints a set of tokens under one credential, so with *--card-login* the card signs once for the whole set (papi#80). It exists for stretches when the card is unavailable at the moment a consumer needs a token.
+
+A consumer cannot know its session id in advance (spinclass names a spawn's branch at spawn time), and papi never renames a token after minting (any rename would need the minting credential again). So a pool token's session is a *slot name* the operator picks, such as _pool/papi/01_. The slot name is the token's session in every respect: *revoke --session* _pool/papi/01_ revokes exactly that token, and *sweep* reaps it at its deadline. A consumer that takes a slot records which slot it took and revokes by that name; the binding is the consumer's own record and needs no card. A slot session must appear once in the batch and must not already own a papi token, so it always revokes alone.
+
+_dir_ must not exist; papi creates it mode 0700 and writes, per token, a mode-0600 file _<escaped-session>.token_ holding the secret on one line, and a mode-0600 _manifest.json_ (version, forge, user, and per token its session, owner/name repo, forge id, RFC 3339 deadline and file) that never holds a secret. Every repository is resolved and every slot checked for collisions before the first mint. If a mint fails part-way, the tokens already minted stay in the manifest, and the error names the slots that were not minted.
+
+*sweep* knows nothing of liveness: a token past its *--ttl* deadline is revoked whether or not something still uses it. Pool tokens meant to last a trip need a TTL at least that long.
+
 # SEE ALSO
 
 *papi*(1), *papi-forge-token-mint*(1), *papi-forge-token-revoke*(1), *papi-forge-token-list*(1), *papi-forge-token-sweep*(1), *papi-forge-check*(1), *piggy*(1)

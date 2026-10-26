@@ -218,7 +218,15 @@ Reap what crashed sessions left behind:
   resolved by searching the forge, so a repository invisible to the credential looks
   absent rather than private.
 - **One repository per token in practice.** The package accepts several, but `mint`
-  exposes a single `--repo`, which is what the session-per-repo consumer needs.
+  exposes a single `--repo` (and `--batch` one repo per row), which is what the
+  session-per-repo consumer needs.
+- **The sweep ignores liveness (papi#91).** `sweep` revokes any papi token past its
+  deadline, live session or not; nothing schedules it today, which is why multi-day
+  sessions on 12 h tokens keep working.
+- **Pools (papi#80).** `mint --batch --out` mints many tokens under one login, named
+  by operator-chosen slot sessions because a consumer's own session id is not known
+  in advance; see `papi-forge-token(7)` POOLS. Pool secrets rest on disk (0600 in a
+  0700 directory) readable by the operator uid until taken.
 
 ## Tuning Levers
 

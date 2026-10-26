@@ -362,6 +362,14 @@ $ papi forge token revoke --host forge.example.com --user sasha --card-login \
 $ papi forge token sweep  --host forge.example.com --user sasha --card-login
 ```
 
+`mint --batch <rows> --out <dir>` pre-mints a **pool** under one login (one card
+signature) for a stretch when the card is away (papi#80): `<rows>` holds
+`<repo> <session>` lines whose sessions are operator-chosen slot names, `<dir>` is
+created 0700 with one 0600 secret file per token and a secret-free `manifest.json`.
+A consumer that takes a slot revokes by the slot's session. Note `sweep` ignores
+liveness: it reaps any papi token past its `--ttl`, so pool tokens meant to outlive
+a trip need a TTL at least that long (papi#91).
+
 ### `papi profiles <domain>`
 
 Fetch `<domain>`'s `GET /papi/profiles` — the host profiles (flakerefs) a staged
