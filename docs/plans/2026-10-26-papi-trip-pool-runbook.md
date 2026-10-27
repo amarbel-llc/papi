@@ -61,6 +61,14 @@ papi forge token mint --host forge.starbrandshoes.com --user sasha \
 - Good file → `papi: no credential: pass --card-login or --password-command
   (mint/revoke), or --token-command (read-only)` (V, 2026-10-26, with a sample
   rows file and `--host forge.example.invalid`).
+- Verified on 2026-10-27 (V) with the working-tree papi (`just debug-papi`, so
+  `go run .`) and the rows file from section 1, `--out` pointed at a path under
+  the worktree's `.tmp` instead of the real pool path (the run creates nothing
+  either way): `papi forge token mint --host forge.starbrandshoes.com --user
+  sasha --batch .tmp/trip-rows --out .tmp/pool-dryrun --ttl 336h` printed
+  `papi: no credential: pass --card-login or --password-command (mint/revoke),
+  or --token-command (read-only)`, exit 1, and `.tmp/pool-dryrun` did not
+  exist afterwards. No credential was needed for this check.
 - Bad file → names the line, e.g. `papi: batch line 2: session "pool/papi/01"
   already used on line 1` (V, same run).
 
@@ -123,8 +131,19 @@ papi forge token mint --host forge.starbrandshoes.com --user sasha --card-login 
   git remote get-url origin        # in each trip repo
   ```
 
-  In the spinclass checkout, `just explore-pool-check <pooldir> '<dir1> <dir2>'`
-  (read-only) prints PASS or NO MATCH per repo directory.
+  From any spinclass worktree, `just explore-pool-check <pooldir> '<dir1> <dir2>'`
+  (read-only; the repo checkout dirs go in ONE space-separated argument; an empty
+  `''` pool means the fixed default path) prints PASS or NO MATCH per repo
+  directory. It never claims a slot or prints a token, and it does **not** read
+  the sweatfile: its closing `MANUAL` line (forge-hosts, `allow-stale-base`) is a
+  reminder, and its wording says "the forge host" where the host rule above
+  means the git plane in `forge-hosts` and the mint `--host` in `revoke-command`.
+  Verified on 2026-10-27 (V, run by spinclass/light-cedar on flic with
+  spinclass 985c6c9, which has fae0c6d) against a synthetic pool (two fake
+  slots, `linenisgreat/papi` and `linenisgreat/spinclass`, dir 0700, files
+  0600): pool PASS; the papi worktree (origin path `papi`) and a spinclass
+  worktree (origin path `spinclass`) each reported PASS. No NO MATCH case was
+  exercised.
 - Check after: `papi forge token list --host … --user sasha --token-command '…'
   | grep pool/` (read-only) should show each slot as `live` with the deadline.
 
