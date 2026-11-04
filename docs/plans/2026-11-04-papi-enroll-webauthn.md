@@ -9,7 +9,8 @@ provision per card? This is a design note plus a card-free spike. No card was
 used and nothing was deployed.
 
 Operator decisions (2026-11-04), taken as given here: one command in one sitting
-(two PIN prompts are fine). Two tiers on the FIDO2 side: **tier 1** gates data on
+(the brief said two PIN prompts are fine; v1 actually needs 3–7, accepted
+under Q8, with a one-prompt design in §10). Two tiers on the FIDO2 side: **tier 1** gates data on
 a touch (user presence, UP), **tier 2** on a touch plus the PIN (user
 verification, UV), and both tiers use the same PIN. The rpId is `linenisgreat.com`.
 Credential public keys are published in the served document, like the 9A/9D
@@ -22,11 +23,15 @@ a later fallback; the CLI comes first (§8 Q7).
 Further answers (2026-11-04, relayed by circus/eager-holly/clarabell) are
 recorded in §8: "same PIN" means the FIDO2 PIN is set equal to the PIV PIN
 (Q1); a PIV session also satisfies tier 2 (Q2); the tier-1 risk is accepted
-(Q5); browser fallback later (Q7). Q3, Q4, Q6, Q8 and Q9 carry marked defaults
-awaiting the operator.
+(Q5); browser fallback later (Q7). The operator then ruled on the rest: a
+second trusted card attests `--add-webauthn` (Q3); signCount and the
+attestation chain are not enforced and are flagged for a later security audit
+(Q4, Q6); v1 keeps its PIN prompts (Q8, §9); origin `https://linenisgreat.com`
+only (Q9); D1–D3 kept.
 
 **Status:** implementation — the enroll FIDO2 phase and the server side —
-waits for the operator's go. Only the card-free spike (§5) exists.
+waits for the operator's go and the choice of a one-prompt direction (§10).
+Only the card-free spike (§5) exists.
 
 Evidence labels: **VERIFIED** (source cited), **UNVERIFIED** (not checked, or
 needs hardware), **R** (read in this repo at `fresh-fig` after ab85cc2).
@@ -186,9 +191,10 @@ trusted card last, so during the FIDO2 phase only the new card is plugged in:
 4. **FIDO2 PIN = PIV PIN** (operator answer, Q1). The FIDO2 PIN is set to the
    same string as the new card's PIV PIN, so the operator remembers one PIN per
    card. The cost is accepted with the answer: a leak of one is a leak of both,
-   so one secret guards two applets. papi never holds a PIN (it is never in
-   argv; libfido2 prompts on the tty, VERIFIED `fido2-cred(1)`), so "equal" is
-   an instruction to the operator plus a check, not something papi copies:
+   so one secret guards two applets. The FIDO2 phase does not hold a PIN
+   (libfido2 prompts on the tty, VERIFIED `fido2-cred(1)`; papi's existing
+   optional `--pin` is the exception, see §9), so "equal" is an instruction
+   to the operator plus a check, not something papi copies:
    - **No FIDO2 PIN yet:** run `fido2-token -S`, telling the operator to type
      the PIV PIN just used in step 1. The make-credential in step 5 then asks
      for it again, so a typo in `-S` that the confirmation prompt did not catch
@@ -229,13 +235,10 @@ trusted card last, so during the FIDO2 phase only the new card is plugged in:
    is optional (`--check-uv`).
 7. **Binding claim** signed by the new card's 9A, with the PIN still cached.
 8. Present the **trusted card** and attest, exactly as in v1. In
-   `--add-webauthn` mode a second trusted card attests too (DEFAULT, Q3,
-   awaiting operator). Write the receipt.
+   `--add-webauthn` mode a second trusted card attests too (RULED, Q3). Write
+   the receipt.
 
-The PIN count is the new card's PIV PIN, the FIDO2 PIN (the same value, Q1;
-entered twice more if it is being set or changed), and the trusted card's PIV
-PIN. That is more than two; the DEFAULT is to accept it (Q8, awaiting
-operator).
+§9 lists every PIN entry this phase asks for, in order.
 
 **Browser registration fallback (later, Q7):** the operator wants the CLI path
 first; this is recorded for when it is picked up. The site would serve a
@@ -279,7 +282,7 @@ skipping steps 3–6. The operator answered "later, CLI first" (Q7).
 | Tier 2 assertion | Browser: `"required"`. Server: result `>= AssurancePIN` (UP and UV). | §7.2 step 17, VERIFIED. |
 | Same PIN for both | Tier 1 uses no PIN; tier 2 uses the FIDO2 PIN, which enroll sets **equal to the PIV PIN** (operator, Q1, 2026-11-04). A leak of one is a leak of both. | FIDO2 and PIV PINs are separate applet secrets: piggy FDR-0004, VERIFIED (R). Keeping them equal is policy, set in §3 step 4. |
 | hmac-secret / largeBlob | Not used. | Only signatures are needed. |
-| signCount | The verifier enforces it when a count is supplied. The site is stateless (git is the durable state, and only challenges and sessions live in tmp JSON), so it **cannot track counts durably**. DEFAULT (Q4, awaiting operator): don't enforce. | §7.2 step 22: "a signal, but not proof … RP-specific", VERIFIED. |
+| signCount | The verifier enforces it when a count is supplied. The site is stateless (git is the durable state, and only challenges and sessions live in tmp JSON), so it **cannot track counts durably**. RULED (Q4): not enforced; flagged for a later security audit. | §7.2 step 22: "a signal, but not proof … RP-specific", VERIFIED. |
 | BE/BS | Reject `BE=1` at registration (device-bound only), and reject `BS` without `BE` always. | §7.2 step 18, VERIFIED. |
 
 **CLI-made credential, browser assertion:** §7.2 verifies an assertion using
@@ -424,7 +427,7 @@ directly.
     and a per-tier `userVerification`;
   - splicing `webauthn_credentials[]` into papi.json;
   - extending `just papi-verify-keys` to verify v2 receipts;
-  - the signCount decision (DEFAULT not enforced, Q4).
+  - signCount is not enforced (RULED, Q4); do not build count tracking.
 - **circus infra (enroll hosts twerk, nikulin, flic):** libfido2 on PATH, and
   hidraw udev access for YubiKeys.
 - **piggy (questions only):**
@@ -441,10 +444,18 @@ directly.
 
 ## 8. Operator questions: answered and defaulted
 
-Answers were relayed by circus/eager-holly/clarabell on 2026-11-04. Defaults
-are this note's, also dated 2026-11-04, and each is **awaiting operator**:
-the implementation follows the default unless the operator flips it.
-Implementation as a whole waits for the operator's go.
+Answers and rulings were relayed by circus/eager-holly/clarabell on
+2026-11-04. Every question is now answered or ruled. The operator also kept
+three design choices as written: D1 credProtect level 2 (§2), D2 a
+non-discoverable credential (§3 step 5), D3 ES256 only, one credential per
+card. Implementation waits for the operator's go and for the choice of a
+one-prompt direction (§10).
+
+**Flagged for a later security audit** (operator, 2026-11-04): Q4 (signCount
+not enforced) and Q6 (attestation chain not verified) are deliberate gaps, to
+be reviewed by a later audit session (a fable-model session). They are not to
+be implemented now; the receipt keeps the attestation statement so the Q6
+check can run over existing receipts.
 
 1. **"Same PIN for both tiers"** — ANSWERED 2026-11-04: the FIDO2 PIN is set
    **equal to the PIV PIN**; enroll sets both to the same string (§3 step 4,
@@ -454,15 +465,16 @@ Implementation as a whole waits for the operator's go.
    **yes.** A PIV session is treated as `AssurancePIN` and carries
    `assurance-pin` (§4, tier groups).
 3. **`--add-webauthn` on an already-published card: may its own published 9A
-   attest?** — **DEFAULT (awaiting operator): no; a second trusted card
-   attests, as in v1.** Reason: it keeps the one trust rule every receipt
+   attest?** — RULED 2026-11-04: **no; a second trusted card attests, as in
+   v1.** Reason: it keeps the one trust rule every receipt
    already follows (a *different*, already-trusted card authorizes it), so one
    compromised card plus its PIN cannot extend its own reach. Flipping it saves
    carrying a second card for `--add-webauthn`, at the cost of a new
    deploy-gate rule that accepts self-attested v2 receipts, and of letting
    whoever holds that card and its PIN publish a credential they control
    (still subject to the deploy).
-4. **signCount** — **DEFAULT (awaiting operator): not enforced.** The server
+4. **signCount** — RULED 2026-11-04: **not enforced; flagged for the later
+   security audit.** The server
    passes a stored count of 0, which `VerifyAssertion` treats as "not
    tracked"; `Registration.Credential` likewise records 0 (a YubiKey's
    counter is global across credentials anyway). Reason: the site is stateless (git is the durable state), and a
@@ -475,7 +487,7 @@ Implementation as a whole waits for the operator's go.
    ANSWERED 2026-11-04: **acceptable.** Tier 1 holds only low-sensitivity
    material; the operator chooses the documents for each tier later.
 6. **FIDO2 attestation check (Yubico root, packed chain, AAGUID)** —
-   **DEFAULT (awaiting operator): not verified.** Enroll keeps the preflight
+   RULED 2026-11-04: **not verified; flagged for the later security audit.** Enroll keeps the preflight
    AAGUID allowlist (a self-reported value from `fido2-token -I`) and records
    the attestation statement in the receipt's `registration` evidence, so a
    chain check can be added later and run against existing receipts. Reason:
@@ -486,21 +498,138 @@ Implementation as a whole waits for the operator's go.
    non-YubiKey authenticator that lies about its AAGUID.
 7. **Browser registration fallback** — ANSWERED 2026-11-04: **later; CLI
    first.**
-8. **PIN count** (new card's PIV PIN, the FIDO2 PIN — the same value per Q1,
-   twice more if set or changed — the trusted card's PIV PIN, plus an optional
-   tier-2 self-check: 3–4 prompts) — **DEFAULT (awaiting operator): accept
-   it.** Reason: each prompt unlocks a different applet or card, and papi
-   never holds a PIN, so it cannot reuse one typed earlier. Flipping it (fewer
-   prompts) means papi capturing the PIN once and feeding it to `piggy` and the
-   libfido2 tools, a new secret-handling surface the layering rule avoids.
-9. **Origins** — **DEFAULT (awaiting operator): only
-   `https://linenisgreat.com`, exact match.** Reason: the smallest allowlist;
+8. **PIN count** (§9 lists the entries in order: 3–7). — RULED 2026-11-04:
+   **v1 accepts the current prompts and adds no PIN handling; getting to one
+   prompt is a wanted later improvement**, designed in §10, direction to be
+   chosen by the operator before implementation.
+9. **Origins** — RULED 2026-11-04: **only `https://linenisgreat.com`, exact
+   match.** Reason: the smallest allowlist;
    `CheckClientDataJSON` matches exactly. Flipping it means listing each
    subdomain origin (the rpId stays `linenisgreat.com`); the cost is that a
    script-injection bug on any listed subdomain can then run assertion
    ceremonies for the gated pages.
 
-## 9. First things to check when a card is available (UNVERIFIED today)
+## 9. PIN prompts (v1, as ruled under Q8)
+
+Two cards take part: the **new** key and an already-**trusted** key. Each key
+has two separately locked parts: the **PIV** part (the SSH, signing and
+recipient keys) and the **FIDO2** part (website logins). Every prompt below
+is a PIN typed by the operator, in order:
+
+| # | Card, part | When | What it unlocks | Typings |
+|---|---|---|---|---|
+| 1 | new, PIV | always (in `--add-webauthn` mode: for the binding claim only) | provisioning, `self_proof` and the binding claim; 9A's PIN policy `once` keeps it for the rest of the session | 1 |
+| 2 | new, FIDO2 | only if its FIDO2 PIN is not already the PIV PIN | setting the FIDO2 PIN to the PIV PIN: new + confirm if none is set; old + new + confirm if a different one is set | 0, 2 or 3 |
+| 3 | new, FIDO2 | always | creating the login credential (plus a touch) | 1 |
+| 4 | new, FIDO2 | always | none: the touch-only self-test asks for a touch, no PIN | 0 |
+| 5 | new, FIDO2 | only with `--check-uv` | the PIN-login self-test (plus a touch) | 1 |
+| 6 | trusted, PIV | always | the trusted key's attestation over the receipt | 1 |
+
+Totals for a fresh card: **3** when the FIDO2 PIN already equals the PIV
+PIN, **5** when no FIDO2 PIN is set, **6** when a different one is set, and
+`--check-uv` adds 1: **3–7** in all. `--add-webauthn` has the same totals.
+
+UNVERIFIED, to check before relying on these counts:
+
+- That `fido2-token -S` and `-C` ask for the new PIN twice (enter, then
+  confirm). This is from memory of libfido2, not its man page.
+- How many entries row 1 really is. `piggy card init` issues `new_pin` /
+  `confirm_new_pin` (and PUK) secret requests per piggy RFC 0007 §5.2, which
+  would make row 1 more than one typing on a fresh card. But the comment at
+  `main.go:2768` says the freshly provisioned card "still has the default
+  PIN". If the second is true, Q1 (FIDO2 PIN = PIV PIN) would set the FIDO2
+  PIN to the factory default. **That must be settled before implementing
+  Q1**; asking the piggy session is the way to settle it.
+
+**Correction to earlier wording.** This note and the Q8 reply said "papi
+never holds a PIN". That is true of the new FIDO2 phase as designed, but not
+of papi today: `papi enroll --pin` (`main.go:2845`) and the other signing
+commands (`signerFlags`, `main.go:350`) accept a PIV PIN and pass it to
+`piggy sign-bytes -P <pin>` **as a command-line argument**
+(`internal/bravo/enroll/card.go:60`). One flag value serves both cards, so it
+only helps when the new and trusted cards share a PIN. A command-line
+argument can be read by other processes on the host through
+`/proc/<pid>/cmdline` while piggy runs. That is the Linux default; whether
+the enroll hosts mount `/proc` with `hidepid` is UNVERIFIED. This existing
+exposure is separate from v1 of this plan; a follow-up should move it to
+stdin or piggy's RFC 0006 `secret.request`.
+
+## 10. Toward one PIN prompt (later; direction for the operator to choose)
+
+The operator wants enroll to ask for one PIN. Two limits apply to every
+option:
+
+- **The trusted key is a separate card with its own PIN.** Its prompt can
+  only be shared with the new key's if both cards have the same PIN. That is
+  the operator's choice per card, and it widens a single PIN leak to every
+  card that shares it. Otherwise the floor is **two prompts: one per card**.
+- **A fresh card is getting a new PIN.** Choosing a new PIN normally means
+  typing it twice, to catch a typo before it locks the card. Dropping the
+  confirmation saves a typing at the risk of a PIN the operator never meant.
+  So "one prompt" on a fresh card is really "one new PIN, typed twice".
+
+The FIDO2 typings (rows 2, 3, 5) all ask for the same value as the PIV PIN
+(Q1), so removing them means something other than the operator must supply
+it. The options:
+
+**A. papi reads the PIN once and passes it on, for the run only.** papi reads
+the PIN from the terminal without echo, keeps it in memory for the length of
+the enroll run, and clears it on exit.
+- Passing it on: to piggy, by answering piggy's RFC 0006 `secret.request`.
+  papi RFC 0002 §3 item 4 already expects papi to be the responder, so this
+  is the intended path. It must never go on a command line. To libfido2, the
+  `fido2-*` command-line tools read the PIN from the terminal themselves.
+  Whether they accept it any other way is UNVERIFIED. So papi would need one
+  of: libfido2 through cgo, a pure-Go CTAP2 client over hidraw (CTAPHID
+  framing plus the PIN protocol's key agreement, a sizeable new body of
+  code), or driving `fido2-*` through a pseudo-terminal (fragile).
+- Prompts left: 1 per card (2 typings on a fresh card); 1 in all only if the
+  trusted key has the same PIN.
+- Secret papi holds: the PIN, in papi's memory, for the length of the run
+  (minutes). A crash dump or a debugger attached to papi as the same user
+  could read it; Go cannot reliably wipe memory, so "cleared" is
+  best-effort.
+- What it takes: papi as an RFC 0006 frontend (moving off `piggy sign-bytes`
+  and `card init` subprocesses), plus one of the three FIDO2 transports
+  above.
+
+**B. A helper process holds it (an agent or pinentry-style holder) for the
+run.** A separate process, such as a piggy agent mode or a small pinentry,
+takes the PIN once, answers each card request during the run, then exits.
+papi never sees the PIN.
+- Prompts left: the same as A.
+- Secret papi holds: none. The helper holds it for the run.
+- What it takes: the helper must also drive FIDO2. That puts a CTAP
+  primitive in piggy, which is the open piggy question in §7 ("piggy mints
+  keys and signs bytes", FDR 0001), or makes it a new tool. It is mostly
+  piggy work, and it keeps papi's "never holds a PIN" rule.
+
+**C. Set the FIDO2 PIN equal to the PIV PIN automatically.** This is not an
+option on its own: setting it needs the value, so it rides on A or B. With
+either, it removes row 2 entirely (0 typings instead of 2–3). Without them,
+the closest is a separate one-time `papi`/piggy "align PINs" step done
+before enroll, which moves the typings rather than removing them.
+
+**D. Reuse the PIV PIN cache instead of retyping.** The card already keeps
+9A's PIN for its session (policy `once`), which is why row 1 is asked once.
+The FIDO2 part keeps its own lock and does not share that cache: row 3 needs
+the FIDO2 PIN through the CTAP PIN protocol. That a YubiKey 5 offers no
+cross-applet PIN sharing is UNVERIFIED, from memory. So D cannot remove the
+FIDO2 rows; it only confirms that row 1 stays at one.
+
+**E. Make the trusted key's step later or optional.** This is not a PIN
+saving as such: the trusted key's signature is the trust rule (Q3). It is
+listed only to rule it out.
+
+**Recommendation:** B if the operator wants papi to stay PIN-free (it is the
+cleaner fit with the layering rule and makes the FIDO2 primitive piggy's,
+which §7 already asks about). A if a papi-only change is wanted sooner:
+first switch the PIV side to RFC 0006 `secret.request` (this also fixes the
+`-P` command-line exposure above), then add a FIDO2 transport. Both get to
+one prompt per card (two typings on a fresh card), and to one prompt in all
+only if the operator also gives the trusted key the same PIN.
+
+## 11. First things to check when a card is available (UNVERIFIED today)
 
 - `fido2-cred -M -v -c 2` on a YubiKey 5 with a PIN set reports credProtect 2
   in authData.
