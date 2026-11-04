@@ -670,6 +670,7 @@ docs/rfcs/             the PAPI wire-format spec (RFC-0001)
 internal/0/markl/      markl-id parser/builder (piggy adapter, RFC 0011)
 internal/0/identity/   local identity.toml scalar reader (FDR-0009)
 internal/0/forgetoken/ fine-grained forge access tokens: mint/revoke/sweep (FDR-0016)
+internal/0/webauthn/   WebAuthn registration parse + two-tier assertion verify, stdlib-only (spike, circus#414)
 internal/alfa/papi/    HTTP client + wire-format decoders + enrollment receipt
 internal/alfa/signchallenge/  the sign-challenge command: §5.2 preimage + slot-9A response
 internal/bravo/inspect/ the validate command + receipt verification core
