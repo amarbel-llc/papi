@@ -558,7 +558,33 @@ tested on a card, relayed by clarabell:
   behaves differently; whether the card refuses a new PIN equal to the
   default; and piggy RFC 0006's text (it was not read).
 
-So Q1 is safe after a completed init. **Requirement for the FIDO2 phase:**
+Round-2 findings from the same session (code reading only, relayed by
+clarabell, 2026-11-04):
+
+- **Even a completed init can leave the default.** piggy has no minimum PIN
+  length and does not refuse the default: `pin_mgmt.rs:86-99` rejects only an
+  empty PIN or one over 8 *bytes*. `card init` accepts `123456` as the new
+  PIN if the operator types it; `engine.rs:706-735` checks only that the two
+  entries match. So "the PIN is not the default" is not guaranteed after a
+  completed init either, which is why the rule below must apply to every
+  path.
+- `piggy manage` `card.init` and the `card init` command share one engine, so
+  the PIN steps and the state left by a partial failure are the same. They
+  differ only in the frontend (JSON-RPC `secret.request`) and error codes
+  (`-32050`). Whether the `jsonrpc.rs` frontend validates input is
+  UNVERIFIED.
+- piggy RFC 0006 does not say the default PIN gets replaced; that is stated
+  only in code (`engine.rs:673`), piggy(1) and `pin_mgmt.rs:1-4`. piggy
+  FDR 0006 and RFC 0007 §5.2 were not read.
+- `card init` and `--allow-reprovision` start with a **blind VERIFY of the
+  default PIN** (`engine.rs:629-630`), so on a card whose PIN was changed they
+  use up a retry. There is no pre-check. This affects papi's
+  `--allow-reprovision` path today.
+- piggy does not store retry counts. The retry-counter read that uses no retry
+  is described below.
+
+So Q1 holds after a completed init only if the operator did not choose
+`123456`. **Requirement for the FIDO2 phase:**
 before setting a FIDO2 PIN from the PIV PIN (§3 step 4), enroll must
 **refuse** if the new card's PIV PIN is still the factory default `123456`
 (a partly provisioned card). It must also refuse if it cannot tell. How to
@@ -580,8 +606,10 @@ tell is open:
   and no command exposes it yet. A real check therefore needs new piggy work:
   a GET METADATA APDU plus a command surface. That would be YubiKey-only;
   whether generic PIV cards reject it cleanly is UNVERIFIED. Until then, the
-  FIDO2 phase can rely only on init having just succeeded, which leaves the
-  `--new-guid` and `--add-webauthn` paths without a check.
+  FIDO2 phase has no reliable check. A successful init does not rule out a
+  chosen `123456`, and `--new-guid` and `--add-webauthn` skip init entirely.
+  The options are new piggy work, or an operator decision to accept the gap.
+  Short of either, enroll can only warn the operator not to use `123456`.
 
 **Correction to earlier wording.** This note and the Q8 reply said "papi
 never holds a PIN". That is true of the new FIDO2 phase as designed, but not
@@ -672,8 +700,9 @@ yet.
 1. ~~**Default PIN after `piggy card init`**~~ — **answered** 2026-11-04
    (§9): a completed init changes the PIN; a partly provisioned card keeps
    the default, so the FIDO2 phase must refuse it (§9, with the unverified
-   parts listed there). This adds one piggy question: whether piggy can report
-   "PIN is still default" without using up a retry.
+   parts listed there). piggy cannot currently check for a default PIN, so
+   that check is an **open operator decision**: file the piggy work (a GET
+   METADATA read plus a surface), or accept a warning in its place.
 2. **Remaining blocker: the `-P <pin>` command-line exposure** (§9): `papi enroll --pin` and the
    other signing commands pass the PIV PIN to `piggy sign-bytes` in argv. That
    follow-up should land, or be explicitly deferred, before enroll grows a
