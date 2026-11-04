@@ -325,12 +325,17 @@ gomod2nix change. It sits in `internal/0` because it imports nothing internal
 - `webauthn.go`: `ParseAuthenticatorData` (flags, signCount, attested
   credential, an ES256/P-256 COSE key checked on-curve, the credProtect
   extension output as `CredProtect`, and rejection of trailing bytes);
-  `ParseAttestationObject`; and `Registration.Credential` with a
+  `NewRegistration(fmt, authData)` (the CLI path: fido2-cred(1) prints fmt
+  and authData as separate lines) and `ParseAttestationObject` (the browser
+  path, which calls it); and `Registration.Credential` with a
   `RegistrationPolicy` (enroll-only checks: UV at registration, credProtect
   level, device-bound). Assertions go through `VerifyAssertion` (an ECDSA
-  signature over authData ‖ cdh, signCount), `VerifyBrowserAssertion`, and
-  `CheckClientDataJSON` (§7.2 steps 10–13: type, challenge, exact origin
-  allowlist, crossOrigin). Both ceremonies share one check — rpIdHash, the
+  signature over authData ‖ cdh, signCount; on any error it returns zero
+  authenticator data, since nothing in it is authenticated yet),
+  `VerifyBrowserAssertion`, and `CheckClientDataJSON` (§7.2 steps 10–13:
+  type, challenge, exact origin allowlist, crossOrigin; parsed strictly, so
+  duplicate keys and case variants of those four keys are rejected). Both
+  ceremonies share one check — rpIdHash, the
   BE/BS rule, and UP, which is always required — that yields the `Assurance`
   (`AssuranceTouch` or `AssurancePIN`) `VerifyAssertion` returns; callers gate
   on `got >= required`, and no setting turns the UP check off.
@@ -459,7 +464,8 @@ Implementation as a whole waits for the operator's go.
    (still subject to the deploy).
 4. **signCount** — **DEFAULT (awaiting operator): not enforced.** The server
    passes a stored count of 0, which `VerifyAssertion` treats as "not
-   tracked". Reason: the site is stateless (git is the durable state), and a
+   tracked"; `Registration.Credential` likewise records 0 (a YubiKey's
+   counter is global across credentials anyway). Reason: the site is stateless (git is the durable state), and a
    count kept only in tmp JSON resets whenever tmp does, so it would detect a
    clone only within one tmp lifetime while looking like a guarantee.
    Flipping it to a best-effort tmp count costs a state write on every

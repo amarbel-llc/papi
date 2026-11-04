@@ -473,6 +473,207 @@ func TestLibfido2RegressAssertVector(t *testing.T) {
 	}
 }
 
+// --- code-review regressions ---
+
+// A Registration built by hand (not through a parser) may lack attested
+// credential data; Credential must refuse it rather than dereference nil.
+func TestRegistrationCredentialWithoutAttestedData(t *testing.T) {
+	ad, err := ParseAuthenticatorData(buildAuthData(testRPID, FlagUP, 0, nil, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg := Registration{Format: "none", AuthData: ad}
+	if _, err := reg.Credential(testRPID, RegistrationPolicy{}); !errors.Is(err, ErrMalformed) {
+		t.Fatalf("err = %v, want ErrMalformed", err)
+	}
+}
+
+// fido2-cred(1) prints fmt and the CBOR-wrapped authData on separate lines, not
+// an attestationObject: NewRegistration is that path.
+func TestNewRegistrationFromCLIOutput(t *testing.T) {
+	ad := registrationAuthData(FlagUP|FlagUV|FlagAT, nil)
+	unwrapped, err := UnwrapByteString(enc(ad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := NewRegistration("packed", unwrapped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromObj, err := ParseAttestationObject(attObj("packed", ad))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(reg, fromObj) {
+		t.Errorf("NewRegistration and ParseAttestationObject disagree:\n%+v\n%+v", reg, fromObj)
+	}
+	unwrapped[40] ^= 0xff // shares no memory with the input
+	if !bytes.Equal(reg.RawAuthData, ad) {
+		t.Error("RawAuthData aliases the caller's slice")
+	}
+	if _, err := reg.Credential(testRPID, RegistrationPolicy{RequireUV: true}); err != nil {
+		t.Errorf("Credential: %v", err)
+	}
+
+	bad := map[string]struct {
+		fmt      string
+		authData []byte
+	}{
+		"no AT flag":  {"packed", buildAuthData(testRPID, FlagUP, 0, nil, nil)},
+		"short":       {"packed", []byte{1, 2, 3}},
+		"empty fmt":   {"", ad},
+		"AT but none": {"packed", buildAuthData(testRPID, FlagUP|FlagAT, 0, nil, nil)},
+	}
+	for name, c := range bad {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewRegistration(c.fmt, c.authData); !errors.Is(err, ErrMalformed) {
+				t.Fatalf("err = %v, want ErrMalformed", err)
+			}
+		})
+	}
+}
+
+// The returned AuthenticatorData is unauthenticated until the whole check
+// passes, so every error returns the zero value (a caller must not record, say,
+// a forged signCount of 0xFFFFFFFF).
+func TestVerifyAssertionErrorReturnsZeroAuthData(t *testing.T) {
+	cdh := sha256.Sum256([]byte("z"))
+	forged := buildAuthData(testRPID, FlagUP, 0xFFFFFFFF, nil, nil)
+	notPresent := buildAuthData(testRPID, 0, 0xFFFFFFFF, nil, nil)
+	cases := map[string]struct {
+		authData, sig []byte
+		want          error
+	}{
+		"bad signature": {forged, []byte{0x30, 0x00}, ErrBadSignature},
+		"no UP":         {notPresent, sign(t, notPresent, cdh[:]), ErrUserNotPresent},
+		"trailing":      {append(append([]byte{}, forged...), 0), sign(t, forged, cdh[:]), ErrMalformed},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			cred := testCredential()
+			cred.SignCount = 0xFFFFFFFF
+			ad, got, err := VerifyAssertion(cred, c.authData, cdh[:], c.sig)
+			if !errors.Is(err, c.want) {
+				t.Fatalf("err = %v, want %v", err, c.want)
+			}
+			if !reflect.DeepEqual(ad, AuthenticatorData{}) || got != 0 {
+				t.Fatalf("error returned non-zero results: ad %+v, assurance %d", ad, got)
+			}
+		})
+	}
+	// Signature valid, count regressed: still zero.
+	cred := testCredential()
+	cred.SignCount = 9
+	ad := buildAuthData(testRPID, FlagUP, 3, nil, nil)
+	if got, _, err := VerifyAssertion(cred, ad, cdh[:], sign(t, ad, cdh[:])); !errors.Is(err, ErrSignCountRegression) ||
+		!reflect.DeepEqual(got, AuthenticatorData{}) {
+		t.Fatalf("regression: ad %+v, err %v", got, err)
+	}
+}
+
+func TestCheckClientDataJSONStrictKeys(t *testing.T) {
+	ch := []byte{1, 2, 3, 4}
+	chB64 := base64.RawURLEncoding.EncodeToString(ch)
+	origin := "https://linenisgreat.com"
+	origins := []string{origin}
+	doc := func(body string) []byte { return []byte(body) }
+	good := map[string][]byte{
+		"exact keys": doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin + `","crossOrigin":false}`),
+		"unknown keys allowed": doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin +
+			`","topOrigin":"x","tokenBinding":{"status":"present","type":"nested"},"other_keys_can_be_added_here":"do not compare clientDataJSON against a template"}`),
+	}
+	for name, b := range good {
+		t.Run(name, func(t *testing.T) {
+			if err := CheckClientDataJSON(b, "webauthn.get", ch, origins); err != nil {
+				t.Fatalf("err = %v", err)
+			}
+		})
+	}
+	bad := map[string][]byte{
+		"TYPE":             doc(`{"TYPE":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin + `"}`),
+		"Origin":           doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","Origin":"` + origin + `"}`),
+		"Origin shadow":    doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin + `","Origin":"` + origin + `"}`),
+		"CrossOrigin":      doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin + `","CrossOrigin":true,"crossOrigin":false}`),
+		"duplicate type":   doc(`{"type":"webauthn.create","challenge":"` + chB64 + `","origin":"` + origin + `","type":"webauthn.get"}`),
+		"duplicate other":  doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin + `","x":1,"x":2}`),
+		"type not string":  doc(`{"type":1,"challenge":"` + chB64 + `","origin":"` + origin + `"}`),
+		"not an object":    doc(`["type"]`),
+		"trailing data":    doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin + `"}{}`),
+		"crossOrigin text": doc(`{"type":"webauthn.get","challenge":"` + chB64 + `","origin":"` + origin + `","crossOrigin":"true"}`),
+	}
+	for name, b := range bad {
+		t.Run(name, func(t *testing.T) {
+			if err := CheckClientDataJSON(b, "webauthn.get", ch, origins); !errors.Is(err, ErrClientData) {
+				t.Fatalf("err = %v, want ErrClientData", err)
+			}
+		})
+	}
+}
+
+// Credential copies the id (no aliasing into the Registration) and records
+// signCount 0: §8 Q4's default does not track counts.
+func TestRegistrationCredentialCopiesIDAndZeroesCount(t *testing.T) {
+	ad := buildAuthData(testRPID, FlagUP|FlagAT, 5,
+		attestedBlock(testCredID, enc(coseES256(&testKey().PublicKey))), nil)
+	reg, err := NewRegistration("none", ad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := reg.Credential(testRPID, RegistrationPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cred.SignCount != 0 {
+		t.Errorf("SignCount = %d, want 0", cred.SignCount)
+	}
+	reg.AuthData.Attested.CredentialID[0] ^= 0xff
+	if !bytes.Equal(cred.ID, testCredID) {
+		t.Error("Credential.ID aliases the registration's credential id")
+	}
+}
+
+// WebAuthn L3 §7.1: a credential id longer than 1023 bytes is rejected.
+func TestCredentialIDLengthLimit(t *testing.T) {
+	cose := enc(coseES256(&testKey().PublicKey))
+	ok := buildAuthData(testRPID, FlagUP|FlagAT, 0, attestedBlock(bytes.Repeat([]byte{7}, 1023), cose), nil)
+	if _, err := ParseAuthenticatorData(ok); err != nil {
+		t.Errorf("1023-byte id: %v", err)
+	}
+	long := buildAuthData(testRPID, FlagUP|FlagAT, 0, attestedBlock(bytes.Repeat([]byte{7}, 1024), cose), nil)
+	if _, err := ParseAuthenticatorData(long); !errors.Is(err, ErrMalformed) {
+		t.Errorf("1024-byte id: err = %v, want ErrMalformed", err)
+	}
+}
+
+// An assertion's authData carries no attested credential data; reserved (RFU)
+// flag bits are left alone for future use.
+func TestVerifyAssertionFlagBits(t *testing.T) {
+	cdh := sha256.Sum256([]byte("f"))
+	withAT := buildAuthData(testRPID, FlagUP|FlagAT, 1,
+		attestedBlock(testCredID, enc(coseES256(&testKey().PublicKey))), nil)
+	if _, _, err := VerifyAssertion(testCredential(), withAT, cdh[:], sign(t, withAT, cdh[:])); !errors.Is(err, ErrMalformed) {
+		t.Errorf("AT in assertion: err = %v, want ErrMalformed", err)
+	}
+	rfu := buildAuthData(testRPID, FlagUP|0x02|0x20, 1, nil, nil)
+	if _, got, err := VerifyAssertion(testCredential(), rfu, cdh[:], sign(t, rfu, cdh[:])); err != nil || got != AssuranceTouch {
+		t.Errorf("RFU bits: assurance %d, err %v", got, err)
+	}
+}
+
+// The challenge must be canonical unpadded base64url: non-zero trailing bits
+// decode to the same bytes under a lax decoder.
+func TestCheckClientDataJSONNonCanonicalChallenge(t *testing.T) {
+	ch := []byte{1, 2, 3, 4} // canonical "AQIDBA"
+	origin := "https://linenisgreat.com"
+	if got := base64.RawURLEncoding.EncodeToString(ch); got != "AQIDBA" {
+		t.Fatalf("fixture: %q", got)
+	}
+	b := []byte(`{"type":"webauthn.get","challenge":"AQIDBB","origin":"` + origin + `"}`)
+	if err := CheckClientDataJSON(b, "webauthn.get", ch, []string{origin}); !errors.Is(err, ErrClientData) {
+		t.Fatalf("non-canonical challenge accepted: %v", err)
+	}
+}
+
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
@@ -502,6 +703,8 @@ func TestDecodeCBORRejects(t *testing.T) {
 		"too deep":            deep,
 		"uint too big":        {0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
 		"nint too big":        {0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
+		"text not UTF-8":      {0x62, 0xff, 0xfe},
+		"map key not UTF-8":   {0xa1, 0x61, 0x80, 0x00},
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {

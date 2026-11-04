@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"unicode/utf8"
 )
 
 // maxCBORDepth bounds nesting so a hostile attestationObject cannot recurse the
@@ -63,6 +64,9 @@ func decodeItem(b []byte, depth int) (any, int, error) {
 		}
 		s := rest[:arg:arg]
 		if major == 3 {
+			if !utf8.Valid(s) {
+				return nil, 0, fmt.Errorf("%w: CBOR text string is not valid UTF-8", ErrMalformed)
+			}
 			return string(s), n + int(arg), nil
 		}
 		return s, n + int(arg), nil

@@ -23,7 +23,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
+	"strings"
 )
 
 // Authenticator data flag bits (WebAuthn L3 §6.1; libfido2 fido/param.h names
@@ -44,6 +46,10 @@ const (
 	coseAlgES256 = -7
 	coseCrvP256  = 1
 )
+
+// maxCredentialIDLen: WebAuthn L3 §7.1 has the RP reject a credential id longer
+// than 1023 bytes.
+const maxCredentialIDLen = 1023
 
 var (
 	ErrMalformed           = errors.New("webauthn: malformed data")
@@ -110,6 +116,9 @@ func ParseAuthenticatorData(b []byte) (AuthenticatorData, error) {
 		copy(ac.AAGUID[:], rest[:16])
 		idLen := int(binary.BigEndian.Uint16(rest[16:18]))
 		rest = rest[18:]
+		if idLen > maxCredentialIDLen {
+			return ad, fmt.Errorf("%w: credential id is %d bytes, at most %d allowed", ErrMalformed, idLen, maxCredentialIDLen)
+		}
 		if idLen > len(rest) {
 			return ad, fmt.Errorf("%w: credential id length %d exceeds data", ErrMalformed, idLen)
 		}
@@ -192,36 +201,50 @@ type Registration struct {
 }
 
 // ParseAttestationObject parses a CBOR attestationObject {fmt, attStmt,
-// authData}. The authData MUST carry attested credential data. The result
-// shares no memory with b.
+// authData} (a browser's create() result) and hands fmt and authData to
+// NewRegistration. The result shares no memory with b.
 func ParseAttestationObject(b []byte) (Registration, error) {
-	var reg Registration
 	v, err := decodeCBORExact(b)
 	if err != nil {
-		return reg, fmt.Errorf("attestationObject: %w", err)
+		return Registration{}, fmt.Errorf("attestationObject: %w", err)
 	}
 	m, ok := v.(map[any]any)
 	if !ok {
-		return reg, fmt.Errorf("%w: attestationObject is not a map", ErrMalformed)
+		return Registration{}, fmt.Errorf("%w: attestationObject is not a map", ErrMalformed)
 	}
-	if reg.Format, ok = m["fmt"].(string); !ok {
-		return reg, fmt.Errorf("%w: attestationObject.fmt missing", ErrMalformed)
+	format, ok := m["fmt"].(string)
+	if !ok {
+		return Registration{}, fmt.Errorf("%w: attestationObject.fmt missing", ErrMalformed)
 	}
 	if _, ok = m["attStmt"].(map[any]any); !ok {
-		return reg, fmt.Errorf("%w: attestationObject.attStmt missing", ErrMalformed)
+		return Registration{}, fmt.Errorf("%w: attestationObject.attStmt missing", ErrMalformed)
 	}
 	authData, ok := m["authData"].([]byte)
 	if !ok {
-		return reg, fmt.Errorf("%w: attestationObject.authData missing", ErrMalformed)
+		return Registration{}, fmt.Errorf("%w: attestationObject.authData missing", ErrMalformed)
 	}
-	reg.RawAuthData = bytes.Clone(authData)
-	if reg.AuthData, err = ParseAuthenticatorData(reg.RawAuthData); err != nil {
-		return reg, err
+	return NewRegistration(format, authData)
+}
+
+// NewRegistration builds a Registration from an attestation format name and raw
+// authenticator data: the CLI path, where fido2-cred(1) prints fmt, the
+// CBOR-wrapped authData (unwrap it with UnwrapByteString), the credential id,
+// sig and x5c on separate lines instead of an attestationObject. The authData
+// MUST carry attested credential data. The result shares no memory with
+// authData. On error it returns the zero Registration.
+func NewRegistration(format string, authData []byte) (Registration, error) {
+	if format == "" {
+		return Registration{}, fmt.Errorf("%w: attestation format is empty", ErrMalformed)
 	}
-	if reg.AuthData.Attested == nil {
-		return reg, fmt.Errorf("%w: registration authData has no attested credential data", ErrMalformed)
+	raw := bytes.Clone(authData)
+	ad, err := ParseAuthenticatorData(raw)
+	if err != nil {
+		return Registration{}, err
 	}
-	return reg, nil
+	if ad.Attested == nil {
+		return Registration{}, fmt.Errorf("%w: registration authData has no attested credential data", ErrMalformed)
+	}
+	return Registration{Format: format, RawAuthData: raw, AuthData: ad}, nil
 }
 
 // RegistrationPolicy is what `papi enroll` demands of a freshly-made credential
@@ -234,9 +257,15 @@ type RegistrationPolicy struct {
 
 // Credential checks the registration against rpID and policy and returns the
 // credential record to publish (WebAuthn L3 §7.1, minus clientData and
-// attestation-statement verification — see the package comment).
+// attestation-statement verification — see the package comment). The record
+// copies the credential id and has SignCount 0 ("not tracked"), whatever count
+// the registration carried: papi does not enforce signCount (design note §8
+// Q4), and a YubiKey's counter is global across credentials anyway.
 func (r Registration) Credential(rpID string, p RegistrationPolicy) (Credential, error) {
 	ad := r.AuthData
+	if ad.Flags&FlagAT == 0 || ad.Attested == nil {
+		return Credential{}, fmt.Errorf("%w: registration authData has no attested credential data", ErrMalformed)
+	}
 	got, err := checkCeremony(ad, rpID)
 	if err != nil {
 		return Credential{}, err
@@ -252,10 +281,9 @@ func (r Registration) Credential(rpID string, p RegistrationPolicy) (Credential,
 			ErrCredProtect, p.RequireCredProtect, ad.CredProtect)
 	}
 	return Credential{
-		ID:        ad.Attested.CredentialID,
+		ID:        bytes.Clone(ad.Attested.CredentialID),
 		PublicKey: ad.Attested.PublicKey,
 		RPID:      rpID,
-		SignCount: ad.SignCount,
 	}, nil
 }
 
@@ -271,17 +299,31 @@ type Credential struct {
 // VerifyAssertion verifies an assertion signature over authData ||
 // clientDataHash (WebAuthn L3 §7.2 steps 15–22, with the hash supplied by the
 // caller: a CTAP client such as fido2-assert(1) signs a caller-chosen hash).
-// User presence is always required. It returns the parsed authenticator data,
-// so the caller can record SignCount, and the assurance the assertion proves;
-// the caller gates on `assurance >= required` (§7.2 step 17: UV matters only
-// where the caller requires it).
+// User presence is always required, and authData carrying attested credential
+// data (AT) is rejected: an assertion has none. On success it returns the parsed
+// authenticator data, so the caller can record SignCount, and the assurance the
+// assertion proves; the caller gates on `assurance >= required` (§7.2 step 17:
+// UV matters only where the caller requires it). On every error it returns the
+// zero AuthenticatorData and zero Assurance: nothing in authData is
+// authenticated until the whole check passes.
 func VerifyAssertion(cred Credential, authData, clientDataHash, sig []byte) (AuthenticatorData, Assurance, error) {
+	ad, got, err := verifyAssertion(cred, authData, clientDataHash, sig)
+	if err != nil {
+		return AuthenticatorData{}, 0, err
+	}
+	return ad, got, nil
+}
+
+func verifyAssertion(cred Credential, authData, clientDataHash, sig []byte) (AuthenticatorData, Assurance, error) {
 	if len(clientDataHash) != sha256.Size {
 		return AuthenticatorData{}, 0, fmt.Errorf("%w: client data hash is %d bytes", ErrMalformed, len(clientDataHash))
 	}
 	ad, err := ParseAuthenticatorData(authData)
 	if err != nil {
 		return ad, 0, err
+	}
+	if ad.Flags&FlagAT != 0 {
+		return ad, 0, fmt.Errorf("%w: assertion authData has the AT flag set", ErrMalformed)
 	}
 	got, err := checkCeremony(ad, cred.RPID)
 	if err != nil {
@@ -309,25 +351,25 @@ func VerifyBrowserAssertion(cred Credential, authData, clientDataJSON, sig, chal
 	return VerifyAssertion(cred, authData, h[:], sig)
 }
 
-// CheckClientDataJSON applies WebAuthn L3 §7.2 steps 10–13: type, challenge,
-// origin (exact match against origins), and crossOrigin not true.
+// CheckClientDataJSON applies WebAuthn L3 §7.2 steps 10–13: type, challenge
+// (canonical unpadded base64url), origin (exact match against origins), and
+// crossOrigin not true. Parsing is strict where encoding/json is lax: raw must
+// be one JSON object with no duplicate keys, and type/challenge/origin/
+// crossOrigin are matched by exact case only (a key equal to one of them
+// ignoring case, such as "Origin", is rejected). Other keys (topOrigin,
+// tokenBinding, future members) are allowed and ignored.
 func CheckClientDataJSON(raw []byte, wantType string, challenge []byte, origins []string) error {
 	if len(challenge) == 0 {
 		return fmt.Errorf("%w: no expected challenge supplied", ErrClientData)
 	}
-	var c struct {
-		Type        string `json:"type"`
-		Challenge   string `json:"challenge"`
-		Origin      string `json:"origin"`
-		CrossOrigin bool   `json:"crossOrigin"`
-	}
-	if err := json.Unmarshal(raw, &c); err != nil {
+	c, err := parseClientData(raw)
+	if err != nil {
 		return fmt.Errorf("%w: %w", ErrClientData, err)
 	}
 	if c.Type != wantType {
 		return fmt.Errorf("%w: type %q, want %q", ErrClientData, c.Type, wantType)
 	}
-	got, err := base64.RawURLEncoding.DecodeString(c.Challenge)
+	got, err := base64.RawURLEncoding.Strict().DecodeString(c.Challenge)
 	if err != nil || subtle.ConstantTimeCompare(got, challenge) != 1 {
 		return fmt.Errorf("%w: challenge mismatch", ErrClientData)
 	}
@@ -338,6 +380,66 @@ func CheckClientDataJSON(raw []byte, wantType string, challenge []byte, origins 
 		return fmt.Errorf("%w: crossOrigin is true", ErrClientData)
 	}
 	return nil
+}
+
+type clientData struct {
+	Type        string
+	Challenge   string
+	Origin      string
+	CrossOrigin bool
+}
+
+// parseClientData walks the top-level object key by key, so it sees every key
+// exactly as written: duplicates and case variants of the four checked members
+// are errors rather than silently resolved by encoding/json.
+func parseClientData(raw []byte) (clientData, error) {
+	var c clientData
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	if tok, err := dec.Token(); err != nil {
+		return c, err
+	} else if tok != json.Delim('{') {
+		return c, errors.New("clientDataJSON is not a JSON object")
+	}
+	seen := make(map[string]bool)
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return c, err
+		}
+		key := tok.(string) // inside an object the decoder only yields string keys here
+		if seen[key] {
+			return c, fmt.Errorf("duplicate key %q", key)
+		}
+		seen[key] = true
+		var dst any
+		switch key {
+		case "type":
+			dst = &c.Type
+		case "challenge":
+			dst = &c.Challenge
+		case "origin":
+			dst = &c.Origin
+		case "crossOrigin":
+			dst = &c.CrossOrigin
+		default:
+			for _, member := range []string{"type", "challenge", "origin", "crossOrigin"} {
+				if strings.EqualFold(key, member) {
+					return c, fmt.Errorf("key %q is a case variant of %q", key, member)
+				}
+			}
+			dst = new(json.RawMessage)
+		}
+		if err := dec.Decode(dst); err != nil {
+			return c, fmt.Errorf("key %q: %w", key, err)
+		}
+	}
+	if _, err := dec.Token(); err != nil { // the closing '}'
+		return c, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return c, errors.New("trailing data after clientDataJSON object")
+	}
+	return c, nil
 }
 
 // checkCeremony covers the checks every ceremony shares — rpIdHash (§7.2 step
