@@ -30,7 +30,8 @@ attestation chain are not enforced and are flagged for a later security audit
 only (Q9); D1–D3 kept.
 
 **Status:** implementation — the enroll FIDO2 phase and the server side —
-waits for the operator's go and the two blockers in §10. The later one-prompt
+waits for the operator's go and the remaining blocker in §10 (the `-P`
+command-line exposure). The later one-prompt
 change takes option B (§10).
 Only the card-free spike (§5) exists.
 
@@ -450,7 +451,7 @@ Answers and rulings were relayed by circus/eager-holly/clarabell on
 three design choices as written: D1 credProtect level 2 (§2), D2 a
 non-discoverable credential (§3 step 5), D3 ES256 only, one credential per
 card. The one-prompt direction is B (§10). Implementation waits for the
-operator's go and the two blockers listed in §10.
+operator's go and the remaining blocker listed in §10.
 
 **Flagged for a later security audit** (operator, 2026-11-04): Q4 (signCount
 not enforced) and Q6 (attestation chain not verified) are deliberate gaps, to
@@ -534,13 +535,43 @@ UNVERIFIED, to check before relying on these counts:
 
 - That `fido2-token -S` and `-C` ask for the new PIN twice (enter, then
   confirm). This is from memory of libfido2, not its man page.
-- How many entries row 1 really is. `piggy card init` issues `new_pin` /
-  `confirm_new_pin` (and PUK) secret requests per piggy RFC 0007 §5.2, which
-  would make row 1 more than one typing on a fresh card. But the comment at
-  `main.go:2768` says the freshly provisioned card "still has the default
-  PIN". If the second is true, Q1 (FIDO2 PIN = PIV PIN) would set the FIDO2
-  PIN to the factory default. **That must be settled before implementing
-  Q1**; asking the piggy session is the way to settle it.
+- How many entries row 1 really is on a fresh card. `piggy card init` asks
+  for the new PIN twice (and the PUK likewise; see below), so row 1 is more
+  than one typing there. The table counts the PIN used after init.
+
+**Default PIN after init: answered 2026-11-04** by the read-only piggy
+research session piggy/sunny-sycamore, from piggy's code and manpage, not
+tested on a card, relayed by clarabell:
+
+- A **completed** `piggy card init` does **not** keep the default PIN. It
+  prompts for a new PIN twice, then changes it from the default; the PUK
+  likewise (piggy `crates/piggy/src/card/engine.rs:673-692`,
+  `doc/piggy.1.scd:561-569`, `601-603`). The comment at `main.go:2768` is
+  true only until init completes.
+- A **partly provisioned** card still has the default PIN. That happens after
+  any failure in init's steps 1–5 (for example a missed touch while signing
+  the 9A/9C certificate) or at the PIN prompt (declined or mismatched)
+  (`engine.rs:268`, `doc/piggy.1.scd:580-583`). There is no flag to skip the
+  PIN change.
+- Still UNVERIFIED (per that session): whether `change_pin` enforces length or
+  character limits; whether the `piggy manage` `card.init` JSON-RPC path
+  behaves differently; whether the card refuses a new PIN equal to the
+  default; and piggy RFC 0006's text (it was not read).
+
+So Q1 is safe after a completed init. **Requirement for the FIDO2 phase:**
+before setting a FIDO2 PIN from the PIV PIN (§3 step 4), enroll must
+**refuse** if the new card's PIV PIN is still the factory default `123456`
+(a partly provisioned card). It must also refuse if it cannot tell. How to
+tell is open:
+
+- Trust that the `piggy card init` papi just ran exited successfully. This
+  does not cover `--new-guid` and `--add-webauthn`, which skip init.
+- Ask the card directly. **Caution:** a PIV VERIFY with `123456` against a
+  card whose PIN is *not* the default uses up one of its PIN retries, so a
+  blind probe is unacceptable. A YubiKey 5 is believed to report "PIN is
+  still default" through a metadata command that uses no retry (firmware 5.3
+  and later, from memory, UNVERIFIED). Whether piggy exposes that is a
+  question for piggy.
 
 **Correction to earlier wording.** This note and the Q8 reply said "papi
 never holds a PIN". That is true of the new FIDO2 phase as designed, but not
@@ -628,10 +659,12 @@ yet.
 
 **Blockers before implementation** (of this plan, not only of B):
 
-1. **Default PIN after `piggy card init`** (§9): does a freshly provisioned
-   card keep the factory PIV PIN? If it does, Q1 would set the FIDO2 PIN to
-   the default. clarabell has sent this question to the piggy owner.
-2. **The `-P <pin>` command-line exposure** (§9): `papi enroll --pin` and the
+1. ~~**Default PIN after `piggy card init`**~~ — **answered** 2026-11-04
+   (§9): a completed init changes the PIN; a partly provisioned card keeps
+   the default, so the FIDO2 phase must refuse it (§9, with the unverified
+   parts listed there). This adds one piggy question: whether piggy can report
+   "PIN is still default" without using up a retry.
+2. **Remaining blocker: the `-P <pin>` command-line exposure** (§9): `papi enroll --pin` and the
    other signing commands pass the PIV PIN to `piggy sign-bytes` in argv. That
    follow-up should land, or be explicitly deferred, before enroll grows a
    FIDO2 phase.
