@@ -570,8 +570,18 @@ tell is open:
   card whose PIN is *not* the default uses up one of its PIN retries, so a
   blind probe is unacceptable. A YubiKey 5 is believed to report "PIN is
   still default" through a metadata command that uses no retry (firmware 5.3
-  and later, from memory, UNVERIFIED). Whether piggy exposes that is a
-  question for piggy.
+  and later, from memory, UNVERIFIED). piggy answered 2026-11-04
+  (piggy/sunny-sycamore, read-only, from the files that session read, not a
+  repo-wide search): piggy has **no** "PIN is default" read. piggy-piv's
+  instruction list has no GET METADATA, and no `piggy` command, tool op or
+  manage method reports PIN state. It does have a retry-counter read that
+  uses no retry (`PinSession::pin_retries_remaining`, an empty VERIFY per
+  SP 800-73-4 §3.2.1), but that cannot tell a default PIN from a changed one,
+  and no command exposes it yet. A real check therefore needs new piggy work:
+  a GET METADATA APDU plus a command surface. That would be YubiKey-only;
+  whether generic PIV cards reject it cleanly is UNVERIFIED. Until then, the
+  FIDO2 phase can rely only on init having just succeeded, which leaves the
+  `--new-guid` and `--add-webauthn` paths without a check.
 
 **Correction to earlier wording.** This note and the Q8 reply said "papi
 never holds a PIN". That is true of the new FIDO2 phase as designed, but not
