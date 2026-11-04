@@ -30,7 +30,8 @@ attestation chain are not enforced and are flagged for a later security audit
 only (Q9); D1–D3 kept.
 
 **Status:** implementation — the enroll FIDO2 phase and the server side —
-waits for the operator's go and the choice of a one-prompt direction (§10).
+waits for the operator's go and the two blockers in §10. The later one-prompt
+change takes option B (§10).
 Only the card-free spike (§5) exists.
 
 Evidence labels: **VERIFIED** (source cited), **UNVERIFIED** (not checked, or
@@ -448,8 +449,8 @@ Answers and rulings were relayed by circus/eager-holly/clarabell on
 2026-11-04. Every question is now answered or ruled. The operator also kept
 three design choices as written: D1 credProtect level 2 (§2), D2 a
 non-discoverable credential (§3 step 5), D3 ES256 only, one credential per
-card. Implementation waits for the operator's go and for the choice of a
-one-prompt direction (§10).
+card. The one-prompt direction is B (§10). Implementation waits for the
+operator's go and the two blockers listed in §10.
 
 **Flagged for a later security audit** (operator, 2026-11-04): Q4 (signCount
 not enforced) and Q6 (attestation chain not verified) are deliberate gaps, to
@@ -500,8 +501,8 @@ check can run over existing receipts.
    first.**
 8. **PIN count** (§9 lists the entries in order: 3–7). — RULED 2026-11-04:
    **v1 accepts the current prompts and adds no PIN handling; getting to one
-   prompt is a wanted later improvement**, designed in §10, direction to be
-   chosen by the operator before implementation.
+   prompt is a wanted later improvement**, designed in §10; the operator
+   chose option B.
 9. **Origins** — RULED 2026-11-04: **only `https://linenisgreat.com`, exact
    match.** Reason: the smallest allowlist;
    `CheckClientDataJSON` matches exactly. Flipping it means listing each
@@ -621,7 +622,21 @@ FIDO2 rows; it only confirms that row 1 stays at one.
 saving as such: the trusted key's signature is the trust rule (Q3). It is
 listed only to rule it out.
 
-**Recommendation:** B if the operator wants papi to stay PIN-free (it is the
+**Chosen (operator, 2026-11-04, relayed by circus/eager-holly/clarabell):
+B.** A helper holds the PIN for the run; papi holds nothing. Not implemented
+yet.
+
+**Blockers before implementation** (of this plan, not only of B):
+
+1. **Default PIN after `piggy card init`** (§9): does a freshly provisioned
+   card keep the factory PIV PIN? If it does, Q1 would set the FIDO2 PIN to
+   the default. clarabell has sent this question to the piggy owner.
+2. **The `-P <pin>` command-line exposure** (§9): `papi enroll --pin` and the
+   other signing commands pass the PIV PIN to `piggy sign-bytes` in argv. That
+   follow-up should land, or be explicitly deferred, before enroll grows a
+   FIDO2 phase.
+
+The recommendation as written before the choice: B if the operator wants papi to stay PIN-free (it is the
 cleaner fit with the layering rule and makes the FIDO2 primitive piggy's,
 which §7 already asks about). A if a papi-only change is wanted sooner:
 first switch the PIV side to RFC 0006 `secret.request` (this also fixes the
