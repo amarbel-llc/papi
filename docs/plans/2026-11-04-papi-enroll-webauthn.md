@@ -14,9 +14,19 @@ a touch (user presence, UP), **tier 2** on a touch plus the PIN (user
 verification, UV), and both tiers use the same PIN. The rpId is `linenisgreat.com`.
 Credential public keys are published in the served document, like the 9A/9D
 keys. A lost key is removed by a deploy from another trusted card, and a spare is
-enrolled. Enroll hosts are Linux (twerk, nikulin, maybe flic). YubiKey 5 series
-only. Direction "option D": `papi enroll` runs PIV init, then a CTAP FIDO2
-phase, and writes one receipt. Browser registration is the fallback.
+enrolled. Enroll hosts are Linux (twerk, nikulin, maybe flic; confirmed
+2026-11-04). YubiKey 5 series only. Direction "option D": `papi enroll` runs PIV
+init, then a CTAP FIDO2 phase, and writes one receipt. Browser registration is
+a later fallback; the CLI comes first (§8 Q7).
+
+Further answers (2026-11-04, relayed by circus/eager-holly/clarabell) are
+recorded in §8: "same PIN" means the FIDO2 PIN is set equal to the PIV PIN
+(Q1); a PIV session also satisfies tier 2 (Q2); the tier-1 risk is accepted
+(Q5); browser fallback later (Q7). Q3, Q4, Q6, Q8 and Q9 carry marked defaults
+awaiting the operator.
+
+**Status:** implementation — the enroll FIDO2 phase and the server side —
+waits for the operator's go. Only the card-free spike (§5) exists.
 
 Evidence labels: **VERIFIED** (source cited), **UNVERIFIED** (not checked, or
 needs hardware), **R** (read in this repo at `fresh-fig` after ab85cc2).
@@ -51,12 +61,14 @@ Yes. The receipt can carry the WebAuthn credential the same way it carries the
    covers the whole receipt, `webauthn` block included.
 4. The deploy splices the block into a new `piggy.webauthn_credentials[]`.
 
-The tiers are a per-page assertion policy, not separate credentials. A tier-1
-page asks for `userVerification: "discouraged"`, and the server requires only
-UP. A tier-2 page asks for `"required"`, and the server requires UP and UV. The
-UV bit is signed by the authenticator, so the server can enforce tier 2 against
-the same credential. The spike (`internal/0/webauthn`) implements and tests
-exactly this verifier logic.
+The tiers are a per-page assertion requirement, not separate credentials. A
+tier-1 page asks for `userVerification: "discouraged"`, and the server requires
+only UP. A tier-2 page asks for `"required"`, and the server requires UP and UV.
+The UV bit is signed by the authenticator, so the server can enforce tier 2
+against the same credential. The spike (`internal/0/webauthn`) implements and
+tests exactly this verifier logic: `VerifyAssertion` always requires UP and
+returns the `Assurance` the assertion proves (`AssuranceTouch` or
+`AssurancePIN`), and the caller gates on `got >= required`.
 
 ## 1. What exists today (R)
 
@@ -83,7 +95,7 @@ exactly this verifier logic.
   `acl` of principal ids or groups. So the natural way to gate pages by tier is
   **groups minted onto the session** (§4 below), not a new gating mechanism.
 - **piggy:** it has no CTAP or FIDO2 primitive. A search of
-  `/home/sasha/eng/repos/piggy` for fido, ctap and webauthn finds only reader
+  the piggy repo for fido, ctap and webauthn finds only reader
   names and piggy's FDR-0004, which states "piggy never touches the FIDO2
   applet" (LUKS uses `systemd-cryptenroll`). VERIFIED (R in piggy).
 
@@ -130,7 +142,15 @@ it.
   applet; I know of none. `fido2-cred -V` itself does **not** validate the
   attestation certificate: "In the case of Basic Attestation, the validity of
   the authenticator's attestation certificate is *not* verified" (VERIFIED,
-  `fido2-cred(1)` CAVEATS). The spike parses `attStmt` but does not verify it.
+  `fido2-cred(1)` CAVEATS). The spike requires `attStmt` to be present but
+  neither keeps nor verifies it; the receipt's `registration.att_stmt` evidence
+  is built by the enroll phase from `fido2-cred`'s output. The spike keeps what
+  the block above needs from authData: `AttestedCredential.COSEKey` (the
+  byte-exact `public_key`), `AAGUID` (`aaguid`), `CredentialID`, and
+  `AuthenticatorData.CredProtect` (`cred_protect`).
+- **No PIN is recorded.** Q1's answer (FIDO2 PIN = PIV PIN, §8) changes nothing
+  in the receipt: the block names neither PIN, and nothing in it depends on
+  their values.
 - **The remaining gap is "same physical device"**, which the binding and
   attestation signatures cannot prove. It is closed procedurally (§3 step 3,
   the one-device rule). An operator could only get a second device's credential
@@ -163,19 +183,37 @@ trusted card last, so during the FIDO2 phase only the new card is plugged in:
    `fido2-token -I` output shape, and whether a sysfs walk (hidraw parent USB
    device == the CCID reader's USB device) could replace "exactly one" with a
    positive same-device check.
-4. **FIDO2 PIN.** If the applet has no PIN, run `fido2-token -S`. If it already
-   has one, for example from piggy FDR-0004's LUKS `hmac-secret` enrollment,
-   reuse it and **never reset** the applet. A FIDO2 reset destroys every FIDO2
-   credential, including a LUKS keyslot's. That FIDO2 reset wipes all
-   credentials is from memory, UNVERIFIED here. A PIN is never put in argv:
-   libfido2 prompts on the tty (VERIFIED, `fido2-cred(1)`).
+4. **FIDO2 PIN = PIV PIN** (operator answer, Q1). The FIDO2 PIN is set to the
+   same string as the new card's PIV PIN, so the operator remembers one PIN per
+   card. The cost is accepted with the answer: a leak of one is a leak of both,
+   so one secret guards two applets. papi never holds a PIN (it is never in
+   argv; libfido2 prompts on the tty, VERIFIED `fido2-cred(1)`), so "equal" is
+   an instruction to the operator plus a check, not something papi copies:
+   - **No FIDO2 PIN yet:** run `fido2-token -S`, telling the operator to type
+     the PIV PIN just used in step 1. The make-credential in step 5 then asks
+     for it again, so a typo in `-S` that the confirmation prompt did not catch
+     shows up as a failed PIN there (and the operator fixes it with `-C`).
+   - **A FIDO2 PIN exists and is already the PIV PIN:** nothing to do; step 5
+     proves it.
+   - **A FIDO2 PIN exists and differs** (for example from piggy FDR-0004's LUKS
+     `hmac-secret` enrollment): papi stops and offers `fido2-token -C` (change
+     PIN: old PIN, then the PIV PIN as the new one). It **never resets** the
+     applet: a FIDO2 reset destroys every FIDO2 credential, including a LUKS
+     keyslot's (from memory, UNVERIFIED). That a PIN change keeps existing
+     credentials, and that a LUKS keyslot enrolled with `fido2-with-client-pin`
+     then unlocks with the new PIN, is UNVERIFIED; check it on hardware before
+     relying on it. If the operator declines the change, enroll aborts before
+     anything is written rather than leave the card with two PINs.
+   papi cannot compare the two PINs itself; whether they match is known only
+   from the operator typing the PIV PIN at the FIDO2 prompt and it succeeding.
 5. **Make the credential:** `fido2-cred -M -v -c 2 -i <param> <dev> es256`, with
    no `-r` (non-discoverable) and no `-h` (no hmac-secret). The input is the
    cdh, the rp id, a user name, and a random 32-byte user id; the output is fmt,
    CBOR authData, credential id, attestation signature, and x5c (VERIFIED, the
    INPUT/OUTPUT FORMAT sections of `fido2-cred(1)`; `-c` takes the decimal
    level, and `fido/param.h` defines `FIDO_CRED_PROT_UV_OPTIONAL_WITH_ID 0x02`).
-   **PIN prompt #2** is the FIDO2 PIN, plus a touch. papi then parses the
+   **PIN prompt #2** is the FIDO2 PIN (the PIV PIN's value, Q1), plus a touch.
+   papi then parses the
    output with `internal/0/webauthn`. `UnwrapByteString` handles libfido2's
    CBOR-wrapped authData; `RegistrationPolicy{RequireUV: true,
    RequireCredProtect: 2, RequireDeviceBound: true}` rejects a credential where
@@ -183,29 +221,31 @@ trusted card last, so during the FIDO2 phase only the new card is plugged in:
    backup-eligible.
 6. **Self-check tier 1 on the hardware:**
    `fido2-assert -G -t up=true -t uv=false`, sending the new credential id and
-   asking for a touch only. The resulting assertion is verified with
-   `TierTouch`. This turns the UNVERIFIED claim "credProtect 2 allows a UP-only
+   asking for a touch only. The resulting assertion must pass `VerifyAssertion`
+   with at least `AssuranceTouch`. This turns the UNVERIFIED claim "credProtect 2 allows a UP-only
    assertion when the credential id is supplied, even with a PIN set" into
    something every enrollment proves. If it fails, the enrollment aborts before
    anything is written. A tier-2 self-check would cost another PIN prompt, so it
    is optional (`--check-uv`).
 7. **Binding claim** signed by the new card's 9A, with the PIN still cached.
 8. Present the **trusted card** and attest, exactly as in v1. In
-   `--add-webauthn` mode, see question 3. Write the receipt.
+   `--add-webauthn` mode a second trusted card attests too (DEFAULT, Q3,
+   awaiting operator). Write the receipt.
 
-The PIN count is the new card's PIV PIN, the FIDO2 PIN (entered twice if it is
-being set for the first time), and the trusted card's PIV PIN. That is more than
-two; see question 8.
+The PIN count is the new card's PIV PIN, the FIDO2 PIN (the same value, Q1;
+entered twice more if it is being set or changed), and the trusted card's PIV
+PIN. That is more than two; the DEFAULT is to accept it (Q8, awaiting
+operator).
 
-**Browser registration fallback:** the site serves a
+**Browser registration fallback (later, Q7):** the operator wants the CLI path
+first; this is recorded for when it is picked up. The site would serve a
 `navigator.credentials.create()` page with `rp.id = linenisgreat.com`,
 `residentKey: "discouraged"`, `userVerification: "required"`, and
 `extensions: {credentialProtectionPolicy: "userVerificationOptionalWithCredentialIDList",
 enforceCredentialProtectionPolicy: true}`. The extension input names are from
 memory, UNVERIFIED. The page shows the attestationObject, and
 `papi enroll --add-webauthn --from-browser <file>` builds the v2 block from it,
-skipping steps 3–6. Whether this fallback is worth building at all is a
-question for the operator.
+skipping steps 3–6. The operator answered "later, CLI first" (Q7).
 
 ### Tooling: shell out to libfido2's tools (recommended)
 
@@ -231,15 +271,15 @@ question for the operator.
 
 | Question | Recommendation | Evidence |
 |---|---|---|
-| One credential or two? | **One.** The tier is chosen per assertion by the RP. Two credentials (tier 2 at credProtect 3) would add nothing the server cannot already enforce, because UV is a signed flag in authData. It would double what is published and revoked, and add a second make-credential prompt. | WebAuthn L3 §7.2 step 17: "If user verification was determined to be required, verify that the UV bit … is set. Otherwise, ignore the value of the UV flag." VERIFIED (clarabell fetch). The spike's `TestVerifyAssertionTiers` shows one credential serving both tiers. |
+| One credential or two? | **One.** The tier is chosen per assertion by the RP. Two credentials (tier 2 at credProtect 3) would add nothing the server cannot already enforce, because UV is a signed flag in authData. It would double what is published and revoked, and add a second make-credential prompt. | WebAuthn L3 §7.2 step 17: "If user verification was determined to be required, verify that the UV bit … is set. Otherwise, ignore the value of the UV flag." VERIFIED (clarabell fetch). The spike's `TestVerifyAssertionAssurance` shows one credential serving both tiers. |
 | credProtect level | **2** (`UV_OPTIONAL_WITH_ID`). Level 3 (`UV_REQUIRED`) would make tier 1 impossible. Level 1 (`UV_OPTIONAL`) would let a non-discoverable credential be used without UV, which is the same as level 2 for our use, but level 2 is the honest declaration. | The constants are VERIFIED (`fido/param.h`: `0x01/0x02/0x03`). The level semantics (2 = usable without UV only when the credential id is in the allowList; 3 = UV always) are **UNVERIFIED**, because the CTAP text was not obtained. Enroll step 6 checks this on hardware every time. |
 | Discoverable (resident)? | **No.** Assertions always send `allowCredentials` with the published ids. No resident slot is used, and level 2's "with credential ID" path is exactly the path we use. | `fido2-cred -r` / `fido2-assert -r` semantics VERIFIED (`fido2-cred(1)`, `fido2-assert(1)`). YubiKey resident slot limits: UNVERIFIED, not needed. |
 | UV at registration | **Required** (`-v`). | `fido2-cred(1)` `-v`, VERIFIED. That makeCredential needs a PIN once one is set (unless `makeCredUvNotRqd`) is UNVERIFIED; it is moot because we always do UV. |
-| Tier 1 assertion | Browser: `userVerification: "discouraged"`. Server: `TierTouch` (UP required, UV ignored). | §7.2 steps 16–17, VERIFIED. That browsers send `uv=false` for "discouraged" and the YubiKey then does touch only with a PIN set is **UNVERIFIED** (hardware/browser). |
-| Tier 2 assertion | Browser: `"required"`. Server: `TierPIN` (UP and UV). | §7.2 step 17, VERIFIED. |
-| Same PIN for both | Tier 1 uses no PIN, and tier 2 uses the FIDO2 PIN. Whether "same PIN" means "FIDO2 PIN = PIV PIN value" is question 1. | FIDO2 and PIV PINs are separate: piggy FDR-0004, VERIFIED (R). |
+| Tier 1 assertion | Browser: `userVerification: "discouraged"`. Server: `VerifyAssertion` result `>= AssuranceTouch` (UP always required; a UV assertion also passes). | §7.2 steps 16–17, VERIFIED. That browsers send `uv=false` for "discouraged" and the YubiKey then does touch only with a PIN set is **UNVERIFIED** (hardware/browser). |
+| Tier 2 assertion | Browser: `"required"`. Server: result `>= AssurancePIN` (UP and UV). | §7.2 step 17, VERIFIED. |
+| Same PIN for both | Tier 1 uses no PIN; tier 2 uses the FIDO2 PIN, which enroll sets **equal to the PIV PIN** (operator, Q1, 2026-11-04). A leak of one is a leak of both. | FIDO2 and PIV PINs are separate applet secrets: piggy FDR-0004, VERIFIED (R). Keeping them equal is policy, set in §3 step 4. |
 | hmac-secret / largeBlob | Not used. | Only signatures are needed. |
-| signCount | The verifier enforces it when a count is supplied. The site is stateless (git is the durable state, and only challenges and sessions live in tmp JSON), so it **cannot track counts durably**. Recommendation: don't enforce, or keep a best-effort count in tmp. | §7.2 step 22: "a signal, but not proof … RP-specific", VERIFIED. |
+| signCount | The verifier enforces it when a count is supplied. The site is stateless (git is the durable state, and only challenges and sessions live in tmp JSON), so it **cannot track counts durably**. DEFAULT (Q4, awaiting operator): don't enforce. | §7.2 step 22: "a signal, but not proof … RP-specific", VERIFIED. |
 | BE/BS | Reject `BE=1` at registration (device-bound only), and reject `BS` without `BE` always. | §7.2 step 18, VERIFIED. |
 
 **CLI-made credential, browser assertion:** §7.2 verifies an assertion using
@@ -255,12 +295,20 @@ device finds this non-discoverable credential is UNVERIFIED on hardware. It
 should, given `allowCredentials` with its id and `rpId: linenisgreat.com`. This
 is the first thing to try when a card is available.
 
-**Tier groups on the session (proposal):** a successful WebAuthn assertion mints
-a §5 session whose principal carries `authenticated` plus `assurance-touch`, and
-for UV also `assurance-pin`. A tier-1 page is `visibility: "private", acl:
+**Tier groups on the session:** a session carries one group per assurance
+level it reaches, so the groups follow the `Assurance` ordering:
+
+| Session minted by | `Assurance` | Groups |
+|---|---|---|
+| WebAuthn assertion, UP only | `AssuranceTouch` | `authenticated`, `assurance-touch` |
+| WebAuthn assertion, UP + UV | `AssurancePIN` | `authenticated`, `assurance-touch`, `assurance-pin` |
+| PIV sign-challenge (§5.2, PIN `once` + touch `cached`) | `AssurancePIN` (operator, Q2, 2026-11-04) | `authenticated`, `assurance-touch`, `assurance-pin` |
+
+So `assurance-pin` is granted by either a UV WebAuthn assertion or a PIV
+sign-challenge session. A tier-1 page is `visibility: "private", acl:
 ["assurance-touch"]`, and a tier-2 page uses `acl: ["assurance-pin"]`. This
-needs no change to §2 projection, only new group sources in §3 and §5. Whether a
-PIV sign-challenge session also gets both groups is question 2.
+needs no change to §2 projection, only new group sources in §3 and §5. Which
+documents go in each tier is the operator's choice, made later (Q5).
 
 ## 5. The spike: `internal/0/webauthn` (VERIFIED by tests)
 
@@ -270,29 +318,33 @@ gomod2nix change. It sits in `internal/0` because it imports nothing internal
 
 - `cbor.go`: a strict CBOR subset decoder (major types 0–5 with definite
   lengths, plus false/true/null). It rejects tags, floats, indefinite lengths,
-  duplicate keys, int64 overflow, length overflow, and nesting deeper than 8.
-  It also provides `UnwrapByteString` for libfido2's tool output.
-  `fxamacker/cbor` is the alternative if the decoder ever needs more. It is not
-  needed now.
+  duplicate keys, int64 overflow, length overflow, and nesting deeper than 8,
+  all as `ErrMalformed`. It also provides `UnwrapByteString` for libfido2's
+  tool output. `fxamacker/cbor` is the alternative if the decoder ever needs
+  more. It is not needed now.
 - `webauthn.go`: `ParseAuthenticatorData` (flags, signCount, attested
-  credential, an ES256/P-256 COSE key checked on-curve, extensions, and
-  rejection of trailing bytes); `ParseAttestationObject`; and
-  `Registration.Credential` with a `RegistrationPolicy` (rpIdHash, UP, UV,
-  credProtect level, device-bound, BE/BS). Assertions go through
-  `VerifyAssertion` (rpIdHash, the BE/BS rule, policy flags, an ECDSA
+  credential, an ES256/P-256 COSE key checked on-curve, the credProtect
+  extension output as `CredProtect`, and rejection of trailing bytes);
+  `ParseAttestationObject`; and `Registration.Credential` with a
+  `RegistrationPolicy` (enroll-only checks: UV at registration, credProtect
+  level, device-bound). Assertions go through `VerifyAssertion` (an ECDSA
   signature over authData ‖ cdh, signCount), `VerifyBrowserAssertion`, and
   `CheckClientDataJSON` (§7.2 steps 10–13: type, challenge, exact origin
-  allowlist, crossOrigin). `TierTouch` and `TierPIN` are the two policies.
+  allowlist, crossOrigin). Both ceremonies share one check — rpIdHash, the
+  BE/BS rule, and UP, which is always required — that yields the `Assurance`
+  (`AssuranceTouch` or `AssurancePIN`) `VerifyAssertion` returns; callers gate
+  on `got >= required`, and no setting turns the UP check off.
 - Tests were written first and confirmed failing before any code existed. The
   fixtures are deterministic: a fixed P-256 scalar, with authData and a "none"
   attestationObject built in the test. One vector is published: **libfido2
   1.17.0 `regress/assert.c`**, a valid ES256 assertion (`es256_pk`, `cdh`,
-  `authdata`, `sig`, rp `localhost`, flags 0x00, signCount 3). It verifies under
-  a no-flags policy and is correctly rejected by `TierTouch`, because it has no
-  UP. I found no WebAuthn L3 test-vector appendix; clarabell could not confirm
+  `authdata`, `sig`, rp `localhost`, flags 0x00, signCount 3). Its signature
+  verifies (checked directly through the unexported signature helper), and
+  `VerifyAssertion` correctly rejects it with `ErrUserNotPresent`, because it
+  has no UP. I found no WebAuthn L3 test-vector appendix; clarabell could not confirm
   one either.
 - Not in the spike: verifying packed attestation, the CTAP device I/O, and the
-  receipt v2 types. These are the next step once the questions are answered.
+  receipt v2 types. These are the next step, and wait for the operator's go.
 
 ## 6. Amendments needed (listed, not written)
 
@@ -300,7 +352,8 @@ gomod2nix change. It sits in `internal/0` because it imports nothing internal
 
 - the receipt-v2 schema and its `webauthn` block;
 - the FIDO2 phase and its order (trusted card last);
-- `--add-webauthn` (and `--from-browser`);
+- `--add-webauthn` (and, later, `--from-browser`);
+- the FIDO2-PIN-equals-PIV-PIN rule and the differing-PIN path (§3 step 4);
 - the one-device rule;
 - libfido2 as a runtime tool;
 - new tuning levers: credProtect level, discoverable, AAGUID allowlist,
@@ -329,7 +382,10 @@ gomod2nix change. It sits in `internal/0` because it imports nothing internal
   fallback's `create()` page only *displays* the attestationObject and stores
   nothing.
 - Security Considerations:
-  - anyone holding the key passes tier 1;
+  - anyone holding the key passes tier 1 (accepted by the operator, Q5:
+    tier 1 holds only low-sensitivity material);
+  - one PIN guards both the PIV and FIDO2 applets (Q1);
+  - a PIV sign-challenge session counts as tier 2 (Q2);
   - credential ids are public;
   - no clone detection without signCount state;
   - the origin allowlist and rpId suffix rules (subdomain origins under
@@ -356,13 +412,14 @@ directly.
     verifier), noting the existing ES256 verifier takes raw `r‖s` while
     WebAuthn signatures are ASN.1 DER;
   - discovery `auth.webauthn`;
-  - session tier groups;
+  - session tier groups, including `assurance-pin` on PIV sign-challenge
+    sessions (Q2);
   - gated sitemap and page nodes;
   - the front-end `navigator.credentials.get()` page, with `allowCredentials`
     and a per-tier `userVerification`;
   - splicing `webauthn_credentials[]` into papi.json;
   - extending `just papi-verify-keys` to verify v2 receipts;
-  - the signCount decision.
+  - the signCount decision (DEFAULT not enforced, Q4).
 - **circus infra (enroll hosts twerk, nikulin, flic):** libfido2 on PATH, and
   hidraw udev access for YubiKeys.
 - **piggy (questions only):**
@@ -377,30 +434,65 @@ directly.
   - Should piggy FDR-0004's LUKS flow and this flow share a FIDO2-PIN-setup
     step?
 
-## 8. Questions for the operator
+## 8. Operator questions: answered and defaulted
 
-1. **"Same PIN for both tiers":** does that mean (a) tier 1 uses no PIN, tier 2
-   uses the FIDO2 PIN, and there is one FIDO2 PIN per card? Or (b) the FIDO2 PIN
-   is set to the same value as the PIV PIN? With (b), enroll could prompt once
-   and set both, at the cost of one secret guarding two applets.
-2. Does a PIV sign-challenge session (§5.2, PIN `once` + touch `cached`) also
-   satisfy tier 2, or only tier 1, or neither? Is PIV policy UV-equivalent?
-   UNVERIFIED.
-3. **`--add-webauthn` on an already-published card:** may the card's own
-   published 9A serve as the attestation key, so that only one card is needed?
-   Or must a *second* trusted card attest, as in v1?
-4. **signCount:** accept that it is not enforced (the site is stateless), or
-   allow a best-effort count in tmp JSON?
-5. **Tier-1 threat model:** anyone who finds the key can read tier-1 pages. Is
-   that acceptable for the documents intended there?
-6. Should a FIDO2 attestation check also run (pin Yubico's root, check the
-   packed chain and the AAGUID allowlist) as "genuine YubiKey 5" assurance? It
-   does not bind the credential to PIV.
-7. Is the browser registration fallback wanted at all, or is CLI-only enough?
-8. The actual PIN count is the new card's PIV PIN, the FIDO2 PIN (twice if it is
-   being set), the trusted card's PIV PIN, plus an optional tier-2 self-check.
-   Is that acceptable for "one sitting"?
-9. **Origins:** only `https://linenisgreat.com`, or subdomains too?
+Answers were relayed by circus/eager-holly/clarabell on 2026-11-04. Defaults
+are this note's, also dated 2026-11-04, and each is **awaiting operator**:
+the implementation follows the default unless the operator flips it.
+Implementation as a whole waits for the operator's go.
+
+1. **"Same PIN for both tiers"** — ANSWERED 2026-11-04: the FIDO2 PIN is set
+   **equal to the PIV PIN**; enroll sets both to the same string (§3 step 4,
+   including the existing-and-different case). Cost, accepted: a leak of one is
+   a leak of both. Tier 1 still uses no PIN.
+2. **Does a PIV sign-challenge session satisfy tier 2?** — ANSWERED 2026-11-04:
+   **yes.** A PIV session is treated as `AssurancePIN` and carries
+   `assurance-pin` (§4, tier groups).
+3. **`--add-webauthn` on an already-published card: may its own published 9A
+   attest?** — **DEFAULT (awaiting operator): no; a second trusted card
+   attests, as in v1.** Reason: it keeps the one trust rule every receipt
+   already follows (a *different*, already-trusted card authorizes it), so one
+   compromised card plus its PIN cannot extend its own reach. Flipping it saves
+   carrying a second card for `--add-webauthn`, at the cost of a new
+   deploy-gate rule that accepts self-attested v2 receipts, and of letting
+   whoever holds that card and its PIN publish a credential they control
+   (still subject to the deploy).
+4. **signCount** — **DEFAULT (awaiting operator): not enforced.** The server
+   passes a stored count of 0, which `VerifyAssertion` treats as "not
+   tracked". Reason: the site is stateless (git is the durable state), and a
+   count kept only in tmp JSON resets whenever tmp does, so it would detect a
+   clone only within one tmp lifetime while looking like a guarantee.
+   Flipping it to a best-effort tmp count costs a state write on every
+   assertion and a documented reset behaviour; it buys clone detection between
+   resets.
+5. **Tier-1 threat model** (whoever finds the key can read tier-1 pages) —
+   ANSWERED 2026-11-04: **acceptable.** Tier 1 holds only low-sensitivity
+   material; the operator chooses the documents for each tier later.
+6. **FIDO2 attestation check (Yubico root, packed chain, AAGUID)** —
+   **DEFAULT (awaiting operator): not verified.** Enroll keeps the preflight
+   AAGUID allowlist (a self-reported value from `fido2-token -I`) and records
+   the attestation statement in the receipt's `registration` evidence, so a
+   chain check can be added later and run against existing receipts. Reason:
+   it proves "a genuine YubiKey model X", not "the card with PIV GUID G", so it
+   adds no trust to the binding papi relies on. Flipping it costs pinning and
+   maintaining Yubico's attestation root and an X.509 chain check in papi
+   (stdlib `crypto/x509` suffices; no new dependency); it buys rejection of a
+   non-YubiKey authenticator that lies about its AAGUID.
+7. **Browser registration fallback** — ANSWERED 2026-11-04: **later; CLI
+   first.**
+8. **PIN count** (new card's PIV PIN, the FIDO2 PIN — the same value per Q1,
+   twice more if set or changed — the trusted card's PIV PIN, plus an optional
+   tier-2 self-check: 3–4 prompts) — **DEFAULT (awaiting operator): accept
+   it.** Reason: each prompt unlocks a different applet or card, and papi
+   never holds a PIN, so it cannot reuse one typed earlier. Flipping it (fewer
+   prompts) means papi capturing the PIN once and feeding it to `piggy` and the
+   libfido2 tools, a new secret-handling surface the layering rule avoids.
+9. **Origins** — **DEFAULT (awaiting operator): only
+   `https://linenisgreat.com`, exact match.** Reason: the smallest allowlist;
+   `CheckClientDataJSON` matches exactly. Flipping it means listing each
+   subdomain origin (the rpId stays `linenisgreat.com`); the cost is that a
+   script-injection bug on any listed subdomain can then run assertion
+   ceremonies for the gated pages.
 
 ## 9. First things to check when a card is available (UNVERIFIED today)
 
@@ -412,3 +504,6 @@ directly.
   `userVerification:"discouraged"`, asks only for a touch. With `"required"` it
   asks for the PIN, and the server sees UV.
 - The `fido2-token -I` output carries the AAGUID and `alwaysUv`.
+- `fido2-token -C` (changing an existing FIDO2 PIN to the PIV PIN, §3 step 4)
+  keeps existing FIDO2 credentials, and a LUKS keyslot enrolled with a client
+  PIN then unlocks with the new PIN.

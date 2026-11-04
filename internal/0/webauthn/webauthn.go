@@ -1,13 +1,15 @@
 // Package webauthn is the network-free, card-free core of papi's WebAuthn
 // support (circus#414; design in docs/plans/2026-11-04-papi-enroll-webauthn.md):
 // it parses a registration (attestationObject → authenticator data → COSE ES256
-// key) and verifies an assertion against a registered credential under one of
-// the two papi assurance tiers. It is stdlib-only (no cgo) so the wasm builds
-// can link it; talking to an authenticator is not this package's job.
+// key) and verifies an assertion against a registered credential, reporting the
+// assurance it proves (touch, or touch plus PIN). It is stdlib-only (no cgo) so
+// the wasm builds can link it; talking to an authenticator is not this package's
+// job.
 //
-// Attestation statements are parsed but NOT verified: papi binds a credential
-// to a card through the enrollment receipt (the new card's slot-9A signature and
-// a trusted card's attestation), not through FIDO attestation.
+// Attestation statements are required to be present but are NOT verified: papi
+// binds a credential to a card through the enrollment receipt (the new card's
+// slot-9A signature and a trusted card's attestation), not through FIDO
+// attestation.
 package webauthn
 
 import (
@@ -56,32 +58,40 @@ var (
 	ErrClientData          = errors.New("webauthn: clientDataJSON check failed")
 )
 
+// Assurance is what a verified ceremony proves about the user. It is ordered:
+// callers gate on `got >= required`. The zero value proves nothing and is what
+// the verifiers return alongside an error.
+type Assurance int
+
+const (
+	// AssuranceTouch: the user touched the authenticator (UP).
+	AssuranceTouch Assurance = iota + 1
+	// AssurancePIN: touch plus the authenticator's user verification, i.e. its
+	// FIDO2 PIN (UP and UV).
+	AssurancePIN
+)
+
 // AuthenticatorData is the parsed authenticator data (WebAuthn L3 §6.1).
 type AuthenticatorData struct {
-	RPIDHash   [32]byte
-	Flags      byte
-	SignCount  uint32
-	Attested   *AttestedCredential // present iff FlagAT
-	Extensions map[any]any         // present iff FlagED
+	RPIDHash    [32]byte
+	Flags       byte
+	SignCount   uint32
+	Attested    *AttestedCredential // present iff FlagAT
+	CredProtect int                 // credProtect extension output; 0 when absent
 }
 
 // AttestedCredential is the attested credential data block (WebAuthn L3 §6.5.2).
+// AAGUID and COSEKey are kept for the enrollment receipt, which publishes the
+// aaguid and the public key byte-exact as the authenticator encoded it.
 type AttestedCredential struct {
 	AAGUID       [16]byte
 	CredentialID []byte
 	PublicKey    *ecdsa.PublicKey
-	COSEKey      []byte // the credential public key exactly as the authenticator encoded it
-}
-
-// CredProtect returns the credProtect extension output, when the authenticator
-// reported one (a CTAP 2.1 extension output in the registration's authData).
-func (a AuthenticatorData) CredProtect() (int, bool) {
-	v, ok := a.Extensions["credProtect"].(int64)
-	return int(v), ok
+	COSEKey      []byte
 }
 
 // ParseAuthenticatorData parses raw authenticator data. Trailing bytes after the
-// last present component are an error.
+// last present component are an error. The result shares no memory with b.
 func ParseAuthenticatorData(b []byte) (AuthenticatorData, error) {
 	var ad AuthenticatorData
 	if len(b) < 37 {
@@ -103,31 +113,35 @@ func ParseAuthenticatorData(b []byte) (AuthenticatorData, error) {
 		if idLen > len(rest) {
 			return ad, fmt.Errorf("%w: credential id length %d exceeds data", ErrMalformed, idLen)
 		}
-		ac.CredentialID = append([]byte(nil), rest[:idLen]...)
+		ac.CredentialID = bytes.Clone(rest[:idLen])
 		rest = rest[idLen:]
-		keyItem, n, err := decodeCBOR(rest)
+		keyItem, n, err := decodeItem(rest, 0)
 		if err != nil {
-			return ad, fmt.Errorf("%w: credential public key: %v", ErrMalformed, err)
+			return ad, fmt.Errorf("credential public key: %w", err)
 		}
-		pub, err := parseCOSEES256(keyItem)
-		if err != nil {
+		if ac.PublicKey, err = parseCOSEES256(keyItem); err != nil {
 			return ad, err
 		}
-		ac.PublicKey = pub
-		ac.COSEKey = append([]byte(nil), rest[:n]...)
+		ac.COSEKey = bytes.Clone(rest[:n])
 		rest = rest[n:]
 		ad.Attested = ac
 	}
 	if ad.Flags&FlagED != 0 {
-		ext, n, err := decodeCBOR(rest)
+		ext, n, err := decodeItem(rest, 0)
 		if err != nil {
-			return ad, fmt.Errorf("%w: extensions: %v", ErrMalformed, err)
+			return ad, fmt.Errorf("extensions: %w", err)
 		}
 		m, ok := ext.(map[any]any)
 		if !ok {
 			return ad, fmt.Errorf("%w: extensions are not a map", ErrMalformed)
 		}
-		ad.Extensions = m
+		if v, present := m["credProtect"]; present {
+			lvl, ok := v.(int64)
+			if !ok || lvl < 1 || lvl > 255 {
+				return ad, fmt.Errorf("%w: credProtect output %v is not a level", ErrMalformed, v)
+			}
+			ad.CredProtect = int(lvl)
+		}
 		rest = rest[n:]
 	}
 	if len(rest) != 0 {
@@ -158,48 +172,50 @@ func parseCOSEES256(item any) (*ecdsa.PublicKey, error) {
 	if !xok || !yok || len(x) != 32 || len(y) != 32 {
 		return nil, fmt.Errorf("%w: COSE x/y must be 32-byte strings", ErrMalformed)
 	}
-	pt := append(append([]byte{4}, x...), y...)
-	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), pt)
+	var pt [65]byte
+	pt[0] = 4
+	copy(pt[1:33], x)
+	copy(pt[33:], y)
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), pt[:])
 	if err != nil {
-		return nil, fmt.Errorf("%w: COSE point: %v", ErrMalformed, err)
+		return nil, fmt.Errorf("%w: COSE point: %w", ErrMalformed, err)
 	}
 	return pub, nil
 }
 
-// Registration is a parsed attestationObject (WebAuthn L3 §6.5).
+// Registration is a parsed attestationObject (WebAuthn L3 §6.5). The attStmt
+// must be present but is neither kept nor verified (see the package comment).
 type Registration struct {
 	Format      string
-	AttStmt     map[any]any // parsed, not verified (see the package comment)
 	RawAuthData []byte
 	AuthData    AuthenticatorData
 }
 
 // ParseAttestationObject parses a CBOR attestationObject {fmt, attStmt,
-// authData}. The authData MUST carry attested credential data.
+// authData}. The authData MUST carry attested credential data. The result
+// shares no memory with b.
 func ParseAttestationObject(b []byte) (Registration, error) {
 	var reg Registration
 	v, err := decodeCBORExact(b)
 	if err != nil {
-		return reg, fmt.Errorf("%w: attestationObject: %v", ErrMalformed, err)
+		return reg, fmt.Errorf("attestationObject: %w", err)
 	}
 	m, ok := v.(map[any]any)
 	if !ok {
 		return reg, fmt.Errorf("%w: attestationObject is not a map", ErrMalformed)
 	}
-	reg.Format, ok = m["fmt"].(string)
-	if !ok {
+	if reg.Format, ok = m["fmt"].(string); !ok {
 		return reg, fmt.Errorf("%w: attestationObject.fmt missing", ErrMalformed)
 	}
-	reg.AttStmt, ok = m["attStmt"].(map[any]any)
-	if !ok {
+	if _, ok = m["attStmt"].(map[any]any); !ok {
 		return reg, fmt.Errorf("%w: attestationObject.attStmt missing", ErrMalformed)
 	}
-	reg.RawAuthData, ok = m["authData"].([]byte)
+	authData, ok := m["authData"].([]byte)
 	if !ok {
 		return reg, fmt.Errorf("%w: attestationObject.authData missing", ErrMalformed)
 	}
-	reg.AuthData, err = ParseAuthenticatorData(reg.RawAuthData)
-	if err != nil {
+	reg.RawAuthData = bytes.Clone(authData)
+	if reg.AuthData, err = ParseAuthenticatorData(reg.RawAuthData); err != nil {
 		return reg, err
 	}
 	if reg.AuthData.Attested == nil {
@@ -208,7 +224,8 @@ func ParseAttestationObject(b []byte) (Registration, error) {
 	return reg, nil
 }
 
-// RegistrationPolicy is what `papi enroll` demands of a freshly-made credential.
+// RegistrationPolicy is what `papi enroll` demands of a freshly-made credential
+// beyond what every ceremony checks (rpIdHash, BE/BS, UP).
 type RegistrationPolicy struct {
 	RequireUV          bool // the make-credential ceremony was PIN-verified
 	RequireCredProtect int  // 0: don't check; else the credProtect level the authenticator must report
@@ -220,23 +237,19 @@ type RegistrationPolicy struct {
 // attestation-statement verification — see the package comment).
 func (r Registration) Credential(rpID string, p RegistrationPolicy) (Credential, error) {
 	ad := r.AuthData
-	if err := checkCommon(ad, rpID); err != nil {
+	got, err := checkCeremony(ad, rpID)
+	if err != nil {
 		return Credential{}, err
 	}
-	if ad.Flags&FlagUP == 0 {
-		return Credential{}, ErrUserNotPresent
-	}
-	if p.RequireUV && ad.Flags&FlagUV == 0 {
+	if p.RequireUV && got < AssurancePIN {
 		return Credential{}, ErrUserNotVerified
 	}
 	if p.RequireDeviceBound && ad.Flags&FlagBE != 0 {
 		return Credential{}, ErrNotDeviceBound
 	}
-	if p.RequireCredProtect != 0 {
-		if lvl, ok := ad.CredProtect(); !ok || lvl != p.RequireCredProtect {
-			return Credential{}, fmt.Errorf("%w: want %d, authenticator reported %d (present=%v)",
-				ErrCredProtect, p.RequireCredProtect, lvl, ok)
-		}
+	if p.RequireCredProtect != 0 && ad.CredProtect != p.RequireCredProtect {
+		return Credential{}, fmt.Errorf("%w: want %d, authenticator reported %d (0 = absent)",
+			ErrCredProtect, p.RequireCredProtect, ad.CredProtect)
 	}
 	return Credential{
 		ID:        ad.Attested.CredentialID,
@@ -255,64 +268,45 @@ type Credential struct {
 	SignCount uint32 // last seen; 0 when unknown or not tracked
 }
 
-// AssertionPolicy is the per-page assurance requirement. UP and UV are checked
-// only when required: WebAuthn L3 §7.2 step 17 says to ignore UV when it was not
-// required.
-type AssertionPolicy struct {
-	RequireUP bool
-	RequireUV bool
-}
-
-var (
-	// TierTouch gates data on a touch of the enrolled key (UP only).
-	TierTouch = AssertionPolicy{RequireUP: true}
-	// TierPIN gates data on touch plus the key's FIDO2 PIN (UP and UV).
-	TierPIN = AssertionPolicy{RequireUP: true, RequireUV: true}
-)
-
 // VerifyAssertion verifies an assertion signature over authData ||
 // clientDataHash (WebAuthn L3 §7.2 steps 15–22, with the hash supplied by the
-// caller: a CTAP client such as fido2-assert(1) signs a caller-chosen hash). It
-// returns the parsed authenticator data so the caller can record SignCount.
-func VerifyAssertion(cred Credential, authData, clientDataHash, sig []byte, p AssertionPolicy) (AuthenticatorData, error) {
+// caller: a CTAP client such as fido2-assert(1) signs a caller-chosen hash).
+// User presence is always required. It returns the parsed authenticator data,
+// so the caller can record SignCount, and the assurance the assertion proves;
+// the caller gates on `assurance >= required` (§7.2 step 17: UV matters only
+// where the caller requires it).
+func VerifyAssertion(cred Credential, authData, clientDataHash, sig []byte) (AuthenticatorData, Assurance, error) {
 	if len(clientDataHash) != sha256.Size {
-		return AuthenticatorData{}, fmt.Errorf("%w: client data hash is %d bytes", ErrMalformed, len(clientDataHash))
+		return AuthenticatorData{}, 0, fmt.Errorf("%w: client data hash is %d bytes", ErrMalformed, len(clientDataHash))
 	}
 	ad, err := ParseAuthenticatorData(authData)
 	if err != nil {
-		return ad, err
+		return ad, 0, err
 	}
-	if err := checkCommon(ad, cred.RPID); err != nil {
-		return ad, err
+	got, err := checkCeremony(ad, cred.RPID)
+	if err != nil {
+		return ad, 0, err
 	}
-	if p.RequireUP && ad.Flags&FlagUP == 0 {
-		return ad, ErrUserNotPresent
-	}
-	if p.RequireUV && ad.Flags&FlagUV == 0 {
-		return ad, ErrUserNotVerified
-	}
-	msg := append(append([]byte(nil), authData...), clientDataHash...)
-	h := sha256.Sum256(msg)
-	if cred.PublicKey == nil || !ecdsa.VerifyASN1(cred.PublicKey, h[:], sig) {
-		return ad, ErrBadSignature
+	if err := verifySignature(cred.PublicKey, authData, clientDataHash, sig); err != nil {
+		return ad, 0, err
 	}
 	// Step 22: "a signal, but not proof" of cloning; papi treats it as a failure
 	// whenever the caller tracks a count.
 	if (cred.SignCount != 0 || ad.SignCount != 0) && ad.SignCount <= cred.SignCount {
-		return ad, fmt.Errorf("%w: stored %d, got %d", ErrSignCountRegression, cred.SignCount, ad.SignCount)
+		return ad, 0, fmt.Errorf("%w: stored %d, got %d", ErrSignCountRegression, cred.SignCount, ad.SignCount)
 	}
-	return ad, nil
+	return ad, got, nil
 }
 
 // VerifyBrowserAssertion is VerifyAssertion for a browser ceremony: it checks
 // clientDataJSON (type webauthn.get, the server's challenge, an expected origin)
 // and verifies the signature over SHA-256(clientDataJSON).
-func VerifyBrowserAssertion(cred Credential, authData, clientDataJSON, sig, challenge []byte, origins []string, p AssertionPolicy) (AuthenticatorData, error) {
+func VerifyBrowserAssertion(cred Credential, authData, clientDataJSON, sig, challenge []byte, origins []string) (AuthenticatorData, Assurance, error) {
 	if err := CheckClientDataJSON(clientDataJSON, "webauthn.get", challenge, origins); err != nil {
-		return AuthenticatorData{}, err
+		return AuthenticatorData{}, 0, err
 	}
 	h := sha256.Sum256(clientDataJSON)
-	return VerifyAssertion(cred, authData, h[:], sig, p)
+	return VerifyAssertion(cred, authData, h[:], sig)
 }
 
 // CheckClientDataJSON applies WebAuthn L3 §7.2 steps 10–13: type, challenge,
@@ -328,7 +322,7 @@ func CheckClientDataJSON(raw []byte, wantType string, challenge []byte, origins 
 		CrossOrigin bool   `json:"crossOrigin"`
 	}
 	if err := json.Unmarshal(raw, &c); err != nil {
-		return fmt.Errorf("%w: %v", ErrClientData, err)
+		return fmt.Errorf("%w: %w", ErrClientData, err)
 	}
 	if c.Type != wantType {
 		return fmt.Errorf("%w: type %q, want %q", ErrClientData, c.Type, wantType)
@@ -346,15 +340,33 @@ func CheckClientDataJSON(raw []byte, wantType string, challenge []byte, origins 
 	return nil
 }
 
-// checkCommon covers the checks every ceremony shares: rpIdHash (§7.2 step 15)
-// and the BE/BS consistency rule (step 18).
-func checkCommon(ad AuthenticatorData, rpID string) error {
-	want := sha256.Sum256([]byte(rpID))
-	if !bytes.Equal(ad.RPIDHash[:], want[:]) {
-		return ErrRPIDMismatch
+// checkCeremony covers the checks every ceremony shares — rpIdHash (§7.2 step
+// 15), user presence (step 16) and the BE/BS consistency rule (step 18) — and
+// returns the assurance the flags prove.
+func checkCeremony(ad AuthenticatorData, rpID string) (Assurance, error) {
+	if ad.RPIDHash != sha256.Sum256([]byte(rpID)) {
+		return 0, ErrRPIDMismatch
 	}
 	if ad.Flags&FlagBE == 0 && ad.Flags&FlagBS != 0 {
-		return ErrBackupState
+		return 0, ErrBackupState
+	}
+	if ad.Flags&FlagUP == 0 {
+		return 0, ErrUserNotPresent
+	}
+	if ad.Flags&FlagUV == 0 {
+		return AssuranceTouch, nil
+	}
+	return AssurancePIN, nil
+}
+
+// verifySignature checks an ES256 signature over authData || clientDataHash
+// (§7.2 step 20). It knows nothing of flags or counts.
+func verifySignature(pub *ecdsa.PublicKey, authData, clientDataHash, sig []byte) error {
+	h := sha256.New()
+	h.Write(authData)
+	h.Write(clientDataHash)
+	if pub == nil || !ecdsa.VerifyASN1(pub, h.Sum(nil), sig) {
+		return ErrBadSignature
 	}
 	return nil
 }
