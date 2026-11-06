@@ -23,19 +23,35 @@
 # home-manager.nixosModules.home-manager); without it, evaluation fails on the
 # unknown `home-manager.sharedModules` option — a clear pointer to the missing
 # import.
+#
+# The list is set at normal priority, so a higher-priority assignment elsewhere
+# wins and drops the fragments silently. srvos's SSH hardening does exactly
+# that with lib.mkForce [ "/etc/ssh/authorized_keys.d/%u" ]. The module then
+# warns at eval time, naming the missing paths. To keep both, the host sets the
+# list itself above mkForce, e.g.
+#   lib.mkOverride 45 ([ "/etc/ssh/authorized_keys.d/%u" ] ++ <fragment paths>).
 self:
 { config, lib, ... }:
+let
+  # Collect the managed fragment paths from every home-manager user that enabled
+  # the service. Users that didn't enable it contribute nothing (_fragmentPaths
+  # defaults to {}).
+  users = config.home-manager.users or { };
+  fragmentsOf = u: lib.attrValues (u.services.papi-ssh-sync._fragmentPaths or { });
+  allFragments = lib.unique (lib.concatMap fragmentsOf (lib.attrValues users));
+  droppedFragments = lib.subtractLists config.services.openssh.authorizedKeysFiles allFragments;
+in
 {
   home-manager.sharedModules = [ self.homeManagerModules.papi-ssh-sync ];
 
-  # Collect the managed fragment paths from every home-manager user that enabled
-  # the service, and make sshd read them. Users that didn't enable it contribute
-  # nothing (_fragmentPaths defaults to {}).
-  services.openssh.authorizedKeysFiles =
-    let
-      users = config.home-manager.users or { };
-      fragmentsOf = u: lib.attrValues (u.services.papi-ssh-sync._fragmentPaths or { });
-      allFragments = lib.concatMap fragmentsOf (lib.attrValues users);
-    in
-    [ "%h/.ssh/authorized_keys" ] ++ lib.unique allFragments;
+  # Make sshd read the fragments.
+  services.openssh.authorizedKeysFiles = [ "%h/.ssh/authorized_keys" ] ++ allFragments;
+
+  warnings = lib.optional (droppedFragments != [ ]) (
+    "services.papi-ssh-sync: services.openssh.authorizedKeysFiles was overridden "
+    + "at a higher priority (for example srvos's lib.mkForce), so sshd will not read "
+    + "these synced fragments: ${lib.concatStringsSep ", " droppedFragments}. "
+    + "Set the list yourself above that priority and include them; see "
+    + "nix/nixos/papi-ssh-sync.nix."
+  );
 }

@@ -96,7 +96,7 @@ build-installer:
 
 # --- test ---
 
-test: test-go test-grammar test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module test-nix-verifier-module
+test: test-go test-grammar test-ts test-ts-bundle test-nix-hm-module test-nix-oracle-module test-nix-verifier-module test-nix-ssh-sync-module
 
 # hermetic Go test suite (httptest fixtures; no network, no card)
 test-go:
@@ -235,6 +235,29 @@ test-nix-verifier-module:
       test = import ./nix/nixos/papi-auth-verifier-eval-test.nix {
         inherit pkgs;
         module = flake.nixosModules.papi-auth-verifier;
+      };
+    in test'
+    json="$(nix eval --impure --json --expr "$expr")"
+    printf '%s\n' "$json" | jq -r '.summary'
+    if [[ "$(printf '%s\n' "$json" | jq -r '.pass')" != "true" ]]; then
+        printf '%s\n' "$json" | jq -r '.failures[] | "FAIL: \(.name)\n  got: \(.result.got)"'
+        exit 1
+    fi
+
+# Smoke-test the `papi-ssh-sync` NixOS module's sshd wiring: evaluate it against
+# stub options (lib.evalModules, no NixOS system) and verify the fragment reaches
+# authorizedKeysFiles and that an mkForce override dropping it warns (papi#70).
+#
+# evaluate the papi-ssh-sync NixOS module's sshd wiring against synthetic configs
+test-nix-ssh-sync-module:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    expr='let
+      flake = builtins.getFlake (toString ./.);
+      pkgs = flake.inputs.igloo.legacyPackages.${builtins.currentSystem};
+      test = import ./nix/nixos/papi-ssh-sync-eval-test.nix {
+        inherit pkgs;
+        module = flake.nixosModules.papi-ssh-sync;
       };
     in test'
     json="$(nix eval --impure --json --expr "$expr")"

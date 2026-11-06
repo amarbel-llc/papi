@@ -81,6 +81,12 @@ Re-exports the home-manager module into every home-manager-managed user AND
 `services.openssh.authorizedKeysFiles`, re-adding the stock
 `%h/.ssh/authorized_keys` (assigning the list replaces sshd's default).
 
+It assigns the list at normal priority, so a higher-priority assignment wins
+and drops the fragments. srvos's SSH hardening does this with `lib.mkForce`. When
+that happens the module emits an eval-time warning naming the dropped paths. The
+fix is for the host to set the list above that priority and include them, for
+example with `lib.mkOverride 45`. `just test-nix-ssh-sync-module` covers this.
+
 ## Cross-platform wiring
 
 The home-manager module keeps the fragment fresh and the timer running on every
