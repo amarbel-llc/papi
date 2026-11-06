@@ -49,6 +49,13 @@ type Card struct {
 // markl-id, recorded as attestation.key. created is the unix timestamp (passed in
 // for determinism). The returned bytes are the receipt JSON ready to write.
 func BuildReceipt(ctx context.Context, signer Signer, newCard Card, domain, trustedGUID, trustedKeyID string, created int64) ([]byte, error) {
+	return BuildReceiptWithWebAuthn(ctx, signer, newCard, domain, trustedGUID, trustedKeyID, created, nil)
+}
+
+// BuildReceiptWithWebAuthn is BuildReceipt that may also carry the card's
+// WebAuthn credential (BuildWebAuthnBlock). With a non-nil wa the receipt is a
+// papi-enroll-receipt-v2, and the trusted card's attestation covers wa too.
+func BuildReceiptWithWebAuthn(ctx context.Context, signer Signer, newCard Card, domain, trustedGUID, trustedKeyID string, created int64, wa *papi.ReceiptWebAuthn) ([]byte, error) {
 	if newCard.RecipientID == "" || newCard.SSHID == "" {
 		return nil, fmt.Errorf("new card is missing its slot-9D recipient or slot-9A id")
 	}
@@ -81,6 +88,10 @@ func BuildReceipt(ctx context.Context, signer Signer, newCard Card, domain, trus
 		},
 		AgeRecipient: newCard.AgeRecipient,
 		SelfProof:    papi.ReceiptSelfProof{Claim: claim, Sig: selfSig},
+	}
+	if wa != nil {
+		r.Schema = papi.ReceiptSchemaV2
+		r.WebAuthn = wa
 	}
 
 	// The attestation covers the receipt with its own member stripped (§10.2

@@ -199,6 +199,29 @@ with no reshaping (PersonalApi.php reads those fields positionally):
   block. The verifying `key` MUST already be published on the target domain's
   `/papi/piggy-ids` — i.e. an existing, trusted card vouches for the new one.
 
+#### Receipt v2: the WebAuthn credential (`papi-enroll-receipt-v2`)
+
+A v2 receipt is v1 plus one member, `webauthn`: the card's FIDO2 credential,
+for gating pages with a WebAuthn assertion (amarbel-llc/circus#414; design in
+`docs/plans/2026-11-04-papi-enroll-webauthn.md` §2). It is shaped for
+`piggy.webauthn_credentials[]`. The v1 members are unchanged, and a v1
+verifier rejects v2 on its schema tag. The member carries:
+
+- the credential's GUID, `rp_id`, base64url `credential_id`, COSE
+  `public_key`, `alg` (-7), `aaguid` and `cred_protect` (2);
+- `registration`: the authenticator's output (fmt, auth data, papi's
+  client-data hash, the attestation signature and certificate);
+- `binding`: a `papi-proof-sig-v1` signature by the new card's slot-9A key
+  over a claim naming the credential and the 9A key.
+
+`verify-receipt` re-derives the credential fields from `registration` under
+the enroll policy: UV at creation, credProtect 2, device-bound. It checks
+that the client-data hash is the one papi derives for this card, and
+verifies `binding` against the receipt's own 9A key. The FIDO attestation
+certificate is not verified, because it proves the vendor, not that the
+credential is on this card. The trusted card's `attestation` covers
+`webauthn` like any other member.
+
 papi already owns the verification machinery (`internal/0/markl`,
 `internal/alfa/inspect`: `markl.Parse`, `ecdsaVerifyRaw`, slot-9A point matching
 against `/papi/piggy-ids` + `ssh_authorized_keys[]`). `papi enroll` self-checks

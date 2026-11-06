@@ -3,11 +3,14 @@ package inspect
 import (
 	"context"
 	"crypto/ecdsa"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	"code.linenisgreat.com/papi/internal/0/markl"
+	"code.linenisgreat.com/papi/internal/0/webauthn"
 	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
@@ -59,21 +62,43 @@ func newReceiptResult(checks ...ReceiptCheck) ReceiptResult {
 // /papi/piggy-ids) call VerifyReceiptWithKeys / VerifyReceiptWithPublishedIDs
 // directly instead.
 func VerifyReceipt(ctx context.Context, c *papi.Client, raw []byte) (ReceiptResult, error) {
-	var r papi.Receipt
-	if err := json.Unmarshal(raw, &r); err != nil {
-		return ReceiptResult{}, fmt.Errorf("receipt is not valid JSON: %w", err)
+	r, err := parseReceipt(raw)
+	if err != nil {
+		return ReceiptResult{}, err
 	}
-	if r.Schema != papi.ReceiptSchema {
-		return ReceiptResult{}, fmt.Errorf("receipt schema %q, want %q", r.Schema, papi.ReceiptSchema)
-	}
-
-	self := verifyReceiptSelfProof(r)
 	doc, _, _, err := c.Document(ctx)
 	if err != nil {
-		return newReceiptResult(self, ReceiptCheck{"attestation", false, "GET /papi failed: " + err.Error()}), nil
+		return newReceiptResult(append(offlineReceiptChecks(r),
+			ReceiptCheck{"attestation", false, "GET /papi failed: " + err.Error()})...), nil
 	}
 	att := verifyReceiptAttestationWithKeys(r, raw, publishedSigningKeys(ctx, c, doc))
-	return newReceiptResult(self, att), nil
+	return newReceiptResult(append(offlineReceiptChecks(r), att)...), nil
+}
+
+// parseReceipt decodes a receipt and checks its schema tag: v1, or v2 (which
+// adds the webauthn member).
+func parseReceipt(raw []byte) (papi.Receipt, error) {
+	var r papi.Receipt
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return papi.Receipt{}, fmt.Errorf("receipt is not valid JSON: %w", err)
+	}
+	if r.Schema != papi.ReceiptSchema && r.Schema != papi.ReceiptSchemaV2 {
+		return papi.Receipt{}, fmt.Errorf("receipt schema %q, want %q or %q", r.Schema, papi.ReceiptSchema, papi.ReceiptSchemaV2)
+	}
+	return r, nil
+}
+
+// offlineReceiptChecks are the checks that need no domain: the 9D↔9A self_proof
+// and, on a v2 receipt, the webauthn credential and its binding.
+func offlineReceiptChecks(r papi.Receipt) []ReceiptCheck {
+	checks := []ReceiptCheck{verifyReceiptSelfProof(r)}
+	switch {
+	case r.Schema == papi.ReceiptSchemaV2:
+		checks = append(checks, verifyReceiptWebAuthn(r))
+	case r.WebAuthn != nil:
+		checks = append(checks, ReceiptCheck{"webauthn", false, "a " + papi.ReceiptSchema + " receipt must not carry a webauthn member"})
+	}
+	return checks
 }
 
 // VerifyReceiptWithKeys is the network-free core of VerifyReceipt: it checks both
@@ -81,17 +106,11 @@ func VerifyReceipt(ctx context.Context, c *papi.Client, raw []byte) (ReceiptResu
 // of trusted slot-9A keys (the domain's already-published signing keys). It does
 // no I/O, so it compiles and runs under WASI/wasip1 (cmd/papi-verify-wasm).
 func VerifyReceiptWithKeys(raw []byte, published []*ecdsa.PublicKey) (ReceiptResult, error) {
-	var r papi.Receipt
-	if err := json.Unmarshal(raw, &r); err != nil {
-		return ReceiptResult{}, fmt.Errorf("receipt is not valid JSON: %w", err)
+	r, err := parseReceipt(raw)
+	if err != nil {
+		return ReceiptResult{}, err
 	}
-	if r.Schema != papi.ReceiptSchema {
-		return ReceiptResult{}, fmt.Errorf("receipt schema %q, want %q", r.Schema, papi.ReceiptSchema)
-	}
-	return newReceiptResult(
-		verifyReceiptSelfProof(r),
-		verifyReceiptAttestationWithKeys(r, raw, published),
-	), nil
+	return newReceiptResult(append(offlineReceiptChecks(r), verifyReceiptAttestationWithKeys(r, raw, published))...), nil
 }
 
 // VerifyReceiptWithPublishedIDs is VerifyReceiptWithKeys taking the trusted
@@ -198,6 +217,79 @@ func verifyReceiptSelfProof(r papi.Receipt) ReceiptCheck {
 		return ReceiptCheck{name, false, "signature does not verify against the new card's slot-9A key"}
 	}
 	return ReceiptCheck{name, true, "new card's slot-9A key signs the 9D↔9A binding claim"}
+}
+
+// verifyReceiptWebAuthn checks a v2 receipt's webauthn member offline: the
+// registration evidence parses under webauthn.EnrollPolicy and re-derives
+// the published credential id, COSE key, AAGUID and credProtect; the client-data
+// hash is the one papi chooses for this card; and the binding claim is signed by
+// the new card's own slot-9A key. The FIDO attestation certificate is not
+// verified (it proves the vendor and model, not that this is the same card).
+func verifyReceiptWebAuthn(r papi.Receipt) ReceiptCheck {
+	const name = "webauthn"
+	fail := func(detail string) ReceiptCheck { return ReceiptCheck{name, false, detail} }
+	w := r.WebAuthn
+	switch {
+	case w == nil:
+		return fail("a " + papi.ReceiptSchemaV2 + " receipt must carry a webauthn member")
+	case !strings.EqualFold(w.GUID, r.GUID):
+		return fail("webauthn.guid does not match the receipt's guid")
+	case w.RPID == "":
+		return fail("webauthn.rp_id is empty")
+	case w.Alg != -7:
+		return fail(fmt.Sprintf("webauthn.alg is %d, want -7 (ES256)", w.Alg))
+	case w.Discoverable:
+		return fail("webauthn credential must be non-discoverable")
+	case w.CredProtect != webauthn.EnrollPolicy.RequireCredProtect:
+		return fail(fmt.Sprintf("webauthn.cred_protect is %d, want %d", w.CredProtect, webauthn.EnrollPolicy.RequireCredProtect))
+	}
+
+	authData, err := base64.RawURLEncoding.DecodeString(w.Registration.AuthData)
+	if err != nil {
+		return fail("webauthn.registration.auth_data is not base64url: " + err.Error())
+	}
+	reg, err := webauthn.NewRegistration(w.Registration.Fmt, authData)
+	if err != nil {
+		return fail("webauthn.registration does not parse: " + err.Error())
+	}
+	cred, err := reg.Credential(w.RPID, webauthn.EnrollPolicy)
+	if err != nil {
+		return fail("webauthn.registration fails the enroll policy: " + err.Error())
+	}
+	att := reg.AuthData.Attested
+	switch {
+	case base64.RawURLEncoding.EncodeToString(cred.ID) != w.CredentialID:
+		return fail("webauthn.credential_id does not match the registration's authenticator data")
+	case base64.RawURLEncoding.EncodeToString(att.COSEKey) != w.PublicKey:
+		return fail("webauthn.public_key does not match the registration's authenticator data")
+	case hex.EncodeToString(att.AAGUID[:]) != strings.ToLower(w.AAGUID):
+		return fail("webauthn.aaguid does not match the registration's authenticator data")
+	case reg.AuthData.CredProtect != w.CredProtect:
+		return fail("webauthn.cred_protect does not match the registration's authenticator data")
+	}
+	if w.Registration.ClientDataHash != base64.RawURLEncoding.EncodeToString(papi.WebAuthnClientDataHash(w.RPID, r.GUID, r.SSH.ID)) {
+		return fail("webauthn.registration.client_data_hash is not the hash papi derives for this card")
+	}
+
+	keyID, err := markl.Parse(r.SSH.ID)
+	if err != nil || keyID.Purpose != markl.PurposePIVAuth || keyID.Format != markl.FormatSSHEcdsaNistp256Pub {
+		return fail("ssh.id is not a piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub markl-id")
+	}
+	pub, err := p256FromCompressed(keyID.Payload)
+	if err != nil {
+		return fail("ssh.id is not a valid P-256 point: " + err.Error())
+	}
+	if w.Binding.Claim != papi.WebAuthnBindingClaim(w.RPID, w.CredentialID, att.COSEKey, r.SSH.ID) {
+		return fail("webauthn.binding.claim does not name this credential and ssh.id")
+	}
+	sigID, err := markl.Parse(w.Binding.Sig)
+	if err != nil || sigID.Purpose != markl.PurposeProofSig || sigID.Format != markl.FormatEcdsaP256Sig {
+		return fail("webauthn.binding.sig is not a papi-proof-sig-v1@ecdsa_p256_sig markl-id")
+	}
+	if !ecdsaVerifyRaw(pub, []byte(w.Binding.Claim), sigID.Payload) {
+		return fail("webauthn.binding.sig does not verify against the new card's slot-9A key")
+	}
+	return ReceiptCheck{name, true, "the new card's slot-9A key binds a credProtect-2, device-bound ES256 credential for " + w.RPID}
 }
 
 // verifyReceiptAttestationWithKeys checks that an already-trusted card authorized

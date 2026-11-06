@@ -255,6 +255,12 @@ type RegistrationPolicy struct {
 	RequireDeviceBound bool // reject a backup-eligible (synced) credential
 }
 
+// EnrollPolicy is the policy `papi enroll` makes credentials under and a
+// receipt verifier checks them against: UV at creation, credProtect level 2
+// (usable without UV only when the credential id is supplied, so one credential
+// serves a touch tier and a touch-plus-PIN tier), and device-bound.
+var EnrollPolicy = RegistrationPolicy{RequireUV: true, RequireCredProtect: 2, RequireDeviceBound: true}
+
 // Credential checks the registration against rpID and policy and returns the
 // credential record to publish (WebAuthn L3 §7.1, minus clientData and
 // attestation-statement verification — see the package comment). The record
