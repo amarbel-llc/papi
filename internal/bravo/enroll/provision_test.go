@@ -2,8 +2,10 @@ package enroll
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // realProvisionedList is the real `piggy list --format=ndjson` FORMAT for a
@@ -205,6 +207,64 @@ func TestReprovisionCardByReader(t *testing.T) {
 	if strings.Contains(got, "--cn-prefix") {
 		t.Errorf("must not pass --cn-prefix (not a real flag): %q", got)
 	}
+}
+
+// papi#83: right after init the card can read as unprovisioned (or not list at
+// all) for a moment. The readback retries, and succeeds once the card settles.
+func TestProvisionReadbackRetriesUntilProvisioned(t *testing.T) {
+	setNoReadbackDelays(t)
+	irun := func(context.Context, string, ...string) error { return nil }
+	const reader = "Yubico YubiKey OTP+FIDO+CCID 00 00"
+	responses := []struct {
+		out string
+		err error
+	}{
+		{"", errors.New("transient PC/SC error")},
+		{`{"uninitialized":true,"serial":19000002,"guid":"00000000000000000000000000000000","reader":"` + reader + `"}`, nil},
+		{`{"serial":19000002,"guid":"ABCD1234ABCD1234ABCD1234ABCD1234","reader":"` + reader + `","slot":"9A","cn":"piv-auth@ABCD1234"}`, nil},
+	}
+	calls := 0
+	list := func(context.Context, []byte, string, ...string) ([]byte, error) {
+		r := responses[min(calls, len(responses)-1)]
+		calls++
+		return []byte(r.out), r.err
+	}
+	guid, err := Provision(context.Background(), irun, list, CardState{Serial: "19000002", Reader: reader})
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if guid != "ABCD1234ABCD1234ABCD1234ABCD1234" {
+		t.Errorf("guid = %q", guid)
+	}
+	if calls != 3 {
+		t.Errorf("piggy list calls = %d, want 3", calls)
+	}
+}
+
+// A card that never reads as provisioned still fails, after a bounded number of
+// readbacks, naming the card.
+func TestProvisionReadbackGivesUp(t *testing.T) {
+	setNoReadbackDelays(t)
+	irun := func(context.Context, string, ...string) error { return nil }
+	calls := 0
+	list := func(context.Context, []byte, string, ...string) ([]byte, error) {
+		calls++
+		return []byte(blankRecord), nil
+	}
+	_, err := Provision(context.Background(), irun, list, CardState{Serial: "19000002", Reader: "Yubico YubiKey OTP+FIDO+CCID 00 00"})
+	if err == nil || !strings.Contains(err.Error(), "not provisioned after init") {
+		t.Fatalf("err = %v, want a not-provisioned error", err)
+	}
+	if want := len(postInitReadbackDelays) + 1; calls != want {
+		t.Errorf("piggy list calls = %d, want %d", calls, want)
+	}
+}
+
+func setNoReadbackDelays(t *testing.T) {
+	t.Helper()
+	saved := postInitReadbackDelays
+	postInitReadbackDelays = make([]time.Duration, len(saved))
+	t.Cleanup(func() { postInitReadbackDelays = saved })
 }
 
 func TestResolveTrustedGUID(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 )
@@ -402,6 +403,39 @@ func cardInit(ctx context.Context, irun InteractiveRunner, list Runner, card Car
 	if err := irun(ctx, "piggy", args...); err != nil {
 		return "", fmt.Errorf("piggy %s: %w", strings.Join(args, " "), err)
 	}
+	return readBackProvisionedGUID(ctx, list, card)
+}
+
+// postInitReadbackDelays are the waits before each retry of the post-init
+// readback. Right after `piggy card init` the card can briefly read as not
+// provisioned, or not be listable at all, though init succeeded (papi#83, seen
+// on a YubiKey 4 after --allow-reprovision). A few short retries ride that out
+// without masking a real failure. Tests set it to zero waits.
+var postInitReadbackDelays = []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second}
+
+// readBackProvisionedGUID finds card (by reader, the identifier stable across
+// init) in `piggy list` as provisioned and returns its new GUID, retrying per
+// postInitReadbackDelays. It reports the last failure once the retries run out.
+func readBackProvisionedGUID(ctx context.Context, list Runner, card CardState) (string, error) {
+	var lastErr error
+	for attempt := 0; ; attempt++ {
+		guid, err := provisionedGUIDByReader(ctx, list, card)
+		if err == nil {
+			return guid, nil
+		}
+		lastErr = err
+		if attempt >= len(postInitReadbackDelays) {
+			return "", lastErr
+		}
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("%w (after: %v)", ctx.Err(), lastErr)
+		case <-time.After(postInitReadbackDelays[attempt]):
+		}
+	}
+}
+
+func provisionedGUIDByReader(ctx context.Context, list Runner, card CardState) (string, error) {
 	out, err := list(ctx, nil, "piggy", "list", "--format=ndjson")
 	if err != nil {
 		return "", fmt.Errorf("piggy list after init: %w", err)
