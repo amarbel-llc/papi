@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"context"
+	"crypto/elliptic"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"code.linenisgreat.com/papi/internal/0/markl"
 	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
@@ -224,8 +226,10 @@ func authProbes(ctx context.Context, c *papi.Client) []point {
 			"503 — auth tier unavailable (no box backend); challenge checks skipped"))
 	default:
 		pts = append(pts, statusPoint("challenge with no recipient -> 400 (§5.1)", noRecip.Status, http.StatusBadRequest))
-		unknown := []byte(`{"recipient":"piggy-recipient-v1@pivy_ecdh_p256_pub-zzznonexistentprobe"}`)
-		if resp, uerr := c.Post(ctx, "/papi/auth/challenge", unknown); uerr == nil {
+		body, berr := unknownRecipientChallengeBody()
+		if berr != nil {
+			pts = append(pts, mustFail("conformance: build unknown-recipient probe", map[string]any{"error": berr.Error()}))
+		} else if resp, uerr := c.Post(ctx, "/papi/auth/challenge", body); uerr == nil {
 			pts = append(pts, authUnknownPoint(resp.Status))
 		}
 	}
@@ -237,6 +241,21 @@ func authProbes(ctx context.Context, c *papi.Client) []point {
 	}
 
 	return pts
+}
+
+// unknownRecipientChallengeBody is the §5.1 challenge request for a recipient
+// that is well formed but belongs to no one. It must be well formed, or a
+// server is right to answer 400 (malformed) instead of 403 (unknown). The key
+// is the compressed P-256 base point: a valid curve point whose private key is
+// 1, so no real card publishes it.
+func unknownRecipientChallengeBody() ([]byte, error) {
+	curve := elliptic.P256()
+	point := elliptic.MarshalCompressed(curve, curve.Params().Gx, curve.Params().Gy)
+	id, err := markl.Build(strings.TrimSuffix(papi.RecipientPrefix, "@"), "pivy_ecdh_p256_pub", point)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(map[string]string{"recipient": id})
 }
 
 func statusPoint(label string, got, want int) point {
