@@ -26,6 +26,11 @@ type forgeEntry struct {
 	// forge's management API lives when that is not base_url. Absent means the
 	// API, if any, is at base_url.
 	APIBaseURL string `json:"api_base_url"`
+	// Identity is the forge account the entry's repositories belong to (§1.1).
+	Identity string `json:"identity"`
+	// PathIncludesIdentity is the OPTIONAL §1.1 path_includes_identity
+	// (Amendment 27). nil (absent) means true: clone paths are <identity>/<name>.
+	PathIncludesIdentity *bool `json:"path_includes_identity"`
 }
 
 func decodeForgeEntries(body []byte) ([]forgeEntry, error) {

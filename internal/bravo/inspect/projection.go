@@ -29,7 +29,8 @@ func projectionChecks(ctx context.Context, c *papi.Client) []point {
 	fdrPts := fdr0011Points(ctx, c, repos)
 	canonicalPts := repoCanonicalChecks(repos)
 	flakePts := flakeURLChecks(ctx, c, repos)
-	return append(append(fdrPts, canonicalPts...), flakePts...)
+	pathPts := forgePathIdentityChecks(ctx, c, repos)
+	return append(append(append(fdrPts, canonicalPts...), flakePts...), pathPts...)
 }
 
 // fdr0011Points checks that every /papi/repos entry's forge resolves to a
