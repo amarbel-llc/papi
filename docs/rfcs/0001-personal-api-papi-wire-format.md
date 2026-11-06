@@ -1405,10 +1405,14 @@ A bare (unsigned) payload-less pigpen document — permitted, since the
 self-signature is SHOULD not MUST:
 
     ---
-    - piggy-recipient-v1@pivy_ecdh_p256_pub-<blech32>  # primary yubikey (9D)
+    - piggy-recipient-v1@pivy_ecdh_p256_pub-<blech32>  % primary yubikey (9D)
     - piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<blech32>
     ! pigpen-v1
     ---
+
+The trailing `% …` is a hyphence comment (`TrailingComment` in
+hyphence-content.peg); `#` is not a comment there. `papi pigpen sign` emits
+no comments, so the signed variant below has none.
 
 A self-signed variant, as `papi pigpen sign` produces it — the body-less
 instance of the §15.1 signed-document scheme under the purpose
@@ -1416,7 +1420,7 @@ instance of the §15.1 signed-document scheme under the purpose
 the `!`-line lock slot for a sealed document's header MAC):
 
     ---
-    - piggy-recipient-v1@pivy_ecdh_p256_pub-<blech32>  # primary yubikey (9D)
+    - piggy-recipient-v1@pivy_ecdh_p256_pub-<blech32>
     - piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub-<blech32>
     - papi-pigpen-self-sig-v1@ecdsa_p256_sig-<blech32>
     ! pigpen-v1
