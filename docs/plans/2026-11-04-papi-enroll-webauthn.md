@@ -31,7 +31,7 @@ only (Q9); D1–D3 kept.
 
 **Status:** implementation — the enroll FIDO2 phase and the server side —
 waits for the operator's go and the remaining blocker in §10 (the `-P`
-command-line exposure). The later one-prompt
+command-line exposure; options and a recommendation in §11). The later one-prompt
 change takes option B (§10).
 Only the card-free spike (§5) exists.
 
@@ -621,8 +621,8 @@ only helps when the new and trusted cards share a PIN. A command-line
 argument can be read by other processes on the host through
 `/proc/<pid>/cmdline` while piggy runs. That is the Linux default; whether
 the enroll hosts mount `/proc` with `hidepid` is UNVERIFIED. This existing
-exposure is separate from v1 of this plan; a follow-up should move it to
-stdin or piggy's RFC 0006 `secret.request`.
+exposure is separate from v1 of this plan; §11 compares the ways off argv
+and recommends piggy's RFC 0006 `secret.request` via `piggy manage`.
 
 ## 10. Toward one PIN prompt (later; direction for the operator to choose)
 
@@ -706,7 +706,9 @@ yet.
 2. **Remaining blocker: the `-P <pin>` command-line exposure** (§9): `papi enroll --pin` and the
    other signing commands pass the PIV PIN to `piggy sign-bytes` in argv. That
    follow-up should land, or be explicitly deferred, before enroll grows a
-   FIDO2 phase.
+   FIDO2 phase. §11 compares the options and recommends `secret.request`
+   over `piggy manage --jsonrpc` (papi#22), with "run without `--pin`" as
+   the stopgap.
 
 The recommendation as written before the choice: B if the operator wants papi to stay PIN-free (it is the
 cleaner fit with the layering rule and makes the FIDO2 primitive piggy's,
@@ -716,7 +718,87 @@ first switch the PIV side to RFC 0006 `secret.request` (this also fixes the
 one prompt per card (two typings on a fresh card), and to one prompt in all
 only if the operator also gives the trusted key the same PIN.
 
-## 11. First things to check when a card is available (UNVERIFIED today)
+## 11. Getting the PIN to piggy without the command line (design; not implemented)
+
+This section answers blocker 2 in §10. It compares ways for papi to hand the
+PIV PIN to piggy without `-P <pin>`. The operator asked for it on 2026-11-06,
+relayed by circus/eager-holly/clarabell. Two decisions stay open for the
+operator: refuse or warn on a default-PIN card (§9, §10 blocker 1), and the
+go for the FIDO2 phase.
+
+**Scope.** `-P` is not only an enroll problem. papi has five `--pin` flags:
+`main.go:350` (`signerFlags`), `:1004`, `:2845` (`papi enroll`), `:3017` and
+`:3143`. Enroll builds `PiggySignBytesSigner{PIN: pin}` directly
+(`main.go:2773`). The other four go through `signChallengeSigner`
+(`main.go:2925`), which builds the same signer in PCSC mode (`:2952`). In
+agent mode, which `auto` picks when `$SSH_AUTH_SOCK` is set, it ignores the
+PIN. The signer appends `-P <pin>` (`internal/bravo/enroll/card.go:60`).
+All R. Any fix applies to all five.
+
+**What piggy offers today.** VERIFIED from the installed `piggy(1)` and
+`piggy-agent(1)` manpages. These are the host's piggy; that papi's pinned
+piggy matches is UNVERIFIED.
+
+- `piggy sign-bytes` reads **the message** on stdin. It takes the PIN from
+  `-P`, or "absent that, an `SSH_ASKPASS`/tty prompt" that names the target
+  card. It has no `--pin-fd` and no PIN environment variable. The
+  `ENVIRONMENT VARIABLES` section lists none.
+- `piggy manage --jsonrpc` (RFC 0007) serves `card.list`, `card.init`,
+  `card.add_key` and `sign_bytes` over stdio, or over an `AF_UNIX` socket
+  with `--socket`. While a method runs, piggy sends the RFC 0006 interaction
+  requests (PIN, confirm, progress) back over the same connection.
+- papi RFC 0002 §6 (R) records that piggy's `piggy_manage_fibby.bats`
+  conformance lane exercises a scripted `secret.request` answer. papi has no
+  piggy-mgmt client yet: RFC 0002 §6 sequences it after the schema firms up
+  (papi#22).
+- `piggy-agent` asks for the PIN itself, through `SSH_ASKPASS`
+  (`SSH_ASKPASS_REQUIRE` = `force`/`never`/`prefer`). papi already has an
+  agent signer (`enroll.AgentSignBytesSigner`, `--signer agent`), which never
+  sees a PIN.
+
+**How each channel exposes the PIN on Linux.** These are from memory, not
+checked on the enroll hosts, so they are UNVERIFIED:
+
+- **argv:** `/proc/<pid>/cmdline` is readable by every user, unless `/proc`
+  is mounted with `hidepid`, so `ps` shows it. This is today's exposure.
+- **environ:** `/proc/<pid>/environ` is readable only by the owner and root,
+  under a ptrace access check, and is inherited by every child.
+- **a pipe on stdin, or an inherited fd:** the bytes never appear in any
+  `/proc` text file. A process with ptrace access to piggy, meaning the same
+  user or root, can open `/proc/<pid>/fd/N` and race to read the pipe.
+
+**The options:**
+
+| Option | What leaks, and to whom | Works from `papi enroll` today? | Cost |
+|---|---|---|---|
+| **1. Stdin** (a PIN line ahead of the message) | Nothing in `/proc` text; same-user or root ptrace only | **No.** stdin already carries the message, so piggy would need a new framing or flag. | A piggy change, and a second PIN input path piggy must maintain. |
+| **2. Inherited fd** (`--pin-fd N`, like gpg's `--passphrase-fd`) | Same as stdin | **No.** piggy has no such flag. | A piggy change: a small flag, but new surface. |
+| **3. RFC 0006 `secret.request` over `piggy manage --jsonrpc`** | Same as stdin (the PIN crosses the stdio pipe) | **piggy side: yes**, tested in its conformance lane. **papi side: no**, it needs the piggy-mgmt Go client (papi#22). | papi work only, behind the existing `enroll.Runner` seam. It also replaces the interactive `piggy card init` subprocess (`provision.go`, `cardInit`). |
+| **4. Drop `-P`; let piggy prompt** (askpass/tty, or `--signer agent`) | papi never holds the PIN | **Yes**, with no change: omit `--pin` today. | An interactive prompt per signing piggy process. Whether the card keeps 9A's PIN `once` session across two piggy processes is UNVERIFIED, so this may add prompts. It does not cover scripted, non-interactive runs. |
+| *Environment variable* (for completeness) | Owner and root, plus every child process | No; piggy reads none. | Not recommended: inherited, and easy to log. |
+
+**Fit with option B (§10).** Under B, a helper holds the PIN and papi holds
+nothing. Option 3 is the transport B needs: piggy asks through
+`secret.request`, and the answer comes from the helper. papi would either
+relay the request to the helper or point piggy's interactions straight at
+it. `piggy card init --frontend jsonrpc --socket PATH` already sends its
+interactions to a separate program. Whether `manage`'s `sign_bytes` can do
+the same, rather than asking only its own client, is UNVERIFIED. Options 1
+and 2 put the PIN back in papi's hands, so they fit A, not B.
+
+**Recommendation.**
+
+1. **Now, with no code change:** state in the plan and the `--pin` help text
+   that `--pin` puts the PIN in argv, and run enroll without it, letting
+   piggy prompt. Removing `-P`, or warning when it is used, is a small papi
+   change the operator can approve separately.
+2. **The real fix: option 3.** It needs no piggy change, matches RFC 0002 §3
+   item 4 and §6, covers all five `--pin` flags and `card init`, and is the
+   path B uses. Its prerequisite is papi#22, the piggy-mgmt client.
+3. **Do not pursue options 1 or 2.** Each needs a piggy change for a narrower
+   result than option 3, and each gives papi a PIN to hold, against B.
+
+## 12. First things to check when a card is available (UNVERIFIED today)
 
 - `fido2-cred -M -v -c 2` on a YubiKey 5 with a PIN set reports credProtect 2
   in authData.
