@@ -75,6 +75,17 @@ with `Closes #N`, so the merge closes it:
   base point). There is a test.
 - #83: the post-init readback retries four times over about 4 s. There are
   tests.
+- #14: validate checks the discovery document's `signatures` echo (§4.1),
+  using the serving host's discovery.
+- #70: the papi-ssh-sync NixOS module warns when an override drops the
+  fragments. There is a new eval test, `test-nix-ssh-sync-module`. It is a
+  warning, not an assertion; making it stricter is the operator's call.
+- #86: validate probes HTTPS clone paths to check `path_includes_identity`.
+
+Not worked: every other "Ready" item needs an operator ruling, a size above S,
+or coordination with another repo (#26, #28, #33, #34, #35, #39, #40, #42,
+#64, #66, #71, #76, #88). #63 is small but needs four wasm builds to measure,
+so it waits for a quiet host.
 
 Close after a check:
 
