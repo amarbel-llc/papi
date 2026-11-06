@@ -40,6 +40,42 @@ Close as fixed:
 - #67, #68 — `/papi/bootstrap` and `/papi/pigpen` are now raw endpoints, not JSON (cf8e0b5; `internal/bravo/inspect/rawendpoints.go:13-19`, `check.go:35-36`).
 - #78 — both runners take the first line with only the line ending removed (78537f2; `internal/0/forgetoken/forgetoken.go:121-132`, `internal/bravo/inspect/auth.go:342-352`).
 
+### Close list (prepared; not run)
+
+These are the issues shown fixed on master. Nothing has been closed. The
+list runs only when the operator confirms from a Claude session, relayed by
+circus/eager-holly/clarabell. Each line gives the issue, the fixing commit,
+and the close comment to post.
+
+| # | Commit | Close comment |
+|---|---|---|
+| 13 | f6bdf21, fd49810 | Fixed: `papi repos` and `papi query` take `--recipient`/`--auth-key-id` for the scoped tier (f6bdf21, fd49810). |
+| 15 | 6ec8c89, 5cee129 | Fixed: `papi enroll` adds a new YubiKey to a deployment, with the huh card picker (FDR-0001; 6ec8c89, 5cee129). |
+| 24 | 6580894 | Done: the deliverable was the FDR, now FDR-0004 (6580894). The broker build is tracked by #32. |
+| 25 | 1fc7f8a | Fixed: reprovision runs `piggy card init --allow-reprovision`, not the removed `piggy card reset` (1fc7f8a; test in `provision_test.go`). |
+| 48 | d7d9f54 | Fixed: `papi forge check` asserts forge access (FDR-0010; d7d9f54). An optional cron mode was not built. |
+| 51 | f7f8fac | Done: the deliverable was the FDR, now FDR-0012 (f7f8fac). The `papi auth` command is tracked by #33. |
+| 67 | cf8e0b5 | Fixed: `/papi/bootstrap` is validated as a raw endpoint, not JSON (cf8e0b5). |
+| 68 | cf8e0b5 | Fixed: `/papi/pigpen` is validated as a raw endpoint, not JSON (cf8e0b5). |
+| 78 | 78537f2 | Fixed: both secret runners take the first line and strip only the line ending (78537f2; mirrored tests). |
+
+Issues that close through a merge in this pass (`Closes #N` in the commit)
+are not repeated here; they are listed under "Worked in this pass" below.
+
+### Worked in this pass
+
+Ready items that need no operator ruling, smallest first. Each is one commit
+with `Closes #N`, so the merge closes it:
+
+- #59: RFC-0001 §14.3 now uses the hyphence `%` trailing comment. Checked with
+  `just debug-grammar-parse`.
+- #75: FDR-0015 is amended with papi's two settled jobs. Status stays
+  `exploring`.
+- #69: the §5.1 probe now sends a well-formed unknown recipient (the P-256
+  base point). There is a test.
+- #83: the post-init readback retries four times over about 4 s. There are
+  tests.
+
 Close after a check:
 
 - #17 — blank-card provisioning exists (5cee129, 1fc7f8a). Verify that a blank card is listed by the pinned piggy (piggy#193) and that a live blank-card enroll works.
