@@ -10,6 +10,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -2767,7 +2768,9 @@ func enrollGUIDFile(guid string) string {
 func newEnrollCmd() *cobra.Command {
 	var newGUID, newSerial, newReader, trustedGUID, out string
 	var pinFlag pinFlags
-	var allowReprovision, noGHRegister bool
+	var allowReprovision, noGHRegister, wantWebAuthn, assumePINChanged bool
+	var rpID string
+	var aaguids []string
 	cmd := &cobra.Command{
 		Use:   "enroll <domain>",
 		Short: "Provision + enroll a new YubiKey, emitting a signed receipt (FDR-0001)",
@@ -2789,7 +2792,9 @@ func newEnrollCmd() *cobra.Command {
 			"trusted card attests; the receipt is written then verified against <domain>. On " +
 			"success it also registers the new card's slot-9A key on your GitHub account as both " +
 			"an authentication and a signing key (via gh), unless --no-gh-register. All " +
-			"cards must be present (PCSC); provisioning prompts for the PIN on your terminal.",
+			"cards must be present (PCSC); provisioning prompts for the PIN on your terminal. " +
+			"With --webauthn it also makes a WebAuthn credential on the new card through libfido2's " +
+			"fido2-* tools, with only the new card attached, and writes a papi-enroll-receipt-v2.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			domain := args[0]
@@ -2837,7 +2842,38 @@ func newEnrollCmd() *cobra.Command {
 					trustedGUID: fmt.Sprintf("the TRUSTED card %s [%s] (attestation)", trustedGUID, trustedCard.CN),
 				},
 			}
-			receipt, err := enroll.BuildReceipt(ctx, signer, newCard, domain, trustedGUID, trustedCard.SSHID, time.Now().Unix())
+
+			// The FIDO2 phase (amarbel-llc/circus#414): a WebAuthn credential on the
+			// same card, carried in a v2 receipt. Only the new card may be attached
+			// while it runs; the trusted card comes back for the attestation.
+			var wa *papi.ReceiptWebAuthn
+			if wantWebAuthn {
+				rp := rpID
+				if rp == "" {
+					rp = domain
+				}
+				stdinLines := bufio.NewReader(cmd.InOrStdin())
+				waitForOperator := func(msg string) error {
+					fmt.Fprintln(cmd.ErrOrStderr(), msg)
+					_, err := stdinLines.ReadString('\n')
+					return err
+				}
+				phase := enroll.WebAuthnPhase{
+					ListCards:        func(ctx context.Context) ([]enroll.CardState, error) { return enroll.ListCards(ctx, run) },
+					PINState:         enroll.PIVPINStateUnavailable,
+					AssumePINChanged: assumePINChanged,
+					AllowedAAGUIDs:   aaguids,
+					Out:              cmd.ErrOrStderr(),
+					WaitForOperator:  waitForOperator,
+				}
+				if wa, err = phase.Run(ctx, signer, newCard, rp); err != nil {
+					return fmt.Errorf("FIDO2 phase: %w", err)
+				}
+				if err := waitForOperator("Plug the trusted card " + trustedGUID + " back in for the attestation, then press Enter."); err != nil {
+					return err
+				}
+			}
+			receipt, err := enroll.BuildReceiptWithWebAuthn(ctx, signer, newCard, domain, trustedGUID, trustedCard.SSHID, time.Now().Unix(), wa)
 			if err != nil {
 				return err
 			}
@@ -2904,6 +2940,13 @@ func newEnrollCmd() *cobra.Command {
 	cmd.Flags().StringVar(&trustedGUID, "trusted-guid", "", "GUID of the TRUSTED attester card (default: the sole provisioned card)")
 	pinFlag.register(cmd, false)
 	cmd.Flags().StringVar(&out, "out", "", "receipt output path (default: enroll-receipt-<new-guid8>.json)")
+	cmd.Flags().BoolVar(&wantWebAuthn, "webauthn", false,
+		"also make a WebAuthn credential on the new card (libfido2's fido2-* tools; the FIDO2 PIN is set to the PIV PIN at their prompt) and write a papi-enroll-receipt-v2")
+	cmd.Flags().StringVar(&rpID, "webauthn-rp-id", "", "WebAuthn relying party id for --webauthn (default: <domain>)")
+	cmd.Flags().StringSliceVar(&aaguids, "webauthn-aaguid", nil,
+		"allowlisted authenticator AAGUID (hex) for --webauthn; repeat for several. With none, enroll refuses and names the AAGUID it saw")
+	cmd.Flags().BoolVar(&assumePINChanged, "assume-pin-changed", false,
+		"for --webauthn: proceed although papi cannot yet tell whether the PIV PIN is still the factory default (linenisgreat/piggy#353); you have checked it is not")
 	cmd.MarkFlagsMutuallyExclusive("new-guid", "new-serial", "new-reader")
 	return cmd
 }
@@ -2912,7 +2955,7 @@ func newVerifyReceiptCmd() *cobra.Command {
 	var domain string
 	cmd := &cobra.Command{
 		Use:   "verify-receipt <receipt-file>",
-		Short: "Verify a papi-enroll-receipt-v1 against a domain's published keys",
+		Short: "Verify a papi-enroll-receipt (v1, or v2 with WebAuthn) against a domain's published keys",
 		Long: "Verify a card-enrollment receipt (papi-enroll-receipt-v1, FDR-0001) emitted by " +
 			"`papi enroll`: its self_proof binds the new card's slot-9D recipient to its " +
 			"slot-9A key (a §9.3 papi-proof-sig-v1 over the claim), and its attestation is " +

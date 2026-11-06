@@ -27,6 +27,11 @@ func testAuthData(t *testing.T, rpID string, flags byte, credProtect int, credID
 	if err != nil {
 		t.Fatal(err)
 	}
+	return testAuthDataFor(priv, rpID, flags, credProtect, credID)
+}
+
+// testAuthDataFor is testAuthData for a given credential key.
+func testAuthDataFor(priv *ecdsa.PrivateKey, rpID string, flags byte, credProtect int, credID []byte) []byte {
 	x, y := make([]byte, 32), make([]byte, 32)
 	priv.X.FillBytes(x)
 	priv.Y.FillBytes(y)

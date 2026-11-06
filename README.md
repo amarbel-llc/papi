@@ -440,6 +440,16 @@ sign commits — pass `--no-gh-register` to skip (e.g. enrolling for someone els
   (auth + signing). Registration is on by default; skip it when enrolling a card
   for someone else's account.
 - `--trusted-guid <G>` — the attester (default: the sole card with a slot-9A key).
+- `--webauthn` — also make a WebAuthn credential on the new card, for pages
+  gated by a WebAuthn assertion (amarbel-llc/circus#414). papi drives
+  libfido2's `fido2-*` tools with only the new card attached. You set the
+  FIDO2 PIN to the PIV PIN at their prompt, and touch the key for a touch-only
+  self-check. The receipt becomes a `papi-enroll-receipt-v2`. `--webauthn-rp-id`
+  sets the relying party (default: `<domain>`). `--webauthn-aaguid <hex>`
+  allowlists the authenticator model; with none, enroll refuses and names the
+  AAGUID it saw. A card still on the factory PIV PIN is refused. Until piggy
+  can report that (linenisgreat/piggy#353), you must confirm it with
+  `--assume-pin-changed`.
 
 Pair it with `verify-receipt` on the deploy side.
 
@@ -452,7 +462,8 @@ attestation: verified — an already-published slot-9A key attests the receipt
 
 ### `papi verify-receipt <receipt-file> --domain <domain>`
 
-Verify a card-enrollment receipt (`papi-enroll-receipt-v1`, [FDR-0001](docs/features/0001-papi-new-yubikey-enrollment.md))
+Verify a card-enrollment receipt (`papi-enroll-receipt-v1`, or `-v2` with a
+`webauthn` check, [FDR-0001](docs/features/0001-papi-new-yubikey-enrollment.md))
 emitted when a new YubiKey is provisioned. Two checks, both required: the
 `self_proof` binds the new card's slot-9D recipient to its slot-9A key (a §9.3
 `papi-proof-sig-v1` over the claim, verified against the receipt's own slot-9A

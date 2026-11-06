@@ -29,11 +29,27 @@ attestation chain are not enforced and are flagged for a later security audit
 (Q4, Q6); v1 keeps its PIN prompts (Q8, §9); origin `https://linenisgreat.com`
 only (Q9); D1–D3 kept.
 
-**Status:** implementation — the enroll FIDO2 phase and the server side —
-waits for the operator's go and the remaining blocker in §10 (the `-P`
-command-line exposure; options and a recommendation in §11). The later one-prompt
-change takes option B (§10).
-Only the card-free spike (§5) exists.
+**Status (2026-11-06):** the operator gave the go and ruled on the open
+items: refuse a default-PIN card, and fix `-P` through `secret.request`.
+
+Built, card-free, with fake devices in tests:
+- the `-P` fix (§11);
+- receipt v2 and its verifier (§2);
+- `papi enroll --webauthn` (§3 steps 3–7): the libfido2 driver and the phase.
+
+The phase refuses a default-PIN card. Its PIN check is stubbed behind
+linenisgreat/piggy#353 and needs `--assume-pin-changed` until piggy can report
+the PIN state.
+
+Not built:
+- `--add-webauthn` for an already-enrolled card (§3, Q3);
+- `--check-uv`;
+- the browser fallback (Q7);
+- the server side (RFC-0001 amendment, `piggy.webauthn_credentials[]`, the
+  assertion endpoints and tier groups).
+
+Nothing has run against a real YubiKey; §12 lists what to check first. The
+later one-prompt change takes option B (§10).
 
 Evidence labels: **VERIFIED** (source cited), **UNVERIFIED** (not checked, or
 needs hardware), **R** (read in this repo at `fresh-fig` after ab85cc2).

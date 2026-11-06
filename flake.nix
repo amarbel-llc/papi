@@ -214,6 +214,9 @@
                   pkgs.lib.makeBinPath [
                     piggyPkg
                     pkgs.gh
+                    # fido2-token / fido2-cred / fido2-assert: the `papi enroll
+                    # --webauthn` FIDO2 phase (amarbel-llc/circus#414).
+                    pkgs.libfido2
                   ]
                 }
             '';
@@ -344,6 +347,9 @@
               # live test) execs the same piggy the wrapped binary does — not the
               # operator's ambient PATH piggy.
               piggyPkg
+              # libfido2's fido2-* tools, which the `papi enroll --webauthn`
+              # FIDO2 phase execs (amarbel-llc/circus#414).
+              pkgs.libfido2
               # bun: runtime + bundler for the TypeScript client wrapper
               # (clients/ts, FDR-0007). The bun2nix lockfile generation and the
               # `build-ts` recipe run under it; igloo's overlay carries the
