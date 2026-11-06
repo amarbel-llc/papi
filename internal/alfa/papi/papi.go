@@ -225,6 +225,9 @@ type Discovery struct {
 	Handle    string            `json:"handle"`
 	Resources map[string]string `json:"resources"`
 	Auth      *DiscoveryAuth    `json:"auth"`
+	// Signatures echoes the document's §10 signatures[] when it has one
+	// (§4.1 MUST), so authorship is checkable from discovery alone.
+	Signatures []Signature `json:"signatures,omitempty"`
 }
 
 // DiscoveryAuth is the discovery doc's auth block (RFC-0001 §4.1).

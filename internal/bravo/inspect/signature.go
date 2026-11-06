@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"slices"
 	"strings"
 
 	"code.linenisgreat.com/papi/internal/0/markl"
@@ -58,7 +59,7 @@ func signaturePoints(ctx context.Context, c *papi.Client) []point {
 			authIDs := fetchPiggyAuthIDs(ctx, c)
 			pts := make([]point, 0, len(entries))
 			for i, e := range entries {
-				pts = append(pts, verifyMarklSignature(i, e, input, doc, authIDs))
+				pts = append(pts, verifyMarklSignature(fmt.Sprintf("signatures[%d]", i), e, input, doc, authIDs))
 			}
 			return pts
 		}
@@ -108,7 +109,7 @@ func VerifyDocumentWithPublishedIDs(data []byte, publishedIDs []string) (SigVeri
 		var entries []papi.Signature
 		if json.Unmarshal(sigsRaw, &entries) == nil && len(entries) > 0 {
 			for i, e := range entries {
-				pts = append(pts, verifyMarklSignature(i, e, input, doc, publishedIDs))
+				pts = append(pts, verifyMarklSignature(fmt.Sprintf("signatures[%d]", i), e, input, doc, publishedIDs))
 			}
 		}
 	}
@@ -150,13 +151,59 @@ func sigResultFromPoints(pts []point) SigVerifyResult {
 	return res
 }
 
+// discoverySignaturePoints checks the `signatures` member the discovery document
+// echoes (RFC-0001 §4.1). When /papi carries `signatures[]`, discovery MUST
+// expose an equal array. A verifier that finds signatures in discovery MUST
+// evaluate each entry (§10.3), so an echo that differs from /papi is verified
+// entry by entry against the anonymous document's signing input.
+func discoverySignaturePoints(ctx context.Context, c *papi.Client, disc *papi.Discovery) []point {
+	const name = "signature: discovery signatures (§4.1)"
+	resp, err := c.Fetch(ctx, "/papi")
+	if err != nil {
+		return []point{skip(name, "GET /papi failed: "+err.Error())}
+	}
+	var env struct {
+		Data json.RawMessage `json:"data"`
+	}
+	var doc map[string]json.RawMessage
+	if json.Unmarshal(resp.Body, &env) != nil || json.Unmarshal(env.Data, &doc) != nil {
+		return []point{skip(name, "no document data to compare against")}
+	}
+	var docSigs []papi.Signature
+	if raw, ok := doc["signatures"]; ok {
+		_ = json.Unmarshal(raw, &docSigs)
+	}
+
+	switch {
+	case len(docSigs) == 0 && len(disc.Signatures) == 0:
+		return []point{skip(name, "/papi carries no signatures[]; nothing to echo")}
+	case len(disc.Signatures) == 0:
+		return []point{mustFail("signature: discovery echoes /papi signatures[] (§4.1)",
+			map[string]any{"papi_signatures": len(docSigs), "discovery_signatures": 0})}
+	case slices.Equal(disc.Signatures, docSigs):
+		return []point{ok("signature: discovery signatures equal /papi signatures[] (§4.1)")}
+	}
+
+	pts := []point{mustFail("signature: discovery echoes /papi signatures[] (§4.1)",
+		map[string]any{"papi_signatures": len(docSigs), "discovery_signatures": len(disc.Signatures), "error": "arrays differ"})}
+	input, err := canonicalSigningInput(doc)
+	if err != nil {
+		return append(pts, mustFail("signature: discovery signed-but-invalid (§10.3)",
+			map[string]any{"error": "canonicalize: " + err.Error()}))
+	}
+	authIDs := fetchPiggyAuthIDs(ctx, c)
+	for i, e := range disc.Signatures {
+		pts = append(pts, verifyMarklSignature(fmt.Sprintf("discovery signatures[%d]", i), e, input, doc, authIDs))
+	}
+	return pts
+}
+
 // verifyMarklSignature evaluates one Amendment 9 `signatures[]` entry: `sig` is a
 // papi-doc-sig-v1@ecdsa_p256_sig markl-id (raw 64-byte r‖s), `key` is a
 // …@ssh_ecdsa_nistp256_pub markl-id (33-byte SEC1 point). The method is carried
-// by the markl-ids, so there is no `alg` field.
-func verifyMarklSignature(i int, entry papi.Signature, input []byte, doc map[string]json.RawMessage, authIDs []string) point {
-	label := fmt.Sprintf("signatures[%d]", i)
-
+// by the markl-ids, so there is no `alg` field. label names the entry in the
+// verdict (e.g. "signatures[0]").
+func verifyMarklSignature(label string, entry papi.Signature, input []byte, doc map[string]json.RawMessage, authIDs []string) point {
 	sigID, err := markl.Parse(entry.Sig)
 	if err != nil || sigID.Purpose != markl.PurposeDocSig || sigID.Format != markl.FormatEcdsaP256Sig {
 		return skip("signature: "+label+" unverifiable (§10.3)",

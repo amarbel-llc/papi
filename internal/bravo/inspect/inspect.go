@@ -71,6 +71,13 @@ func Run(ctx context.Context, w io.Writer, target string, opts Options) error {
 	pts = append(pts, proofsChecks(ctx, c)...)
 	pts = append(pts, coLocationChecks(ctx, c)...)
 	pts = append(pts, signaturePoints(ctx, c)...)
+	// The serving host's discovery is authoritative on a split-host domain, whose
+	// identity host may serve only a stub (papi.Client.ServingDiscovery).
+	sigDisc := disc
+	if sd, _, err := c.ServingDiscovery(ctx); err == nil {
+		sigDisc = sd
+	}
+	pts = append(pts, discoverySignaturePoints(ctx, c, sigDisc)...)
 	pts = append(pts, pigpenSignaturePoints(ctx, c)...)
 	pts = append(pts, conformistProfilePoints(ctx, c, disc)...)
 
