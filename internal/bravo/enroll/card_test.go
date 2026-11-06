@@ -122,7 +122,7 @@ func TestPiggySignBytesSigner(t *testing.T) {
 	}
 
 	msg := []byte("the bytes to sign")
-	rs, err := PiggySignBytesSigner{Run: run, PIN: "123456"}.SignSlot9A(context.Background(), cardGUID, msg)
+	rs, err := PiggySignBytesSigner{Run: run}.SignSlot9A(context.Background(), cardGUID, msg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,8 @@ func TestPiggySignBytesSigner(t *testing.T) {
 	if string(gotStdin) != string(msg) {
 		t.Errorf("signer fed %q, want the bare message %q", gotStdin, msg)
 	}
-	wantArgs := []string{"sign-bytes", "--slot", "9a", "--format", "raw", "--guid", cardGUID, "-P", "123456"}
+	// No PIN on the command line, ever: piggy asks for it itself.
+	wantArgs := []string{"sign-bytes", "--slot", "9a", "--format", "raw", "--guid", cardGUID}
 	if strings.Join(gotArgs, " ") != strings.Join(wantArgs, " ") {
 		t.Errorf("args = %v, want %v", gotArgs, wantArgs)
 	}

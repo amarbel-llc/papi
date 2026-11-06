@@ -331,7 +331,53 @@ type forgeTokenFlags struct {
 type signerFlags struct {
 	signerMode string
 	signGUID   string
-	pin        string
+	pin        pinFlags
+}
+
+// pinFlags is the PIV PIN a signing command may be given: --pin (a value on
+// papi's own command line, which every user on the host can read through
+// /proc/<pid>/cmdline) or --pin-file (the first line of a file, e.g.
+// /dev/fd/3, which keeps it off the command line). Either way the PIN reaches
+// piggy as a secret.request answer on a pipe, never as an argument
+// (enroll.PINSigner). With neither, piggy asks for the PIN itself.
+type pinFlags struct {
+	value string
+	file  string
+}
+
+func (p *pinFlags) register(cmd *cobra.Command, persistent bool) {
+	fs := cmd.Flags()
+	if persistent {
+		fs = cmd.PersistentFlags()
+	}
+	fs.StringVar(&p.value, "pin", "",
+		"PIV PIN for slot-9A signing; visible in this host's process list, so prefer --pin-file (default: piggy asks for it)")
+	fs.StringVar(&p.file, "pin-file", "",
+		"read the PIV PIN for slot-9A signing from the first line of this file (e.g. /dev/fd/3), keeping it off the command line")
+}
+
+// resolve returns the PIN, or "" when neither flag was given. A --pin value
+// draws a warning on warn, since it has already been exposed in papi's argv.
+func (p pinFlags) resolve(warn io.Writer) (string, error) {
+	switch {
+	case p.value != "" && p.file != "":
+		return "", fmt.Errorf("--pin and --pin-file are mutually exclusive")
+	case p.file != "":
+		raw, err := os.ReadFile(p.file)
+		if err != nil {
+			return "", fmt.Errorf("--pin-file: %w", err)
+		}
+		line, _, _ := strings.Cut(string(raw), "\n")
+		pin := strings.TrimSuffix(line, "\r")
+		if pin == "" {
+			return "", fmt.Errorf("--pin-file %s: first line is empty", p.file)
+		}
+		return pin, nil
+	case p.value != "":
+		fmt.Fprintln(warn, "papi: warning: --pin puts the PIN on papi's command line, where other users on this host can read it; use --pin-file instead")
+		return p.value, nil
+	}
+	return "", nil
 }
 
 // register adds the triple. purpose names the flag whose signing these serve, which
@@ -347,15 +393,18 @@ func (s *signerFlags) register(cmd *cobra.Command, purpose string, persistent bo
 		"slot-9A signer for "+purpose+": auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
 	fs.StringVar(&s.signGUID, "sign-guid", "",
 		"GUID of the slot-9A card to sign the challenge with (default: the sole provisioned card)")
-	fs.StringVar(&s.pin, "pin", "",
-		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P)")
+	s.pin.register(cmd, persistent)
 }
 
 // signer builds the slot-9A signer these flags describe, returning it with the guid
 // it resolved to. Behind the signChallengeSignerFn seam so CLI tests can inject a
 // fake card.
 func (s *signerFlags) signer(ctx context.Context) (signchallenge.Signer, string, error) {
-	return signChallengeSignerFn(ctx, s.signerMode, s.signGUID, s.pin, "")
+	pin, err := s.pin.resolve(os.Stderr)
+	if err != nil {
+		return nil, "", err
+	}
+	return signChallengeSignerFn(ctx, s.signerMode, s.signGUID, pin, "")
 }
 
 func (f *forgeTokenFlags) register(cmd *cobra.Command) {
@@ -962,7 +1011,8 @@ func newPigpenResolveCmd() *cobra.Command {
 // domain-bound, so there is no --domain flag and no §4.2 envelope handling —
 // stdin is the document's own bytes, verbatim.
 func newPigpenSignCmd() *cobra.Command {
-	var guid, pin, signerMode string
+	var guid, signerMode string
+	var pinFlag pinFlags
 	cmd := &cobra.Command{
 		Use:   "sign",
 		Short: "Self-sign an unsigned PAPI pigpen document with slot-9A",
@@ -978,7 +1028,8 @@ func newPigpenSignCmd() *cobra.Command {
 			"the new signature against. Unlike sign-challenge this signature is document-bound, not domain-bound: " +
 			"there is no --domain flag, and the input is the document's own bytes verbatim (no " +
 			"§4.2 {data,meta} envelope to unwrap). With no --guid the sole provisioned card is " +
-			"used; --pin passes the slot-9A PIN to piggy. `papi pigpen resolve` is the consumer-side " +
+			"used; --pin-file (or --pin) gives papi the slot-9A PIN, else piggy asks for it. " +
+			"`papi pigpen resolve` is the consumer-side " +
 			"inverse: it verifies this signature against the domain's live /papi/piggy-ids.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -986,6 +1037,10 @@ func newPigpenSignCmd() *cobra.Command {
 			raw, err := io.ReadAll(cmd.InOrStdin())
 			if err != nil {
 				return fmt.Errorf("read pigpen document from stdin: %w", err)
+			}
+			pin, err := pinFlag.resolve(cmd.ErrOrStderr())
+			if err != nil {
+				return err
 			}
 			signer, signGUID, err := pigpenSignSignerFn(ctx, signerMode, guid, pin, "")
 			if err != nil {
@@ -1001,8 +1056,7 @@ func newPigpenSignCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&guid, "guid", "",
 		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
-	cmd.Flags().StringVar(&pin, "pin", "",
-		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
+	pinFlag.register(cmd, false)
 	cmd.Flags().StringVar(&signerMode, "signer", "auto",
 		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
 	return cmd
@@ -2711,7 +2765,8 @@ func enrollGUIDFile(guid string) string {
 }
 
 func newEnrollCmd() *cobra.Command {
-	var newGUID, newSerial, newReader, trustedGUID, pin, out string
+	var newGUID, newSerial, newReader, trustedGUID, out string
+	var pinFlag pinFlags
 	var allowReprovision, noGHRegister bool
 	cmd := &cobra.Command{
 		Use:   "enroll <domain>",
@@ -2741,9 +2796,14 @@ func newEnrollCmd() *cobra.Command {
 			ctx := cmd.Context()
 			run := enroll.ExecRunner
 
+			// Resolve the PIN before touching any card, so a bad --pin-file fails fast.
+			pin, err := pinFlag.resolve(cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
+
 			// Enumerate cards only when we must provision or auto-resolve a GUID.
 			var cards []enroll.CardState
-			var err error
 			if newGUID == "" || trustedGUID == "" {
 				if cards, err = enroll.ListCards(ctx, run); err != nil {
 					return err
@@ -2770,7 +2830,7 @@ func newEnrollCmd() *cobra.Command {
 			// PIN a prompt wants (the freshly-provisioned new card still has the
 			// default PIN, the trusted card has the operator's).
 			signer := labeledSigner{
-				inner: enroll.PiggySignBytesSigner{PIN: pin},
+				inner: enroll.PINSigner(pin),
 				out:   cmd.ErrOrStderr(),
 				roles: map[string]string{
 					newGUID:     fmt.Sprintf("the NEW card %s [%s] (self_proof)", newGUID, newCard.CN),
@@ -2842,7 +2902,7 @@ func newEnrollCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&allowReprovision, "allow-reprovision", false, "permit selecting an ALREADY-provisioned card and re-initializing it (destroys its keys) — a loud extra confirm")
 	cmd.Flags().BoolVar(&noGHRegister, "no-gh-register", false, "do NOT register the new card's slot-9A key on GitHub (auth + signing); skip when enrolling a card for someone else's account")
 	cmd.Flags().StringVar(&trustedGUID, "trusted-guid", "", "GUID of the TRUSTED attester card (default: the sole provisioned card)")
-	cmd.Flags().StringVar(&pin, "pin", "", "PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
+	pinFlag.register(cmd, false)
 	cmd.Flags().StringVar(&out, "out", "", "receipt output path (default: enroll-receipt-<new-guid8>.json)")
 	cmd.MarkFlagsMutuallyExclusive("new-guid", "new-serial", "new-reader")
 	return cmd
@@ -2949,11 +3009,12 @@ func signChallengeSigner(ctx context.Context, mode, guid, pin, agentSocket strin
 			return nil, "", err
 		}
 	}
-	return enroll.PiggySignBytesSigner{PIN: pin}, guid, nil
+	return enroll.PINSigner(pin), guid, nil
 }
 
 func newSignChallengeCmd() *cobra.Command {
-	var domain, guid, pin, signerMode string
+	var domain, guid, signerMode string
+	var pinFlag pinFlags
 	var fromResponse bool
 	cmd := &cobra.Command{
 		Use:   "sign-challenge --domain <domain>",
@@ -2970,8 +3031,8 @@ func newSignChallengeCmd() *cobra.Command {
 			"--from-response to feed that whole response on stdin and read the challenge from " +
 			".data. --domain is the PAPI identity domain the signature binds to; it is never " +
 			"echoed by the challenge (cross-site relay defense), so it must be supplied here. " +
-			"With no --guid the sole provisioned card is used; --pin passes the slot-9A PIN " +
-			"to piggy. The server verifies the signature against the registered slot-9A key " +
+			"With no --guid the sole provisioned card is used; --pin-file (or --pin) gives papi " +
+			"the slot-9A PIN, else piggy asks for it. The server verifies the signature against the registered slot-9A key " +
 			"and mints a session — this command performs no network I/O itself.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -2991,6 +3052,10 @@ func newSignChallengeCmd() *cobra.Command {
 				raw = data
 			}
 			ch, err := signchallenge.ParseChallenge(raw)
+			if err != nil {
+				return err
+			}
+			pin, err := pinFlag.resolve(cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -3014,8 +3079,7 @@ func newSignChallengeCmd() *cobra.Command {
 		"PAPI identity domain the §5.2 signature binds to (required; e.g. staging.linenisgreat.com)")
 	cmd.Flags().StringVar(&guid, "guid", "",
 		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
-	cmd.Flags().StringVar(&pin, "pin", "",
-		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
+	pinFlag.register(cmd, false)
 	cmd.Flags().StringVar(&signerMode, "signer", "auto",
 		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
 	cmd.Flags().BoolVar(&fromResponse, "from-response", false,
@@ -3034,7 +3098,8 @@ func newSignChallengeCmd() *cobra.Command {
 // browser). It is the first production HTTP server in the papi binary, deliberately
 // minimal and loopback-only.
 func newSignChallengeServeCmd() *cobra.Command {
-	var addr, domain, origin, target, guid, pin, signerMode, agentSocket, configPath, logFormat string
+	var addr, domain, origin, target, guid, signerMode, agentSocket, configPath, logFormat string
+	var pinFlag pinFlags
 	var allowCallbacks []string
 	cmd := &cobra.Command{
 		Use:   "sign-challenge-serve [--domain <d> --origin <o>] [--allow-callback <url>]",
@@ -3094,6 +3159,10 @@ func newSignChallengeServeCmd() *cobra.Command {
 			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt)
 			defer stop()
+			pin, err := pinFlag.resolve(cmd.ErrOrStderr())
+			if err != nil {
+				return err
+			}
 			signer, signGUID, err := signChallengeSignerFn(ctx, signerMode, guid, pin, agentSocket)
 			if err != nil {
 				return err
@@ -3140,8 +3209,7 @@ func newSignChallengeServeCmd() *cobra.Command {
 		"PAPI base URL the /login broker calls server-side (e.g. https://api.linenisgreat.com); empty serves only /sign")
 	cmd.Flags().StringVar(&guid, "guid", "",
 		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
-	cmd.Flags().StringVar(&pin, "pin", "",
-		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; else piggy prompts via askpass)")
+	pinFlag.register(cmd, false)
 	cmd.Flags().StringVar(&signerMode, "signer", "auto",
 		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
 	cmd.Flags().StringVar(&agentSocket, "agent-socket", "",

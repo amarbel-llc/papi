@@ -798,6 +798,18 @@ and 2 put the PIN back in papi's hands, so they fit A, not B.
 3. **Do not pursue options 1 or 2.** Each needs a piggy change for a narrower
    result than option 3, and each gives papi a PIN to hold, against B.
 
+**Ruled and done (operator, 2026-11-06): option 3.** papi now has a
+piggy-mgmt client (`internal/0/piggymgmt`), and every `--pin` path signs
+through `piggy manage --jsonrpc`, answering its `secret.request` on the pipe
+(`enroll.PINSigner`). Without a PIN, papi calls `piggy sign-bytes` with no
+`-P`, and piggy asks for the PIN itself.
+
+**Correction to the table above.** The table missed one exposure: `--pin
+<value>` puts the PIN on **papi's own** command line, which is readable in
+the same way as piggy's. papi therefore also takes `--pin-file <path>` (the
+first line of a file, e.g. `/dev/fd/3`) and warns whenever `--pin` is used.
+Removing `--pin` altogether is an operator call; it is kept for now.
+
 ## 12. First things to check when a card is available (UNVERIFIED today)
 
 - `fido2-cred -M -v -c 2` on a YubiKey 5 with a PIN set reports credProtect 2

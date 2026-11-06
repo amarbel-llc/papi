@@ -93,7 +93,8 @@ whichever pair the target accepts.
 | `--auth-key-id` | slot-9A id to authenticate as; runs the RECOMMENDED §5.2 sign-challenge handshake                 |
 | `--signer`      | slot-9A signer for `--auth-key-id`: `auto` ($SSH_AUTH_SOCK agent, else piggy sign-bytes), `agent`, `pcsc` |
 | `--sign-guid`   | GUID of the slot-9A card to sign with (default: the sole provisioned card)                        |
-| `--pin`         | PIV PIN for slot-9A signing                                                                       |
+| `--pin-file`    | read the PIV PIN for slot-9A signing from the first line of a file (e.g. `/dev/fd/3`)              |
+| `--pin`         | PIV PIN as a value; visible in the host's process list, so prefer `--pin-file` (papi warns)       |
 | `--recipient`   | slot-9D id for the OPTIONAL, legacy decrypt-challenge scheme                                      |
 | `--decrypt-cmd` | shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout      |
 
@@ -443,7 +444,7 @@ sign commits — pass `--no-gh-register` to skip (e.g. enrolling for someone els
 Pair it with `verify-receipt` on the deploy side.
 
 ```console
-$ papi enroll linenisgreat.com --new-guid A1B2C3D4 --trusted-guid E5F6A7B8 --pin ******
+$ papi enroll linenisgreat.com --new-guid A1B2C3D4 --trusted-guid E5F6A7B8
 wrote enroll-receipt-a1b2c3d4.json
 self_proof: verified — new card's slot-9A key signs the 9D↔9A binding claim
 attestation: verified — an already-published slot-9A key attests the receipt
@@ -508,19 +509,21 @@ stdin is the bare challenge, **not** the raw HTTP body — pass **`--from-respon
 to feed that whole enveloped response on stdin and read the challenge from `.data`.
 `--domain` is the PAPI identity domain the signature binds to — it is **never
 echoed** by the challenge (cross-site relay defense), so you supply it. With no
-`--guid` the sole provisioned card is used; `--pin` passes the slot-9A PIN. The
+`--guid` the sole provisioned card is used. piggy asks for the slot-9A PIN
+itself, or `--pin-file` hands it to papi without putting it on a command line;
+either way it reaches piggy on a pipe (`piggy manage`'s `secret.request`). The
 command does no network I/O itself — the caller POSTs the body and the server
 verifies it against the registered slot-9A key, minting a session.
 
 ```console
 # the signing primitive: a bare challenge payload on stdin
 $ echo '{"challenge_id":"a1b2…","nonce":"3f9c…","expires_at":1750000000}' \
-    | papi sign-challenge --domain staging.example.com --pin ******
+    | papi sign-challenge --domain staging.example.com
 {"challenge_id":"a1b2…","signature":"papi-auth-sig-v1@ecdsa_p256_sig-qqqsyq…"}
 
 # or pipe the live server's enveloped {data,meta} response straight in
 $ curl -fsS https://api.example.com/papi/auth/challenge -d '{"auth_key_id":"…"}' \
-    | papi sign-challenge --domain example.com --from-response --pin ******
+    | papi sign-challenge --domain example.com --from-response --pin-file /dev/fd/3 3<pin.txt
 {"challenge_id":"a1b2…","signature":"papi-auth-sig-v1@ecdsa_p256_sig-qqqsyq…"}
 ```
 

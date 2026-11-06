@@ -35,14 +35,17 @@ func ExecRunner(ctx context.Context, stdin []byte, name string, args ...string) 
 }
 
 // PiggySignBytesSigner implements Signer via `piggy sign-bytes --slot 9a --guid
-// <guid> --format raw [-P <pin>]` (piggy#190) — the papi-agnostic, fibby-verified
-// slot-9A byte-signer. piggy hashes SHA-256 intrinsically and returns the raw
-// 64-byte r‖s, exactly the markl ecdsa_p256_sig payload (no DER/SSH-wire framing
-// to parse). It is direct-PCSC (no agent) and GUID-selectable, so it signs both
-// the new card's self_proof and the operator-presented trusted card's attestation.
+// <guid> --format raw` (piggy#190) — the papi-agnostic, fibby-verified slot-9A
+// byte-signer. piggy hashes SHA-256 intrinsically and returns the raw 64-byte
+// r‖s, exactly the markl ecdsa_p256_sig payload (no DER/SSH-wire framing to
+// parse). It is direct-PCSC (no agent) and GUID-selectable, so it signs both the
+// new card's self_proof and the operator-presented trusted card's attestation.
+//
+// It never passes a PIN: piggy asks for one itself (askpass/tty), naming the
+// card. When papi holds the PIN, ManageSignBytesSigner hands it over on a pipe
+// instead; see PINSigner.
 type PiggySignBytesSigner struct {
 	Run Runner // defaults to ExecRunner when nil
-	PIN string // optional; passed as -P (slot-9A PIN policy may require it)
 }
 
 // SignSlot9A signs msg with the slot-9A key of the card identified by guid and
@@ -52,13 +55,10 @@ func (p PiggySignBytesSigner) SignSlot9A(ctx context.Context, guid string, msg [
 	if run == nil {
 		run = ExecRunner
 	}
-	args := make([]string, 0, 9)
+	args := make([]string, 0, 7)
 	args = append(args, "sign-bytes", "--slot", "9a", "--format", "raw")
 	if guid != "" {
 		args = append(args, "--guid", guid)
-	}
-	if p.PIN != "" {
-		args = append(args, "-P", p.PIN)
 	}
 	rs, err := run(ctx, msg, "piggy", args...)
 	if err != nil {

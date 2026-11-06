@@ -474,16 +474,18 @@ debug-sign-challenge-demo port="8080":
 # enrolling a provisioned card INTO ITSELF (degenerate: new==trusted) — exercises
 # the full chain (read-back → slot-9A signing ×2 → receipt → verify against the
 # live site) with NO blank card / piggy#193/#194 needed. Run in YOUR terminal so
-# the PIN prompt reaches you; pass `pin=<PIN>` if it hangs with no prompt. Needs
-# the card present + `piggy sign-bytes`. papi#15 live-test prep.
+# the PIN prompt reaches you; pass `pin_file=<path>` (a file whose first line is
+# the PIN) if it hangs with no prompt. A PIN value is never taken here: it would
+# sit in just's and papi's argv. Needs the card present + `piggy sign-bytes`.
+# papi#15 live-test prep.
 #
 # smoke `papi enroll` end-to-end by enrolling one card into itself
 [group("debug")]
-debug-enroll-smoke guid domain="linenisgreat.com" pin="":
+debug-enroll-smoke guid domain="linenisgreat.com" pin_file="":
     #!/usr/bin/env bash
     set -euo pipefail
     args=(enroll "{{domain}}" --new-guid "{{guid}}" --trusted-guid "{{guid}}")
-    if [[ -n "{{pin}}" ]]; then args+=(--pin "{{pin}}"); fi
+    if [[ -n "{{pin_file}}" ]]; then args+=(--pin-file "{{pin_file}}"); fi
     nix develop --command go run . "${args[@]}"
 
 # Independently verify an enrollment receipt against a domain (the deploy-gate
@@ -515,15 +517,16 @@ debug-provision-blank:
 
 # Run `papi enroll` for a REAL two-card enrollment: the new card (--new-guid)
 # attested by the trusted card (--trusted-guid). Run in YOUR terminal (PIN
-# prompt); pass `pin=<PIN>` if it hangs. papi#15 live test.
+# prompt); pass `pin_file=<path>` (first line is the PIN) if it hangs. papi#15
+# live test.
 #
 # run a real two-card `papi enroll` (new card attested by trusted card)
 [group("debug")]
-debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin="":
+debug-enroll new_guid trusted_guid domain="linenisgreat.com" pin_file="":
     #!/usr/bin/env bash
     set -euo pipefail
     args=(enroll "{{domain}}" --new-guid "{{new_guid}}" --trusted-guid "{{trusted_guid}}")
-    if [[ -n "{{pin}}" ]]; then args+=(--pin "{{pin}}"); fi
+    if [[ -n "{{pin_file}}" ]]; then args+=(--pin-file "{{pin_file}}"); fi
     nix develop --command go run . "${args[@]}"
 
 # Explore: cross-build ARBITRARY packages for both wasm targets, isolated from
