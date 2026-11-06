@@ -62,6 +62,52 @@ it from that one published source. This fits FDR-0011's "one model, many
 projections" philosophy: the posture is data on the person-model, projected
 through the auth handshake like everything else.
 
+### Amendment: papi's two settled jobs (2026-09-01 design session)
+
+The 2026-09-01 cross-repo design session settled the conformist profile
+vision. The umbrella record is eng FDR 0015 (conformist profile, cache-delivered
+linters). In that design, linter and changer tools are pre-built, static-first
+artifacts pulled at run time from the fleet binary cache. They are named by a
+layered, data-only profile: a hyphence document with a TOML body, delegating to
+lower layers through locked references. The profile format is conformist's to
+define, in conformist RFC 0005; whether that RFC has landed is UNVERIFIED here.
+
+In that design papi has two jobs:
+
+1. **Host the org baseline profile.** This is the topmost layer: in-tree
+   profiles delegate to it through a locked hyphence reference. papi already
+   serves the house profile as a signed hyphence document at
+   `GET /papi/conformist-profile` (RFC-0001 §15.3), so this job extends an
+   existing endpoint rather than adding one.
+2. **Run the adoption channel.** When a linter's home repo publishes a new
+   static artifact to the cache, papi bumps that linter's pinned
+   `{url, hash}` in the baseline. Consumers pick it up when they refresh their
+   pin. This is the analogue of `update-nix` for linters, carried as data
+   rather than as a flake-lock change.
+
+Status stays `exploring` until the conformist proof of concept passes:
+conformist lints its own justfile from a hand-written profile. Its ergonomics
+decide whether the vision proceeds, and the operator approves the profile
+document format afterwards.
+
+Findings from the papi-side assessment (#75), recorded so they are not
+re-derived:
+
+- **Cycle-immunity is structural.** A data-only profile pulled at run time is
+  not a flake input, a lib import or a fixed-output fetch, so it never enters
+  any repo's flake evaluation graph. That is why it cannot rebuild the
+  just-us↔conformist cycle class. (Example: `doppelgang` takes `conformist`
+  as an input, so conformist can never depend on `doppelgang`.)
+- **The cache step has two reliability limits.** New build outputs reach the
+  cache through a store watcher on a single host, so an artifact is fetchable
+  only once that host has built it, not the moment its repo tags it. Cache
+  garbage collection can also evict an artifact a pin still names, so
+  baseline-referenced artifacts should be kept under a GC root or pushed to an
+  archive. Without that, a pinned reference can turn into a fetch miss.
+- **Road not taken.** A per-repo `just-us` flake input plus a `conform`
+  brownfield fixer was evaluated and dropped in favour of the run-time
+  profile. It is recorded here so it is not proposed again as new.
+
 ## Examples
 
 Already real — scaffolding a NEW repo from the published template channel:
