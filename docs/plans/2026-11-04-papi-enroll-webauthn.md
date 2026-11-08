@@ -831,8 +831,16 @@ through `piggy manage --jsonrpc`, answering its `secret.request` on the pipe
 **Correction to the table above.** The table missed one exposure: `--pin
 <value>` puts the PIN on **papi's own** command line, which is readable in
 the same way as piggy's. papi therefore also takes `--pin-file <path>` (the
-first line of a file, e.g. `/dev/fd/3`) and warns whenever `--pin` is used.
-Removing `--pin` altogether is an operator call; it is kept for now.
+first line of a file, e.g. `/dev/fd/3`).
+
+**Ruled and done (operator, 2026-11-08): `--pin` is removed outright.** No papi
+command takes the PIN as a value (a test walks the command tree and fails if
+one regains a `--pin`). Without `--pin-file`, papi holds no PIN and calls
+`piggy sign-bytes` with no `-P`; piggy asks through `SSH_ASKPASS`, which is
+`piggy-askpass-gtk`, the GTK dialog, when it is on `PATH` (piggy-agent(1), PIN
+PROMPTS; read 2026-11-08). papi does not set or override `SSH_ASKPASS`,
+`SSH_ASKPASS_REQUIRE` or `PIGGY_ASKPASS_GTK`: an operator who wants the dialog
+on a terminal host sets them. `--pin-file` stays for scripted runs.
 
 ## 12. First things to check when a card is available (UNVERIFIED today)
 
@@ -847,3 +855,33 @@ Removing `--pin` altogether is an operator call; it is kept for now.
 - `fido2-token -C` (changing an existing FIDO2 PIN to the PIV PIN, §3 step 4)
   keeps existing FIDO2 credentials, and a LUKS keyslot enrolled with a client
   PIN then unlocks with the new PIN.
+
+Checks added 2026-11-08, for the code that now exists. Each one is a guess in
+the code, taken from libfido2 1.17.0's man pages and `tools/token.c`:
+
+- `fido2-token -L` prints `<path>: vendor=0x…, product=0x… (<mfr> <product>)`
+  (`parseFIDODeviceList`).
+- `fido2-token -I <dev>` prints `aaguid: <32 hex, no dashes>` and an
+  `options:` line where a false option is the name with a `no` prefix, for
+  example `noclientPin` (`parseFIDOInfo`). The code reads `clientPin`,
+  `alwaysUv`.
+- `fido2-cred -M` with `-i`/`-o` files still takes the PIN and touch on the
+  terminal, and writes the seven lines: client data hash, rp id, fmt,
+  CBOR-wrapped authData, credential id, attestation signature, certificate
+  (`parseMadeCredential`).
+- `fido2-assert -G -t up=true -t uv=false -t pin=false` is accepted, asks for no
+  PIN, and writes four lines: hash, rp id, CBOR-wrapped authData, signature.
+  `fido2-assert -G -v` asks for the PIN (`--check-uv`).
+- The assertion signature `fido2-assert` prints is ASN.1 DER, as
+  `webauthn.VerifyAssertion` expects.
+- `piggy manage --jsonrpc` `sign_bytes` with a real card: piggy sends exactly
+  one `secret.request` of kind `current_pin`, and the answer is accepted
+  (`ManageSignBytesSigner`).
+- With `piggy-askpass-gtk` on `PATH`, the no-PIN path shows the GTK dialog.
+- The 9A PIN policy `once` holds across the new card's two signatures when each
+  runs in its own `piggy manage` process.
+- `--webauthn` aborts with a clear message when a second FIDO device or card
+  is attached.
+- The AAGUID `fido2-token -I` prints for the operator's YubiKey 5 equals the
+  one in Yubico's published list (the list `DefaultAAGUIDs` should be copied
+  from).
