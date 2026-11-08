@@ -93,8 +93,7 @@ whichever pair the target accepts.
 | `--auth-key-id` | slot-9A id to authenticate as; runs the RECOMMENDED §5.2 sign-challenge handshake                 |
 | `--signer`      | slot-9A signer for `--auth-key-id`: `auto` ($SSH_AUTH_SOCK agent, else piggy sign-bytes), `agent`, `pcsc` |
 | `--sign-guid`   | GUID of the slot-9A card to sign with (default: the sole provisioned card)                        |
-| `--pin-file`    | read the PIV PIN for slot-9A signing from the first line of a file (e.g. `/dev/fd/3`)              |
-| `--pin`         | PIV PIN as a value; visible in the host's process list, so prefer `--pin-file` (papi warns)       |
+| `--pin-file`    | read the PIV PIN for slot-9A signing from the first line of a file (e.g. `/dev/fd/3`) for scripted runs; default: piggy asks for it through `SSH_ASKPASS` (its GTK prompt) |
 | `--recipient`   | slot-9D id for the OPTIONAL, legacy decrypt-challenge scheme                                      |
 | `--decrypt-cmd` | shell command that reads the challenge ebox (base64) on stdin and writes the nonce on stdout      |
 
@@ -521,8 +520,10 @@ to feed that whole enveloped response on stdin and read the challenge from `.dat
 `--domain` is the PAPI identity domain the signature binds to — it is **never
 echoed** by the challenge (cross-site relay defense), so you supply it. With no
 `--guid` the sole provisioned card is used. piggy asks for the slot-9A PIN
-itself, or `--pin-file` hands it to papi without putting it on a command line;
-either way it reaches piggy on a pipe (`piggy manage`'s `secret.request`). The
+itself (through `SSH_ASKPASS`; its GTK prompt when `piggy-askpass-gtk` is on
+`PATH`), or `--pin-file` hands it to papi, which answers piggy's
+`secret.request` on a pipe. No flag takes the PIN as a value, since an argument
+is readable by every user on the host. The
 command does no network I/O itself — the caller POSTs the body and the server
 verifies it against the registered slot-9A key, minting a session.
 

@@ -25,7 +25,7 @@ import (
 //     likely to drift silently if five copies become one.
 //
 // It deliberately does NOT assert help text: the five sites already word --signer and
-// --pin three different ways, and pinning that would be pinning the mess rather than
+// --pin-file three different ways, and pinning that would be pinning the mess rather than
 // the contract.
 func TestSignerFlagsRegisteredAtEverySite(t *testing.T) {
 	sites := []struct {
@@ -61,8 +61,8 @@ func TestSignerFlagsRegisteredAtEverySite(t *testing.T) {
 			} else if signerDefault != "auto" {
 				t.Errorf("--signer defaults to %q, want \"auto\" (every site agrees on this)", signerDefault)
 			}
-			if _, ok := flagDefault(cmd, "pin"); !ok {
-				t.Error("missing --pin")
+			if _, ok := flagDefault(cmd, "pin-file"); !ok {
+				t.Error("missing --pin-file")
 			}
 			if _, ok := flagDefault(cmd, site.guidFlag); !ok {
 				t.Errorf("missing --%s (this site's card selector)", site.guidFlag)

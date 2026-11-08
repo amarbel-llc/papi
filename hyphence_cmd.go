@@ -33,7 +33,8 @@ func newHyphenceCmd() *cobra.Command {
 }
 
 func newHyphenceSignCmd() *cobra.Command {
-	var purpose, guid, pin, signerMode string
+	var purpose, guid, signerMode string
+	var pinFlag pinFlags
 	cmd := &cobra.Command{
 		Use:   "sign --purpose <purpose>",
 		Short: "Sign a hyphence document, body included, with slot-9A",
@@ -47,7 +48,7 @@ func newHyphenceSignCmd() *cobra.Command {
 			"$SSH_AUTH_SOCK when it is set — piggy-agent, local or forwarded — and otherwise " +
 			"directly over PCSC via `piggy sign-bytes --slot 9a`, which needs the card attached " +
 			"locally; agent and pcsc force one path. With no --guid the pcsc path uses the sole " +
-			"provisioned card; --pin passes the slot-9A PIN to piggy. `papi hyphence verify` " +
+			"provisioned card; --pin-file gives papi the slot-9A PIN for scripted runs, else piggy asks for it. `papi hyphence verify` " +
 			"and `papi hyphence resolve` are the consumer-side inverses.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -55,6 +56,10 @@ func newHyphenceSignCmd() *cobra.Command {
 			raw, err := io.ReadAll(cmd.InOrStdin())
 			if err != nil {
 				return fmt.Errorf("read hyphence document from stdin: %w", err)
+			}
+			pin, err := pinFlag.resolve()
+			if err != nil {
+				return err
 			}
 			signer, signGUID, err := hyphenceSignSignerFn(ctx, signerMode, guid, pin, "")
 			if err != nil {
@@ -72,8 +77,7 @@ func newHyphenceSignCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("purpose")
 	cmd.Flags().StringVar(&guid, "guid", "",
 		"GUID of the slot-9A card to sign with (default: the sole provisioned card)")
-	cmd.Flags().StringVar(&pin, "pin", "",
-		"PIV PIN for slot-9A signing (passed to piggy sign-bytes -P; may be required by the card's PIN policy)")
+	pinFlag.register(cmd, false)
 	cmd.Flags().StringVar(&signerMode, "signer", "auto",
 		"slot-9A signer: auto ($SSH_AUTH_SOCK agent if set, else piggy sign-bytes), agent, or pcsc")
 	return cmd

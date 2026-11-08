@@ -25,7 +25,7 @@ debugging.
 
 ## Interface
 
-`papi auth <domain> --auth-key-id <slot-9A id> [--signer … --guid … --pin …]` (or the
+`papi auth <domain> --auth-key-id <slot-9A id> [--signer … --guid … --pin-file …]` (or the
 legacy `--recipient <id> --decrypt-cmd <cmd>`) runs the full §5 handshake — discovery
 → challenge → sign → response — and prints the **minted session**, then exits. It
 performs one card operation and makes no further requests; the session is the caller's
