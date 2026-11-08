@@ -46,10 +46,11 @@ or piggy's own GTK askpass prompt); `--add-webauthn` (§3, Q3: the card's 9A
 must be published, and a different card attests); `--check-uv`.
 
 AAGUID allowlist: the operator ruled that papi ships a default YubiKey 5 list
-in source. `enroll.DefaultAAGUIDs` is wired and **empty**: the values must be
-copied from Yubico's published list, and the session could not read it (web
-fetch denied under dontAsk). Until a reviewed commit fills it, enroll refuses
-every model and names the AAGUID it saw, so `--webauthn-aaguid` is required.
+in source. `enroll.DefaultAAGUIDs` is wired and holds **one** entry, observed on the
+operator's own key via `fido2-token -I` on 2026-11-08 (check 1, §12). The rest
+must be copied from Yubico's published list, which no session could read (web
+fetch denied under dontAsk). Until a reviewed commit adds them, enroll refuses
+every other model and names the AAGUID it saw, so `--webauthn-aaguid` is needed.
 
 Not built:
 - the browser fallback (Q7);
@@ -884,4 +885,32 @@ the code, taken from libfido2 1.17.0's man pages and `tools/token.c`:
   is attached.
 - The AAGUID `fido2-token -I` prints for the operator's YubiKey 5 equals the
   one in Yubico's published list (the list `DefaultAAGUIDs` should be copied
-  from).
+  from). STILL UNVERIFIED: the comparison against Yubico's page has not been
+  made.
+
+### Check 1 result: OBSERVED by the operator, 2026-11-08
+
+Pasted into the session by the operator, from his own key. The text below is
+the operator's report as relayed; the exact line layout of `fido2-token -I` was
+not pasted, only the values.
+
+- `fido2-token -L`: `/dev/hidraw4: vendor=0x1050, product=0x0407 (Yubico YubiKey
+  OTP+FIDO+CCID)`. Matches the `parseFIDODeviceList` shape.
+- `fido2-token -I /dev/hidraw4`: proto 0x02, major 0x05, minor 0x02, build 0x07
+  (device version 5.2.7 as printed), caps 0x05 (wink, cbor, msg), version
+  strings U2F_V2, FIDO_2_0, FIDO_2_1_PRE, extensions credProtect and
+  hmac-secret, transports nfc and usb, algorithms es256 and eddsa,
+  `aaguid: 2fc0579f811347eab116bb5a8db9202a` (32 hex, no dashes), `options: rk,
+  up, noplat, clientPin, credentialMgmtPreview`, pin protocols 1, pin retries 8,
+  pin change required false, uv retries undefined, maxcredcntlst 8, maxcredlen
+  128.
+- Confirmed by this: the AAGUID is bare 32 hex without dashes; options are bare
+  words, `no`-prefixed when false (`noplat`). `parseFIDOInfo` reads both
+  (`TestParseFIDOInfoObservedYubiKey`).
+- Learned: no `uv` option is listed (the key has a PIN, no built-in UV), and no
+  `alwaysUv` option is listed, so `alwaysUv` is absent rather than false; the
+  code treats absent as not set, which is right. `FIDO_2_1_PRE` with
+  `credentialMgmtPreview` means this key reports a pre-release FIDO 2.1.
+- `DefaultAAGUIDs` now holds this one model, observed, NOT copied from Yubico's
+  page. Other YubiKey 5 variants still need a reviewed copy of Yubico's list.
+- Checks 2-6 and the remaining items stay the operator's at the card.

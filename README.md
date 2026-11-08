@@ -445,8 +445,9 @@ sign commits — pass `--no-gh-register` to skip (e.g. enrolling for someone els
   FIDO2 PIN to the PIV PIN at their prompt, and touch the key for a touch-only
   self-check. The receipt becomes a `papi-enroll-receipt-v2`. `--webauthn-rp-id`
   sets the relying party (default: `<domain>`). The authenticator model must be
-  on papi's pinned YubiKey 5 AAGUID allowlist (`enroll.DefaultAAGUIDs`, which is
-  still empty: see its comment) or added with `--webauthn-aaguid <hex>`; enroll
+  on papi's pinned YubiKey 5 AAGUID allowlist (`enroll.DefaultAAGUIDs`, which holds
+  one model, observed on the operator's key and not copied from Yubico's page:
+  see its comment) or added with `--webauthn-aaguid <hex>`; enroll
   refuses any other model and names the AAGUID it saw. A card still on the
   factory PIV PIN is refused. Until piggy can report that
   (linenisgreat/piggy#353), you must confirm it with `--assume-pin-changed`.

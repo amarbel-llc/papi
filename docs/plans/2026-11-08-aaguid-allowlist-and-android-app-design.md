@@ -18,8 +18,10 @@ search and targeted reads; it is 1,110 lines), circus
 
 ### What exists (O)
 
-- `enroll.DefaultAAGUIDs` is a compiled-in list, **empty** on purpose, because
-  no verifiable Yubico source could be read (`webauthn_phase.go:111-121`).
+- `enroll.DefaultAAGUIDs` is a compiled-in list. It was empty when this note
+  was written; it now holds one entry observed on the operator's key (see the
+  webauthn plan §12, check 1), because no verifiable Yubico source could be
+  read (`webauthn_phase.go:111-125`).
 - `--webauthn-aaguid` adds a value at run time. The effective list passed to
   the phase is the default plus the flag values, normalized (lowercase, no
   dashes) (`webauthn_phase.go:123-127`, `194-197`).

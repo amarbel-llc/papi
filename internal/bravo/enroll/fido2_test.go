@@ -304,6 +304,40 @@ func TestWebAuthnPhaseNoUVByDefault(t *testing.T) {
 	}
 }
 
+// The values the operator read off his own key with `fido2-token -I` on
+// 2026-11-08 (hardware check 1). The line layout is rebuilt from his report, so
+// the values are observed and the spacing is not.
+func TestParseFIDOInfoObservedYubiKey(t *testing.T) {
+	const observed = "proto: 0x02\nmajor: 0x05\nminor: 0x02\nbuild: 0x07\ncaps: 0x05 (wink, cbor, msg)\n" +
+		"version strings: U2F_V2, FIDO_2_0, FIDO_2_1_PRE\nextension strings: credProtect, hmac-secret\n" +
+		"transport strings: nfc, usb\nalgorithms: es256 (public-key), eddsa (public-key)\n" +
+		"aaguid: 2fc0579f811347eab116bb5a8db9202a\n" +
+		"options: rk, up, noplat, clientPin, credentialMgmtPreview\n" +
+		"maxcredcntlst: 8\nmaxcredlen: 128\npin protocols: 1\npin retries: 8\npin change required: false\n"
+	info, err := parseFIDOInfo([]byte(observed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.AAGUID != "2fc0579f811347eab116bb5a8db9202a" {
+		t.Errorf("aaguid = %q", info.AAGUID)
+	}
+	want := map[string]bool{"rk": true, "up": true, "plat": false, "clientPin": true, "credentialMgmtPreview": true}
+	for k, v := range want {
+		if got, ok := info.Options[k]; !ok || got != v {
+			t.Errorf("option %s = %v (present %v), want %v", k, got, ok, v)
+		}
+	}
+	if _, present := info.Options["alwaysUv"]; present {
+		t.Error("alwaysUv is absent from this key's options and must stay absent")
+	}
+	if !slices.Contains(DefaultAAGUIDs, "2fc0579f-8113-47ea-b116-bb5a8db9202a") {
+		t.Error("the observed AAGUID should be in DefaultAAGUIDs")
+	}
+	if NormalizeAAGUID(DefaultAAGUIDs[0]) != info.AAGUID {
+		t.Error("the seeded dashed form should normalize to the bare hex fido2-token prints")
+	}
+}
+
 func TestNormalizeAAGUIDAndDefaults(t *testing.T) {
 	if got := NormalizeAAGUID(" EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE "); got != testAAGUID {
 		t.Errorf("NormalizeAAGUID = %q, want %q", got, testAAGUID)

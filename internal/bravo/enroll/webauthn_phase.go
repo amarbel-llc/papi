@@ -112,13 +112,17 @@ func (p WebAuthnPhase) Run(ctx context.Context, signer Signer, newCard Card, rpI
 // source and changed only by a reviewed commit (operator ruling on
 // amarbel-llc/circus#414). `--webauthn-aaguid` adds to it at run time.
 //
-// EMPTY, deliberately: the values must be copied from Yubico's published list
-// ("YubiKey Hardware FIDO2 AAGUIDs", support.yubico.com), and the session that
-// wrote this could not read that page (web fetch was denied). An AAGUID typed
-// from memory would be an unverified trust anchor. Until the list is filled in
-// by a commit that cites the page and its date, enroll refuses every model and
-// names the AAGUID it saw, so the operator passes --webauthn-aaguid.
-var DefaultAAGUIDs = []string{}
+// ONE ENTRY, deliberately: the values should be copied from Yubico's published
+// list ("YubiKey Hardware FIDO2 AAGUIDs", support.yubico.com), which no session
+// has been able to read (web fetch was denied). An AAGUID typed from memory
+// would be an unverified trust anchor, so the only entry is one OBSERVED by the
+// operator: 2fc0579f-8113-47ea-b116-bb5a8db9202a, printed by `fido2-token -I`
+// on the operator's own key on 2026-11-08 (device version 5.2.7 as printed),
+// NOT copied from Yubico's page. Other YubiKey 5 variants still need a reviewed
+// copy of that list (a commit citing the page and its date); until then enroll
+// refuses them and names the AAGUID it saw, so the operator passes
+// --webauthn-aaguid.
+var DefaultAAGUIDs = []string{"2fc0579f-8113-47ea-b116-bb5a8db9202a"}
 
 // NormalizeAAGUID lowercases an AAGUID and drops dashes, so the dashed UUID form
 // Yubico publishes and the bare hex fido2-token prints compare equal.
