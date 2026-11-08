@@ -444,11 +444,16 @@ sign commits — pass `--no-gh-register` to skip (e.g. enrolling for someone els
   libfido2's `fido2-*` tools with only the new card attached. You set the
   FIDO2 PIN to the PIV PIN at their prompt, and touch the key for a touch-only
   self-check. The receipt becomes a `papi-enroll-receipt-v2`. `--webauthn-rp-id`
-  sets the relying party (default: `<domain>`). `--webauthn-aaguid <hex>`
-  allowlists the authenticator model; with none, enroll refuses and names the
-  AAGUID it saw. A card still on the factory PIV PIN is refused. Until piggy
-  can report that (linenisgreat/piggy#353), you must confirm it with
-  `--assume-pin-changed`.
+  sets the relying party (default: `<domain>`). The authenticator model must be
+  on papi's pinned YubiKey 5 AAGUID allowlist (`enroll.DefaultAAGUIDs`, which is
+  still empty: see its comment) or added with `--webauthn-aaguid <hex>`; enroll
+  refuses any other model and names the AAGUID it saw. A card still on the
+  factory PIV PIN is refused. Until piggy can report that
+  (linenisgreat/piggy#353), you must confirm it with `--assume-pin-changed`.
+  `--check-uv` adds a user-verified self-check (one more PIN entry).
+- `--add-webauthn` — give an already-enrolled card a credential (implies
+  `--webauthn`). It needs `--new-guid` and a **different** `--trusted-guid` to
+  attest, and the card's slot-9A key must already be published on `<domain>`.
 
 Pair it with `verify-receipt` on the deploy side.
 

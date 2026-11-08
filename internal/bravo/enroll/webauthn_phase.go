@@ -43,8 +43,12 @@ type WebAuthnPhase struct {
 	ListCards        func(ctx context.Context) ([]CardState, error)
 	PINState         PINStateReader
 	AssumePINChanged bool
-	// AllowedAAGUIDs is the operator's allowlist of authenticator models
-	// (lowercase hex, no dashes). Empty refuses every model, naming the one seen.
+	// CheckUV also proves the FIDO2 PIN: one more PIN entry and touch for a
+	// user-verified assertion, after the touch-only one.
+	CheckUV bool
+	// AllowedAAGUIDs is the allowlist of authenticator models (DefaultAAGUIDs plus
+	// whatever the operator adds). Hex, with or without dashes. Empty refuses
+	// every model, naming the one seen.
 	AllowedAAGUIDs []string
 	Out            io.Writer
 	// WaitForOperator shows msg and returns once the operator is ready.
@@ -95,7 +99,54 @@ func (p WebAuthnPhase) Run(ctx context.Context, signer Signer, newCard Card, rpI
 	if err := p.FIDO2.AssertTouchOnly(ctx, dev, cred); err != nil {
 		return nil, err
 	}
+	if p.CheckUV {
+		fmt.Fprintln(p.Out, "Checking the FIDO2 PIN: enter it, then touch the key.")
+		if err := p.FIDO2.AssertWithPIN(ctx, dev, cred); err != nil {
+			return nil, err
+		}
+	}
 	return BuildWebAuthnBlock(ctx, signer, newCard, rpID, made)
+}
+
+// DefaultAAGUIDs is the YubiKey 5 series AAGUID allowlist papi ships, pinned in
+// source and changed only by a reviewed commit (operator ruling on
+// amarbel-llc/circus#414). `--webauthn-aaguid` adds to it at run time.
+//
+// EMPTY, deliberately: the values must be copied from Yubico's published list
+// ("YubiKey Hardware FIDO2 AAGUIDs", support.yubico.com), and the session that
+// wrote this could not read that page (web fetch was denied). An AAGUID typed
+// from memory would be an unverified trust anchor. Until the list is filled in
+// by a commit that cites the page and its date, enroll refuses every model and
+// names the AAGUID it saw, so the operator passes --webauthn-aaguid.
+var DefaultAAGUIDs = []string{}
+
+// NormalizeAAGUID lowercases an AAGUID and drops dashes, so the dashed UUID form
+// Yubico publishes and the bare hex fido2-token prints compare equal.
+func NormalizeAAGUID(s string) string {
+	return strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), "-", ""))
+}
+
+// RequireAddable checks that a card already enrolled on the domain may be
+// given a WebAuthn credential (`--add-webauthn`, plan Q3): its slot-9A key must
+// already be published on the domain's /papi/piggy-ids, and the card that will
+// attest must be a different one, since a card cannot attest its own reach.
+func RequireAddable(ctx context.Context, c *papi.Client, newCard Card, trustedGUID string) error {
+	if guidEqual(newCard.GUID, trustedGUID) {
+		return fmt.Errorf("--add-webauthn needs a different, already-trusted card to attest (--trusted-guid); a card cannot attest its own credential")
+	}
+	body, status, err := c.PiggyIDs(ctx)
+	if err != nil {
+		return fmt.Errorf("--add-webauthn: read the domain's /papi/piggy-ids: %w", err)
+	}
+	if status != 200 {
+		return fmt.Errorf("--add-webauthn: /papi/piggy-ids returned HTTP %d", status)
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && f[0] == newCard.SSHID {
+			return nil
+		}
+	}
+	return fmt.Errorf("--add-webauthn: card %s's slot-9A key is not published on the domain; enroll it first (without --add-webauthn)", newCard.GUID)
 }
 
 // checkPIVPIN refuses a card still on the factory PIV PIN, and one whose state
@@ -142,7 +193,7 @@ func (p WebAuthnPhase) preflight(ctx context.Context, newGUID string) (string, F
 	}
 	allowed := make([]string, len(p.AllowedAAGUIDs))
 	for i, a := range p.AllowedAAGUIDs {
-		allowed[i] = strings.ToLower(strings.ReplaceAll(a, "-", ""))
+		allowed[i] = NormalizeAAGUID(a)
 	}
 	switch {
 	case !slices.Contains(allowed, info.AAGUID):

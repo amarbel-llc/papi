@@ -12,11 +12,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"code.linenisgreat.com/papi/internal/0/webauthn"
+	"code.linenisgreat.com/papi/internal/alfa/papi"
 )
 
 const testAAGUID = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" // testAuthDataFor's AAGUID
@@ -64,6 +68,7 @@ type fakeAuthenticator struct {
 	credID    []byte
 	regFlags  byte
 	assertUP  bool
+	assertUV  bool
 	calls     []string
 	failMake  bool
 	pinWasSet bool
@@ -74,7 +79,7 @@ func newFakeAuthenticator(t *testing.T, info string) *fakeAuthenticator {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fakeAuthenticator{t: t, info: info, priv: priv, credID: []byte("fake-credential-id"), regFlags: regFlags, assertUP: true}
+	return &fakeAuthenticator{t: t, info: info, priv: priv, credID: []byte("fake-credential-id"), regFlags: regFlags, assertUP: true, assertUV: true}
 }
 
 func (a *fakeAuthenticator) run(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
@@ -139,6 +144,9 @@ func (a *fakeAuthenticator) irun(_ context.Context, name string, args ...string)
 		var flags byte
 		if a.assertUP {
 			flags = webauthn.FlagUP
+		}
+		if slices.Contains(args, "-v") && a.assertUV {
+			flags |= webauthn.FlagUV
 		}
 		ad.WriteByte(flags)
 		_ = binary.Write(&ad, binary.BigEndian, uint32(7))
@@ -250,6 +258,100 @@ func TestWebAuthnPhaseRefusals(t *testing.T) {
 		if _, err := p.Run(context.Background(), f.signer, f.card, testRPID); err == nil {
 			t.Errorf("%s: want a refusal", name)
 		}
+	}
+}
+
+// --check-uv adds a user-verified assertion, and fails when the key will not
+// sign UV.
+func TestWebAuthnPhaseCheckUV(t *testing.T) {
+	f := newV2Fixture(t)
+	a := newFakeAuthenticator(t, fakeInfoNoPIN)
+	p := f.phase(a)
+	p.CheckUV = true
+	if _, err := p.Run(context.Background(), f.signer, f.card, testRPID); err != nil {
+		t.Fatalf("Run with --check-uv: %v", err)
+	}
+	var withPIN bool
+	for _, c := range a.calls {
+		if strings.HasPrefix(c, "fido2-assert ") && strings.Contains(c, " -v ") {
+			withPIN = true
+		}
+	}
+	if !withPIN {
+		t.Errorf("--check-uv should run fido2-assert -v; calls: %v", a.calls)
+	}
+
+	a = newFakeAuthenticator(t, fakeInfoNoPIN)
+	a.assertUV = false
+	p = f.phase(a)
+	p.CheckUV = true
+	if _, err := p.Run(context.Background(), f.signer, f.card, testRPID); err == nil {
+		t.Error("a key that does not sign UV should fail --check-uv")
+	}
+}
+
+// Without --check-uv the PIN assertion is not run.
+func TestWebAuthnPhaseNoUVByDefault(t *testing.T) {
+	f := newV2Fixture(t)
+	a := newFakeAuthenticator(t, fakeInfoNoPIN)
+	if _, err := f.phase(a).Run(context.Background(), f.signer, f.card, testRPID); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range a.calls {
+		if strings.HasPrefix(c, "fido2-assert ") && strings.Contains(c, " -v ") {
+			t.Errorf("no PIN assertion expected without --check-uv, got %q", c)
+		}
+	}
+}
+
+func TestNormalizeAAGUIDAndDefaults(t *testing.T) {
+	if got := NormalizeAAGUID(" EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE "); got != testAAGUID {
+		t.Errorf("NormalizeAAGUID = %q, want %q", got, testAAGUID)
+	}
+	for _, a := range DefaultAAGUIDs {
+		if n := NormalizeAAGUID(a); len(n) != 32 || !hexOnly.MatchString(n) {
+			t.Errorf("default AAGUID %q is not 16 bytes of hex", a)
+		}
+	}
+	// A dashed allowlist entry matches fido2-token's bare hex.
+	f := newV2Fixture(t)
+	a := newFakeAuthenticator(t, fakeInfoNoPIN)
+	p := f.phase(a)
+	p.AllowedAAGUIDs = []string{"EEEEEEEE-EEEE-EEEE-EEEE-EEEEEEEEEEEE"}
+	if _, err := p.Run(context.Background(), f.signer, f.card, testRPID); err != nil {
+		t.Errorf("a dashed uppercase allowlist entry should match: %v", err)
+	}
+}
+
+// --add-webauthn: the card's 9A key must already be published, and a different
+// card must attest.
+func TestRequireAddable(t *testing.T) {
+	f := newV2Fixture(t)
+	serve := func(body string) *papi.Client {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/papi/piggy-ids", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/plain")
+			_, _ = w.Write([]byte(body))
+		})
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		c, err := papi.NewClient(srv.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	published := serve("# piggy-ids\n" + testRecipientID + "\n" + f.card.SSHID + "  # laptop\n")
+	if err := RequireAddable(context.Background(), published, f.card, f.trusted.guid); err != nil {
+		t.Errorf("a published card with a different attester should be addable: %v", err)
+	}
+	if err := RequireAddable(context.Background(), published, f.card, f.card.GUID); err == nil {
+		t.Error("a card must not attest its own credential")
+	}
+	unpublished := serve("# piggy-ids\n" + testRecipientID + "\n")
+	if err := RequireAddable(context.Background(), unpublished, f.card, f.trusted.guid); err == nil ||
+		!strings.Contains(err.Error(), "not published") {
+		t.Errorf("an unpublished card should be refused as not published, got %v", err)
 	}
 }
 

@@ -193,10 +193,25 @@ func parseMadeCredential(out []byte) (MadeCredential, error) {
 }
 
 // AssertTouchOnly runs `fido2-assert -G -t up=true -t uv=false -t pin=false` for
-// credID on the terminal (the operator touches the key, no PIN) and verifies
-// the result as a tier-1 assertion. It proves on the hardware that the
+// the credential on the terminal (the operator touches the key, no PIN) and
+// verifies the result as a tier-1 assertion. It proves on the hardware that the
 // credential is usable with a touch alone when its id is supplied.
 func (f FIDO2) AssertTouchOnly(ctx context.Context, dev string, cred webauthn.Credential) error {
+	return f.assert(ctx, dev, cred, "touch-only", webauthn.AssuranceTouch,
+		"-t", "up=true", "-t", "uv=false", "-t", "pin=false")
+}
+
+// AssertWithPIN runs `fido2-assert -G -v` for the credential on the terminal
+// (the operator enters the FIDO2 PIN and touches the key) and verifies the
+// result as a tier-2 assertion: user verification must be signed. It proves the
+// FIDO2 PIN works for the credential (`--check-uv`; one more PIN entry).
+func (f FIDO2) AssertWithPIN(ctx context.Context, dev string, cred webauthn.Credential) error {
+	return f.assert(ctx, dev, cred, "PIN", webauthn.AssurancePIN, "-v")
+}
+
+// assert gets one assertion for cred with the given fido2-assert flags and
+// requires it to prove at least want.
+func (f FIDO2) assert(ctx context.Context, dev string, cred webauthn.Credential, what string, want webauthn.Assurance, flags ...string) error {
 	cdh := make([]byte, 32)
 	if _, err := rand.Read(cdh); err != nil {
 		return err
@@ -204,7 +219,9 @@ func (f FIDO2) AssertTouchOnly(ctx context.Context, dev string, cred webauthn.Cr
 	b64 := base64.StdEncoding.EncodeToString
 	in := strings.Join([]string{b64(cdh), cred.RPID, b64(cred.ID)}, "\n") + "\n"
 	out, err := f.withFiles(in, func(inPath, outPath string) error {
-		return f.irun()(ctx, "fido2-assert", "-G", "-t", "up=true", "-t", "uv=false", "-t", "pin=false", "-i", inPath, "-o", outPath, dev)
+		args := append([]string{"-G"}, flags...)
+		args = append(args, "-i", inPath, "-o", outPath, dev)
+		return f.irun()(ctx, "fido2-assert", args...)
 	})
 	if err != nil {
 		return fmt.Errorf("fido2-assert -G: %w", err)
@@ -214,9 +231,9 @@ func (f FIDO2) AssertTouchOnly(ctx context.Context, dev string, cred webauthn.Cr
 		return err
 	}
 	if _, got, err := webauthn.VerifyAssertion(cred, authData, cdh, sig); err != nil {
-		return fmt.Errorf("touch-only self-check: %w", err)
-	} else if got < webauthn.AssuranceTouch {
-		return fmt.Errorf("touch-only self-check: assurance %d, want at least touch", got)
+		return fmt.Errorf("%s self-check: %w", what, err)
+	} else if got < want {
+		return fmt.Errorf("%s self-check: assurance %d, want at least %d", what, got, want)
 	}
 	return nil
 }

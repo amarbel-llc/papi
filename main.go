@@ -26,6 +26,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -2765,7 +2766,7 @@ func enrollGUIDFile(guid string) string {
 func newEnrollCmd() *cobra.Command {
 	var newGUID, newSerial, newReader, trustedGUID, out string
 	var pinFlag pinFlags
-	var allowReprovision, noGHRegister, wantWebAuthn, assumePINChanged bool
+	var allowReprovision, noGHRegister, wantWebAuthn, assumePINChanged, addWebAuthn, checkUV bool
 	var rpID string
 	var aaguids []string
 	cmd := &cobra.Command{
@@ -2804,6 +2805,19 @@ func newEnrollCmd() *cobra.Command {
 				return err
 			}
 
+			// --add-webauthn gives an ALREADY-enrolled card a credential: no picker, no
+			// provisioning, and a different trusted card attests (plan Q3), so both
+			// cards are named up front.
+			if addWebAuthn {
+				wantWebAuthn = true
+				switch {
+				case newGUID == "" || trustedGUID == "":
+					return fmt.Errorf("--add-webauthn needs --new-guid (the enrolled card) and --trusted-guid (a different trusted card to attest)")
+				case allowReprovision:
+					return fmt.Errorf("--add-webauthn does not provision; drop --allow-reprovision")
+				}
+			}
+
 			// Enumerate cards only when we must provision or auto-resolve a GUID.
 			var cards []enroll.CardState
 			if newGUID == "" || trustedGUID == "" {
@@ -2825,6 +2839,15 @@ func newEnrollCmd() *cobra.Command {
 			trustedCard, err := enroll.ReadCard(ctx, run, trustedGUID)
 			if err != nil {
 				return fmt.Errorf("read trusted card: %w", err)
+			}
+			if addWebAuthn {
+				dc, err := papi.NewClient(domain)
+				if err != nil {
+					return err
+				}
+				if err := enroll.RequireAddable(ctx, dc, newCard, trustedGUID); err != nil {
+					return err
+				}
 			}
 
 			// Wrap the signer so each PIN-prompting sign is announced with the
@@ -2859,7 +2882,8 @@ func newEnrollCmd() *cobra.Command {
 					ListCards:        func(ctx context.Context) ([]enroll.CardState, error) { return enroll.ListCards(ctx, run) },
 					PINState:         enroll.PIVPINStateUnavailable,
 					AssumePINChanged: assumePINChanged,
-					AllowedAAGUIDs:   aaguids,
+					CheckUV:          checkUV,
+					AllowedAAGUIDs:   append(slices.Clone(enroll.DefaultAAGUIDs), aaguids...),
 					Out:              cmd.ErrOrStderr(),
 					WaitForOperator:  waitForOperator,
 				}
@@ -2940,8 +2964,12 @@ func newEnrollCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&wantWebAuthn, "webauthn", false,
 		"also make a WebAuthn credential on the new card (libfido2's fido2-* tools; the FIDO2 PIN is set to the PIV PIN at their prompt) and write a papi-enroll-receipt-v2")
 	cmd.Flags().StringVar(&rpID, "webauthn-rp-id", "", "WebAuthn relying party id for --webauthn (default: <domain>)")
+	cmd.Flags().BoolVar(&addWebAuthn, "add-webauthn", false,
+		"give an ALREADY-enrolled card a WebAuthn credential (implies --webauthn): needs --new-guid and a different --trusted-guid; the card's slot-9A key must already be published on <domain>")
+	cmd.Flags().BoolVar(&checkUV, "check-uv", false,
+		"for --webauthn: also prove the FIDO2 PIN with a user-verified assertion (one more PIN entry and touch)")
 	cmd.Flags().StringSliceVar(&aaguids, "webauthn-aaguid", nil,
-		"allowlisted authenticator AAGUID (hex) for --webauthn; repeat for several. With none, enroll refuses and names the AAGUID it saw")
+		"add an authenticator AAGUID (hex) to papi's default allowlist for --webauthn; repeat for several. A model on neither list is refused, naming the AAGUID it reported")
 	cmd.Flags().BoolVar(&assumePINChanged, "assume-pin-changed", false,
 		"for --webauthn: proceed although papi cannot yet tell whether the PIV PIN is still the factory default (linenisgreat/piggy#353); you have checked it is not")
 	cmd.MarkFlagsMutuallyExclusive("new-guid", "new-serial", "new-reader")

@@ -41,9 +41,17 @@ The phase refuses a default-PIN card. Its PIN check is stubbed behind
 linenisgreat/piggy#353 and needs `--assume-pin-changed` until piggy can report
 the PIN state.
 
+Also built since (2026-11-08): `--pin` removed (the PIN comes from `--pin-file`
+or piggy's own GTK askpass prompt); `--add-webauthn` (§3, Q3: the card's 9A
+must be published, and a different card attests); `--check-uv`.
+
+AAGUID allowlist: the operator ruled that papi ships a default YubiKey 5 list
+in source. `enroll.DefaultAAGUIDs` is wired and **empty**: the values must be
+copied from Yubico's published list, and the session could not read it (web
+fetch denied under dontAsk). Until a reviewed commit fills it, enroll refuses
+every model and names the AAGUID it saw, so `--webauthn-aaguid` is required.
+
 Not built:
-- `--add-webauthn` for an already-enrolled card (§3, Q3);
-- `--check-uv`;
 - the browser fallback (Q7);
 - the server side (RFC-0001 amendment, `piggy.webauthn_credentials[]`, the
   assertion endpoints and tier groups).
