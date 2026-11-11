@@ -362,6 +362,13 @@ $ papi forge token revoke --host forge.example.com --user sasha --card-login \
 $ papi forge token sweep  --host forge.example.com --user sasha --card-login
 ```
 
+A host with no card can mint with a **login grant** instead (RFC-0001 §5.2.1): the
+operator signs one grant at the card (`papi forge grant sign`), and `mint
+--login-grant <file> --login-key-file <key>` (or `--login-key-agent`) logs in with
+the grant's ed25519 key until the grant expires. The verifier enables grants per
+principal (`--allow-grant-principal`) and the repository limit is the forge's — map
+the principal to a restricted forge account; see `man 7 papi-forge-token`.
+
 `mint --batch <rows> --out <dir>` pre-mints a **pool** under one login (one card
 signature) for a stretch when the card is away (papi#80): `<rows>` holds
 `<repo> <session>` lines whose sessions are operator-chosen slot names, `<dir>` is
