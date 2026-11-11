@@ -45,6 +45,9 @@ const (
 	PurposeEnrollAtt     = "papi-enroll-att-v1"      // PAPI enrollment-receipt attestation (FDR-0001)
 	PurposeAuthSig       = "papi-auth-sig-v1"        // PAPI sign-challenge auth signature (§5.2)
 	PurposePigpenSelfSig = "papi-pigpen-self-sig-v1" // pigpen document self-signature (RFC-0001 §14.2, papi#54)
+	// PurposeLoginGrantSig is a slot-9A signature over a login grant (Amendment 29,
+	// §5.2.1). Draft: RFC-0002 registration is still owed.
+	PurposeLoginGrantSig = "papi-login-grant-sig-v1"
 )
 
 // ID is a parsed markl-id.
