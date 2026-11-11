@@ -67,6 +67,37 @@ func (c *Client) RevokeSession(ctx context.Context, session string) ([]Managed, 
 	return revoked, nil
 }
 
+// RevokeAll deletes EVERY token on the account, whatever its name, and returns them.
+// It exists for an account that serves only login-grant sessions: the grant key's
+// holder picks its own token names and `--ttl 0` writes "never swept", so the
+// name-scoped RevokeSession and Sweep cannot be relied on to end such a window. On any
+// other account it is destructive, which is why the CLI makes the operator type the
+// account name. It keeps going after a failed delete and returns what it removed.
+func (c *Client) RevokeAll(ctx context.Context) ([]Token, error) {
+	if err := c.mustMint(); err != nil {
+		return nil, err
+	}
+	tokens, err := c.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		revoked []Token
+		failed  []error
+	)
+	for _, t := range tokens {
+		if err := c.DeleteByID(ctx, t.ID); err != nil {
+			failed = append(failed, fmt.Errorf("revoke token %q (id %d): %w", t.Name, t.ID, err))
+			continue
+		}
+		revoked = append(revoked, t)
+	}
+	if len(failed) > 0 {
+		return revoked, fmt.Errorf("%d token(s) could not be revoked: %w", len(failed), errors.Join(failed...))
+	}
+	return revoked, nil
+}
+
 // Sweep deletes every papi-minted token whose deadline has passed, and returns
 // them. This is the issuer-side backstop for sessions that crashed without
 // revoking: Forgejo has no native token expiry (forgejo#8837), so the deadline

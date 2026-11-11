@@ -129,6 +129,30 @@ in
       description = "Allowed groups.";
     };
 
+    allowGrantPrincipals = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "nikulin-session" ];
+      description = ''
+        Principals a card-signed LOGIN GRANT may log in as (RFC-0001 §5.2.1). Empty (the
+        default) disables grants entirely. A grant lets an expiring ed25519 software key
+        log in without a card; the principal it assumes must be mapped (by the reverse
+        proxy) to a forge account with only the access the grant holder should have, and
+        must NOT be the principal of any registered card (the verifier refuses that
+        regardless). Grants are accepted at /auth/callback only. Forward-auth mode only.
+      '';
+    };
+
+    grantDenyFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        File of revoked login-grant ids, one per line (`#` comments allowed), as printed
+        by `papi forge grant sign`. Hot-reloaded; a listed grant can no longer log in and
+        its live sessions fail at the next /auth/verify. The file must exist when set.
+      '';
+    };
+
     cookieSecure = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -166,6 +190,14 @@ in
           services.papi-auth-verifier: forward-auth mode needs cookieKeyFile,
           oracleLogin, and externalUrl. For a verify-signature-only verifier, set
           enableVerifySignature = true and leave all three unset.
+        '';
+      }
+      {
+        assertion = forwardAuth || (cfg.allowGrantPrincipals == [ ] && cfg.grantDenyFile == null);
+        message = ''
+          services.papi-auth-verifier: allowGrantPrincipals and grantDenyFile need
+          forward-auth mode; login grants are accepted at /auth/callback only, never by
+          the verify-signature-only verifier.
         '';
       }
     ];
@@ -210,6 +242,14 @@ in
                   cfg.cookieDomain
                 ]
                 ++ lib.optional (!cfg.cookieSecure) "--cookie-secure=false"
+                ++ lib.concatMap (p: [
+                  "--allow-grant-principal"
+                  p
+                ]) cfg.allowGrantPrincipals
+                ++ lib.optionals (cfg.grantDenyFile != null) [
+                  "--grant-deny-file"
+                  (toString cfg.grantDenyFile)
+                ]
               )
               ++ lib.concatMap (p: [
                 "--allow-principal"

@@ -43,6 +43,19 @@ purpose `papi-login-grant-sig-v1` and format `ecdsa_p256_sig`
 differs from `papi-auth-v1`, so a signature valid for one preimage is never valid
 for the other.
 
+`key` MUST be `ssh-ed25519`. `max-session` is a whole number of seconds,
+1 to 86400, without leading zeros. Times are parsed with the exact layout
+`YYYY-MM-DDTHH:MM:SSZ`; any other spelling (offset, fraction, lowercase `z`) is
+rejected, so what is signed is what was typed.
+
+**Encodings.** The login signature is the raw 64-byte ed25519 signature as unpadded
+base64url. At `GET /auth/callback` a grant login sends the query parameters `state`
+(as §5.2), `sig` (the login signature, in place of the card signature), `grant` (the
+grant text, unpadded base64url) and `grant_sig` (the grant signature markl-id). The
+presence of `grant` or `grant_sig` selects the grant path; a request carrying either
+is never evaluated as a card login. A signed grant at rest is the grant text followed
+by exactly one line `grant-sig: <markl-id>` and a final newline.
+
 **Verification.** A verifier MUST accept a grant login only if ALL hold, and MUST
 answer every failure identically to an unregistered key:
 

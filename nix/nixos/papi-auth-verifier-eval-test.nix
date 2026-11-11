@@ -94,8 +94,54 @@ let
             && lib.hasInfix "--oracle-login" exec
             && lib.hasInfix "--external-url" exec
             && lib.hasInfix "--authorized-keys-file" exec
-            && !(lib.hasInfix "--enable-verify-signature" exec);
+            && !(lib.hasInfix "--enable-verify-signature" exec)
+            # login grants are OFF by default: no grant flag is emitted.
+            && !(lib.hasInfix "--allow-grant-principal" exec)
+            && !(lib.hasInfix "--grant-deny-file" exec);
           got = { inherit tripped exec; };
+        };
+    }
+    {
+      name = "login-grants-enabled";
+      cfg = {
+        services.papi-auth-verifier.enable = true;
+        services.papi-auth-verifier.authorizedKeysFile = registry;
+        services.papi-auth-verifier.cookieKeyFile = cookieKey;
+        services.papi-auth-verifier.oracleLogin = oracle;
+        services.papi-auth-verifier.externalUrl = external;
+        services.papi-auth-verifier.allowGrantPrincipals = [ "nikulin-session" ];
+        services.papi-auth-verifier.grantDenyFile = "/var/lib/papi/grant-deny";
+      };
+      check =
+        result:
+        let
+          tripped = trippedMessages result;
+          exec = unitExec result;
+        in
+        {
+          ok =
+            tripped == [ ]
+            && lib.hasInfix "--allow-grant-principal nikulin-session" exec
+            && lib.hasInfix "--grant-deny-file /var/lib/papi/grant-deny" exec;
+          got = { inherit tripped exec; };
+        };
+    }
+    {
+      name = "login-grants-need-forward-auth";
+      cfg = {
+        services.papi-auth-verifier.enable = true;
+        services.papi-auth-verifier.enableVerifySignature = true;
+        services.papi-auth-verifier.authorizedKeysFile = registry;
+        services.papi-auth-verifier.allowGrantPrincipals = [ "nikulin-session" ];
+      };
+      check =
+        result:
+        let
+          tripped = trippedMessages result;
+        in
+        {
+          ok = lib.any (m: lib.hasInfix "allowGrantPrincipals and grantDenyFile need" m) tripped;
+          got = tripped;
         };
     }
     {

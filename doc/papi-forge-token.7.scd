@@ -99,6 +99,18 @@ _dir_ must not exist; papi creates it mode 0700 and writes, per token, a mode-06
 
 *sweep* knows nothing of liveness: a token past its *--ttl* deadline is revoked whether or not something still uses it. Pool tokens meant to last a trip need a TTL at least that long.
 
+# LOGIN GRANTS: MINTING WITHOUT A CARD
+
+A host with no card (a second machine whose sessions must mint their own tokens) can log in with a *login grant* (RFC-0001 5.2.1) instead of *--card-login*. The operator signs one grant at the card; the host then holds an ed25519 software key and the signed grant, and mints until the grant expires.
+
+*papi forge grant sign* --principal _P_ --key-file _KEY.pub_ --domain _D_ --expires _T_ builds the grant for the ed25519 public key in _KEY.pub_ and signs it with the card: one card operation, validated first so a refused request never touches the card. The grant names the principal the key logs in as, the verifier's binding domain, a window of at most 168 hours (expiry exclusive, RFC 3339 UTC with a literal Z), and the longest session it may open. The file is not secret and goes to *--out* or stdout; the grant id is printed to stderr.
+
+*papi forge token mint --login-grant* _FILE_ with *--login-key-file* _PRIVATE_ or *--login-key-agent* drives the same login flow, signing the verifier's nonce with the software key instead of the card. A key file must be an unencrypted OpenSSH ed25519 key readable only by its owner; use the agent for a passphrase-protected key. papi checks the grant locally first (expired, wrong domain, wrong key), so those fail with a precise message rather than the verifier's deliberately generic 401.
+
+The verifier enables grants per principal with *--allow-grant-principal* and refuses any grant naming the principal of a registered card, so a grant can never act as the operator. The cookie it issues lives no longer than the grant, the grant's session cap, or the verifier's own limit, and carries the grant id: adding that id to the verifier's *--grant-deny-file* kills the grant's live sessions at the next request, not only new logins.
+
+What a grant does *not* bound. The verifier sees the login, not the mint, so it cannot limit which repositories or what lifetime a token gets: a grant holder can pass any *--ttl*, including 0 (never swept), and the forge has no token expiry. The repository limit is therefore the forge's: map the grant's principal to a dedicated forge account that is collaborator only on the repositories its holder should reach. When the grant's window ends, disable that account and run *papi forge token revoke --user* _ACCOUNT_ *--all-for-user* _ACCOUNT_ (card or password required), which removes every token on the account, including any whose name papi cannot parse.
+
 # SEE ALSO
 
 *papi*(1), *papi-forge-token-mint*(1), *papi-forge-token-revoke*(1), *papi-forge-token-list*(1), *papi-forge-token-sweep*(1), *papi-forge-check*(1), *piggy*(1)

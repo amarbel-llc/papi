@@ -298,6 +298,7 @@ func newForgeCmd() *cobra.Command {
 	}
 	cmd.AddCommand(newForgeCheckCmd())
 	cmd.AddCommand(newForgeTokenCmd())
+	cmd.AddCommand(newForgeGrantCmd())
 	return cmd
 }
 
@@ -718,12 +719,13 @@ func mintForgeTokenPool(cmd *cobra.Command, f *forgeTokenFlags, batch, out, repo
 
 func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {
 	var (
-		session string
-		id      int64
+		session    string
+		id         int64
+		allForUser string
 	)
 	cmd := &cobra.Command{
 		Use:   "revoke",
-		Short: "Revoke every token minted for a session, or one token by id",
+		Short: "Revoke every token minted for a session, one token by id, or every token on an account",
 		Long: "Revoke the tokens `mint` created for --session. Revoking a session that has no tokens " +
 			"succeeds silently rather than failing: a caller that retries a failed revoke — as a session " +
 			"manager's orphan sweep does — would otherwise retry forever once the token is gone.\n\n" +
@@ -731,18 +733,42 @@ func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {
 			"way to reach one, since --session and `sweep` match on papi's own naming and deliberately " +
 			"cannot see foreign tokens. That guard exists because a sweep once revoked thousands of " +
 			"unrelated tokens; it is safe to bypass here only because the caller names a single token " +
-			"explicitly, one id at a time, with no pattern matching involved. Use `list --all` to find ids.",
+			"explicitly, one id at a time, with no pattern matching involved. Use `list --all` to find ids.\n\n" +
+			"--all-for-user NAME revokes EVERY token on the account, papi-named or not. It is the " +
+			"end-of-window cleanup for an account that exists only for login-grant sessions (a grant " +
+			"key's holder picks its own token names, and --ttl 0 means never swept). On any other " +
+			"account it is destructive, so NAME must repeat --user exactly.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			selectors := 0
+			for _, set := range []bool{session != "", id != 0, allForUser != ""} {
+				if set {
+					selectors++
+				}
+			}
 			switch {
-			case session == "" && id == 0:
-				return errors.New("--session or --id is required")
-			case session != "" && id != 0:
-				return errors.New("--session and --id are different revocations; pass one")
+			case selectors == 0:
+				return errors.New("--session, --id or --all-for-user is required")
+			case selectors > 1:
+				return errors.New("--session, --id and --all-for-user are different revocations; pass one")
+			case allForUser != "" && (f.user == "" || allForUser != f.user):
+				return fmt.Errorf("--all-for-user %q must repeat --user (%q) exactly: it revokes every token on that account",
+					allForUser, f.user)
 			}
 			c, err := f.client(cmd.Context())
 			if err != nil {
 				return err
+			}
+			if allForUser != "" {
+				revoked, err := c.RevokeAll(cmd.Context())
+				for _, t := range revoked {
+					fmt.Fprintf(cmd.OutOrStdout(), "revoked %q (id %d)\n", t.Name, t.ID)
+				}
+				if err != nil {
+					return f.authHint(err)
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "revoked %d token(s) on account %s\n", len(revoked), allForUser)
+				return nil
 			}
 			if id != 0 {
 				return revokeForgeTokenByID(cmd, c, id)
@@ -764,6 +790,8 @@ func newForgeTokenRevokeCmd(f *forgeTokenFlags) *cobra.Command {
 	cmd.Flags().StringVar(&session, "session", "", "session identifier whose tokens to revoke")
 	cmd.Flags().Int64Var(&id, "id", 0,
 		"revoke exactly one token by numeric id, including one papi did not mint (see `list --all`)")
+	cmd.Flags().StringVar(&allForUser, "all-for-user", "",
+		"revoke EVERY token on this account, papi-named or not; must repeat --user exactly (end-of-window cleanup for a grant-only account)")
 	return cmd
 }
 
