@@ -176,6 +176,37 @@ func TestForgeGrantSignRefusals(t *testing.T) {
 	}
 }
 
+// If the output file appears between the early check and the write, the grant is not
+// lost (the card already signed) and the other file is not overwritten.
+func TestForgeGrantSignRaceOnOutKeepsTheSignature(t *testing.T) {
+	withFakeCard(t)
+	dir := t.TempDir()
+	keyFile := writePubKey(t, dir, newMintPub(t), "")
+	out := filepath.Join(dir, "grant")
+
+	orig := signChallengeSignerFn
+	signChallengeSignerFn = func(ctx context.Context, mode, guid, pin, sock string) (signchallenge.Signer, string, error) {
+		s, g, err := orig(ctx, mode, guid, pin, sock)
+		// The file appears after validation, as the signer is built.
+		_ = os.WriteFile(out, []byte("planted"), 0o644)
+		return s, g, err
+	}
+	defer func() { signChallengeSignerFn = orig }()
+
+	stdout, _, err := runForgeGrant(t, "sign", "--principal", "p", "--key-file", keyFile,
+		"--domain", "forge.example", "--not-before", "2026-11-11T00:00:00Z",
+		"--expires", "2026-11-12T00:00:00Z", "--out", out)
+	if err == nil {
+		t.Fatal("overwrote a file that appeared during signing")
+	}
+	if data, _ := os.ReadFile(out); string(data) != "planted" {
+		t.Error("the planted file was overwritten")
+	}
+	if _, _, perr := logingrant.ParseSigned([]byte(stdout)); perr != nil {
+		t.Errorf("the signed grant was not preserved on stdout: %v\n%s", perr, stdout)
+	}
+}
+
 // The card must not be touched when the request is invalid: a refusal costs the
 // operator nothing at the card.
 func TestForgeGrantSignDoesNotTouchTheCardOnBadInput(t *testing.T) {

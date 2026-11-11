@@ -80,12 +80,14 @@ func newForgeGrantSignCmd() *cobra.Command {
 			}
 			file := logingrant.MarshalSigned(text, sig)
 			if out == "" {
-				_, err = cmd.OutOrStdout().Write(file)
-			} else {
-				err = os.WriteFile(out, file, 0o644)
-			}
-			if err != nil {
-				return err
+				if _, err = cmd.OutOrStdout().Write(file); err != nil {
+					return err
+				}
+			} else if err = writeNewFile(out, file); err != nil {
+				// The card has already signed; do not waste that operation. The grant
+				// is not secret, so emit it on stdout and still report the failure.
+				_, _ = cmd.OutOrStdout().Write(file)
+				return fmt.Errorf("--out %s: %w (the signed grant was written to stdout instead)", out, err)
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "grant %s: principal %s, valid %s to %s (exclusive), sessions up to %s\n",
 				g.ID(), g.Principal, g.NotBefore.Format(time.RFC3339), g.Expires.Format(time.RFC3339), g.MaxSession)
@@ -147,6 +149,20 @@ func buildGrantFromFlags(principal, keyFile, domain, notBefore, expires string, 
 	}, nil
 }
 
+// writeNewFile creates path exclusively (no overwrite, no following a symlink planted
+// after the earlier existence check) and writes data to it.
+func writeNewFile(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
 // parseGrantTime accepts only the grant's own time syntax, so what is typed is what is
 // signed.
 func parseGrantTime(flag, v string) (time.Time, error) {
@@ -160,9 +176,9 @@ func parseGrantTime(flag, v string) (time.Time, error) {
 // readGrantPublicKey reads exactly one OpenSSH public key and nothing else: a private
 // key handed here by mistake is refused rather than parsed.
 func readGrantPublicKey(path string) (ssh.PublicKey, error) {
-	data, err := os.ReadFile(path)
+	data, _, err := readRegularFile(path, 16<<10, "--key-file")
 	if err != nil {
-		return nil, fmt.Errorf("--key-file: %w", err)
+		return nil, err
 	}
 	if strings.Contains(string(data), "PRIVATE KEY") {
 		return nil, errors.New("--key-file holds a private key; pass the .pub file")

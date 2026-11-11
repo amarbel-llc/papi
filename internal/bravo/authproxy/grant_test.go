@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -243,8 +244,10 @@ func TestGrantLoginRefusals(t *testing.T) {
 			p := c.goodParams(t, "N1")
 			tw(t, &c, &p)
 			rec := c.callback(t, "N1", p)
-			if rec.Code != http.StatusUnauthorized && rec.Code != http.StatusForbidden {
-				t.Fatalf("callback = %d, want a refusal; body %s", rec.Code, rec.Body.String())
+			// Exactly 401, never a different code: a 403 or 400 would tell a prober which
+			// check failed.
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("callback = %d, want exactly 401; body %s", rec.Code, rec.Body.String())
 			}
 			for _, ck := range rec.Result().Cookies() {
 				if ck.Name == DefaultCookieName {
@@ -353,6 +356,119 @@ func TestCardLoginStillWorksWithGrantsEnabled(t *testing.T) {
 	claims := sessionOf(t, c, rec)
 	if claims.Principal != "tester" || claims.Grant != "" {
 		t.Errorf("card login claims = %+v", claims)
+	}
+}
+
+// idOfText is the grant id of arbitrary text, so a test can sign a login over a grant
+// the strict parser will not build, and be sure the parser is the only thing refusing it.
+func idOfText(text []byte) string {
+	sum := sha256.Sum256(text)
+	return hex.EncodeToString(sum[:16])
+}
+
+// The 168h bound at the verifier, not just in the package: exactly 168h logs in, one
+// second more is refused even with a valid card signature and login signature.
+func TestVerifierEnforcesTheWindowBound(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		extra  time.Duration
+		wantOK bool
+	}{
+		{"exactly 168h", 0, true},
+		{"168h + 1s", time.Second, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := newGrantCase(t, func(g *logingrant.Grant) {
+				g.Expires = g.NotBefore.Add(168 * time.Hour)
+			})
+			text, err := logingrant.Build(c.grant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.extra != 0 {
+				stretched := c.grant.Expires.Add(tc.extra).UTC().Format("2006-01-02T15:04:05Z")
+				old := c.grant.Expires.UTC().Format("2006-01-02T15:04:05Z")
+				text = bytes.Replace(text, []byte("expires: "+old), []byte("expires: "+stretched), 1)
+			}
+			p := grantParams{
+				text:     text,
+				cardSig:  rawGrantSig(t, c.cardPriv, text),
+				loginSig: logingrant.SignLogin(c.keyPriv, testDomain, "N1", idOfText(text)),
+			}
+			rec := c.callback(t, "N1", p)
+			if tc.wantOK && rec.Code != http.StatusFound {
+				t.Errorf("= %d, want 302", rec.Code)
+			}
+			if !tc.wantOK && rec.Code != http.StatusUnauthorized {
+				t.Errorf("= %d, want 401", rec.Code)
+			}
+		})
+	}
+}
+
+// Forgejo resolves usernames case-insensitively, so a card principal differing from
+// the grant principal only in case is the same account and must be refused.
+func TestGrantPrincipalCollisionIgnoresCase(t *testing.T) {
+	c := newGrantCase(t, nil)
+	pub, err := ssh.NewPublicKey(&c.cardPriv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reg, err := ParseRegistry([]byte(strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))) +
+		" piggy slot=9A guid=ABCD1234 cn=Nikulin-Session\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.cfg.Registry = reg
+	if rec := c.callback(t, "N1", c.goodParams(t, "N1")); rec.Code != http.StatusUnauthorized {
+		t.Errorf("a case-variant card principal was not refused: %d", rec.Code)
+	}
+}
+
+// Any registered slot-9A key may sign a grant, but a card the operator has NOT allowed
+// to log in (AllowPrincipals) must not be able to mint a way in through a grant.
+func TestGrantSignerMustBeAnAllowedCard(t *testing.T) {
+	c := newGrantCase(t, nil)
+	c.cfg.AllowPrincipals = Set([]string{"someone-else"})
+	if rec := c.callback(t, "N1", c.goodParams(t, "N1")); rec.Code != http.StatusUnauthorized {
+		t.Errorf("grant signed by a card outside AllowPrincipals = %d, want 401", rec.Code)
+	}
+	c.cfg.AllowPrincipals = Set([]string{"tester"})
+	if rec := c.callback(t, "N1", c.goodParams(t, "N1")); rec.Code != http.StatusFound {
+		t.Errorf("grant signed by an allowed card = %d, want 302", rec.Code)
+	}
+}
+
+// /auth/verify tells the proxy whether a session is a grant session, so it can map it
+// to a restricted account instead of the operator's.
+func TestVerifyEmitsRemoteGrantOnlyForGrantSessions(t *testing.T) {
+	c := newGrantCase(t, nil)
+	get := func(claims SessionClaims) *httptest.ResponseRecorder {
+		cookie, err := MintSession(c.cfg.CookieKey, claims)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodGet, "/auth/verify", nil)
+		req.AddCookie(&http.Cookie{Name: DefaultCookieName, Value: cookie})
+		rec := httptest.NewRecorder()
+		VerifierHandler(c.cfg).ServeHTTP(rec, req)
+		return rec
+	}
+
+	grant := get(SessionClaims{Principal: grantPrincipal, Exp: c.now.Add(time.Hour).Unix(), Grant: c.grant.ID()})
+	if grant.Code != http.StatusOK || grant.Header().Get("Remote-Grant") != c.grant.ID() {
+		t.Errorf("grant session: %d, Remote-Grant %q, want 200 and the grant id", grant.Code, grant.Header().Get("Remote-Grant"))
+	}
+	if grant.Header().Get("Remote-User") != grantPrincipal {
+		t.Errorf("Remote-User = %q", grant.Header().Get("Remote-User"))
+	}
+
+	card := get(SessionClaims{Principal: "tester", Exp: c.now.Add(time.Hour).Unix()})
+	if card.Code != http.StatusOK {
+		t.Fatalf("card session = %d", card.Code)
+	}
+	if _, present := card.Header()["Remote-Grant"]; present {
+		t.Error("a card session carried a Remote-Grant header")
 	}
 }
 

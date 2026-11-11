@@ -96,6 +96,9 @@ func VerifierHandler(cfg VerifierConfig) http.Handler {
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
+	if cfg.GrantDeny != nil && cfg.GrantDeny.Logger == nil {
+		cfg.GrantDeny.Logger = cfg.Logger
+	}
 	if u, err := url.Parse(cfg.ExternalURL); err == nil {
 		cfg.domain = u.Host
 	}
@@ -141,6 +144,13 @@ func (cfg VerifierConfig) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Remote-User", c.Principal)
+	// Remote-Grant is the proxy's only way to tell a login-grant session from a card
+	// session: present (the grant id) for the former, ABSENT for the latter. A proxy
+	// must map a card session to the operator's account only when it is absent, and a
+	// grant session only to the restricted account.
+	if c.Grant != "" {
+		w.Header().Set("Remote-Grant", c.Grant)
+	}
 	w.Header().Set("Remote-Groups", strings.Join(c.Groups, ","))
 	w.WriteHeader(http.StatusOK)
 }
@@ -262,19 +272,25 @@ func (cfg VerifierConfig) verifyGrantLogin(q url.Values, nonce string) (logingra
 	}
 	entries := cfg.Registry.Entries()
 	for _, e := range entries {
-		if e.Principal == g.Principal {
+		// Case-insensitive: Forgejo resolves usernames that way, so "Sasha" and
+		// "sasha" are one account to the proxy's target.
+		if strings.EqualFold(e.Principal, g.Principal) {
 			return logingrant.Grant{}, fmt.Errorf("principal %q belongs to a registered card", g.Principal)
 		}
 	}
+	// Any registered slot-9A key may sign a grant, but only a card this verifier would
+	// let log in: an AllowPrincipals allowlist that excludes a card also stops it from
+	// authorizing others.
 	signedByCard := false
 	for _, e := range entries {
-		if logingrant.VerifyGrantSig(e.PubKey, text, q.Get("grant_sig")) == nil {
+		if cfg.allowed(e.Principal, nil) &&
+			logingrant.VerifyGrantSig(e.PubKey, text, q.Get("grant_sig")) == nil {
 			signedByCard = true
 			break
 		}
 	}
 	if !signedByCard {
-		return logingrant.Grant{}, errors.New("grant is not signed by a registered card key")
+		return logingrant.Grant{}, errors.New("grant is not signed by an allowed registered card key")
 	}
 	if err := g.VerifyLogin(cfg.domain, nonce, q.Get("sig")); err != nil {
 		return logingrant.Grant{}, err

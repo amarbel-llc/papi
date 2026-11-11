@@ -193,6 +193,20 @@ in
         '';
       }
       {
+        # A grant principal that is also an allowed CARD principal would let a software
+        # key log in as the operator. Forgejo resolves usernames case-insensitively, so
+        # compare lowercased. (The verifier also refuses it at runtime against the
+        # registry itself.)
+        assertion =
+          lib.intersectLists (map lib.toLower cfg.allowGrantPrincipals) (map lib.toLower cfg.allowPrincipals)
+          == [ ];
+        message = ''
+          services.papi-auth-verifier: allowGrantPrincipals must be disjoint from
+          allowPrincipals (case-insensitively): a login grant must never log in as a
+          principal a card can log in as.
+        '';
+      }
+      {
         assertion = forwardAuth || (cfg.allowGrantPrincipals == [ ] && cfg.grantDenyFile == null);
         message = ''
           services.papi-auth-verifier: allowGrantPrincipals and grantDenyFile need

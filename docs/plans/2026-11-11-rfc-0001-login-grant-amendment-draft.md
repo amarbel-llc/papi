@@ -61,11 +61,13 @@ answer every failure identically to an unregistered key:
 
 1. the grant text is canonical;
 2. `domain` equals the verifier's binding domain;
-3. the grant signature verifies under a registered slot-9A key;
+3. the grant signature verifies under a registered slot-9A key that the verifier
+   would itself accept for a card login (any allowlist on card principals applies to
+   the signer);
 4. `not-before <= now < expires` and `expires - not-before <= 168 h`;
 5. the grant id is not deny-listed;
 6. `principal` is one the verifier is configured to assume under grants, and is
-   not the principal of any registered card;
+   not the principal of any registered card (compared case-insensitively);
 7. the login signature verifies under `key`;
 8. the session it issues expires no later than
    `min(now + max-session, expires)` and no later than the verifier's own limit.
@@ -73,6 +75,14 @@ answer every failure identically to an unregistered key:
 A verifier SHOULD re-check deny-listing each time it honors a session issued under
 a grant. A grant MUST NOT be accepted by the stateless verify-signature oracle
 (FDR-0013).
+
+**Session header.** A verifier that answers a forward-auth subrequest MUST include
+`Remote-Grant: <grant id>` in a successful response for a session issued under a
+grant, and MUST NOT include the header for any other session. The relying proxy
+selects the account from `Remote-User` and `Remote-Grant` together: an account
+reachable by a card session MUST NOT be reachable by a session carrying
+`Remote-Grant`. Without that mapping a grant is no more restricted than the account
+the proxy assigns it.
 
 **Non-goals.** A grant bounds login, not downstream authority: what the principal
 may do is whatever the relying service grants that principal. A grant carries no

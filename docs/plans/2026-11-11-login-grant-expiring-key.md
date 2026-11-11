@@ -145,10 +145,23 @@ New: strict grant parser (~100 lines), one card-signature check (existing
 deny-file loader (copy of the registry hot-reload), one cookie claim. No new
 endpoint, no state beyond the deny file, no forge credential on the verifier.
 
-## Test vectors and cases (generated, committed under `testdata/logingrant/`)
+## Test vectors and cases
 
-Vectors are produced by a debug recipe from fixed seeds (so they are byte-stable)
-and committed as files; the markl and hex strings are NOT hand-written here.
+Implemented as in-code golden constants, not files: `internal/alfa/logingrant/vector_test.go`
+pins the canonical text, grant id and ed25519 login signature for a fixed public test
+seed (ed25519 is deterministic). ECDSA card signatures are randomized, so they are
+checked by verification, not pinned. The cases below are tests in
+`internal/bravo/authproxy/grant_test.go` and `denylist_test.go`.
+
+Review additions (2026-11-11, independent review): `/auth/verify` emits
+`Remote-Grant: <grant id>` for grant sessions and omits it for card sessions, so the
+proxy can map the two to different accounts; the card-principal collision check is
+case-insensitive; a grant must be signed by a card the verifier would let log in
+(`AllowPrincipals` applies to signers); bad deny-file reloads are logged and an
+emptying reload is refused; input files are opened without following symlinks and
+size-capped. **The verifier does not choose the forge account.** "A grant can never
+act as the operator" holds only if the proxy honors `Remote-Grant`; the required
+mapping is in `man 7 papi-forge-token`.
 
 | # | Case | Expected |
 |---|---|---|

@@ -127,6 +127,27 @@ let
         };
     }
     {
+      name = "grant-principal-overlapping-allow-principals-trips-assertion";
+      cfg = {
+        services.papi-auth-verifier.enable = true;
+        services.papi-auth-verifier.authorizedKeysFile = registry;
+        services.papi-auth-verifier.cookieKeyFile = cookieKey;
+        services.papi-auth-verifier.oracleLogin = oracle;
+        services.papi-auth-verifier.externalUrl = external;
+        services.papi-auth-verifier.allowPrincipals = [ "Sasha" ];
+        services.papi-auth-verifier.allowGrantPrincipals = [ "sasha" ];
+      };
+      check =
+        result:
+        let
+          tripped = trippedMessages result;
+        in
+        {
+          ok = lib.any (m: lib.hasInfix "must be disjoint from" m) tripped;
+          got = tripped;
+        };
+    }
+    {
       name = "login-grants-need-forward-auth";
       cfg = {
         services.papi-auth-verifier.enable = true;

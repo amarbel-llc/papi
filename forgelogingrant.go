@@ -5,9 +5,11 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"os"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -30,6 +32,38 @@ var dialLoginAgent = func() (net.Conn, error) {
 		return nil, errors.New("--login-key-agent needs $SSH_AUTH_SOCK")
 	}
 	return net.Dial("unix", sock)
+}
+
+const (
+	maxGrantFileBytes = 8 << 10  // a grant is at most 2 KiB plus one signature line
+	maxKeyFileBytes   = 64 << 10 // an OpenSSH ed25519 key is under 1 KiB
+)
+
+// readRegularFile reads a small input file safely: it opens without following a
+// symlink, checks the OPEN descriptor (so a swap between check and read cannot matter),
+// requires a regular file, and reads at most max bytes, refusing anything larger. The
+// returned FileInfo is the descriptor's.
+func readRegularFile(path string, max int64, what string) ([]byte, os.FileInfo, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s %s: %w (symlinks are not followed)", what, path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s %s: %w", what, path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("%s %s is not a regular file", what, path)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("%s %s: %w", what, path, err)
+	}
+	if int64(len(data)) > max {
+		return nil, nil, fmt.Errorf("%s %s is too large (over %d bytes)", what, path, max)
+	}
+	return data, info, nil
 }
 
 // validateLoginFlags enforces that a login-grant login is chosen deliberately and alone:
@@ -58,9 +92,9 @@ func (f *forgeTokenFlags) validateLoginFlags() error {
 // expired or mis-bound one fails with a precise message instead of the verifier's
 // deliberately generic 401.
 func (f *forgeTokenFlags) grantCredential(ctx context.Context, base, domain string) (forgetoken.Credential, error) {
-	data, err := os.ReadFile(f.loginGrant)
+	data, _, err := readRegularFile(f.loginGrant, maxGrantFileBytes, "login grant")
 	if err != nil {
-		return nil, fmt.Errorf("read login grant: %w", err)
+		return nil, err
 	}
 	text, cardSig, err := logingrant.ParseSigned(data)
 	if err != nil {
@@ -101,17 +135,13 @@ func (f *forgeTokenFlags) grantCredential(ctx context.Context, base, domain stri
 // key the grant names. The file must not be readable by group or other: this key is a
 // bearer credential.
 func fileKeySigner(path string, want ssh.PublicKey) (loginKeySign, error) {
-	info, err := os.Stat(path)
+	data, info, err := readRegularFile(path, maxKeyFileBytes, "login key")
 	if err != nil {
-		return nil, fmt.Errorf("login key: %w", err)
+		return nil, err
 	}
 	if info.Mode().Perm()&0o077 != 0 {
 		return nil, fmt.Errorf("login key %s has permissions %#o; make it private (chmod 600)",
 			path, info.Mode().Perm())
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("login key: %w", err)
 	}
 	raw, err := ssh.ParseRawPrivateKey(data)
 	if err != nil {

@@ -255,6 +255,53 @@ func TestMintWithLoginGrantRefusals(t *testing.T) {
 	})
 }
 
+// The key file is a bearer credential read from a path an attacker on the host may
+// influence, so it is opened without following symlinks, checked on the open fd, and
+// size-capped; and the grant file is read with a bound.
+func TestLoginInputFilesAreHardened(t *testing.T) {
+	t.Run("key file is a symlink", func(t *testing.T) {
+		env := newGrantEnv(t, nil)
+		link := filepath.Join(filepath.Dir(env.keyFile), "link")
+		if err := os.Symlink(env.keyFile, link); err != nil {
+			t.Fatal(err)
+		}
+		_, err := env.mint(t, "--login-grant", env.grantFile, "--login-key-file", link)
+		if err == nil {
+			t.Fatal("a symlinked key file was followed")
+		}
+		if len(env.mintedBy) != 0 {
+			t.Error("a token was minted")
+		}
+	})
+	t.Run("key file is a directory", func(t *testing.T) {
+		env := newGrantEnv(t, nil)
+		_, err := env.mint(t, "--login-grant", env.grantFile, "--login-key-file", filepath.Dir(env.keyFile))
+		if err == nil {
+			t.Fatal("a directory was accepted as a key file")
+		}
+	})
+	t.Run("key file is oversize", func(t *testing.T) {
+		env := newGrantEnv(t, nil)
+		if err := os.WriteFile(env.keyFile, bytes.Repeat([]byte("a"), 1<<20), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := env.mint(t, "--login-grant", env.grantFile, "--login-key-file", env.keyFile)
+		if err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("want a size refusal, got %v", err)
+		}
+	})
+	t.Run("grant file is oversize", func(t *testing.T) {
+		env := newGrantEnv(t, nil)
+		if err := os.WriteFile(env.grantFile, bytes.Repeat([]byte("a"), 1<<20), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := env.mint(t, "--login-grant", env.grantFile, "--login-key-file", env.keyFile)
+		if err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("want a size refusal, got %v", err)
+		}
+	})
+}
+
 func TestLoginGrantFlagCombinations(t *testing.T) {
 	env := newGrantEnv(t, nil)
 	for name, args := range map[string][]string{
