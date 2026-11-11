@@ -10,6 +10,35 @@ T = theory, not checked. Companion: `2026-10-26-forge-delegation-grant.md`
 (papi#88), `2026-10-26-papi-trip-pool-runbook.md` (the pool, dropped for this
 purpose). RFC text: `2026-11-11-rfc-0001-login-grant-amendment-draft.md`.
 
+## How long does it outlive the grant expiry? (operator question, 2026-11-11)
+
+**Login authority ends exactly at `expires`; the tokens it minted do not.** (1)
+Normal path, `--ttl 12h` default (V, `main.go:635`): a token minted one second
+before expiry carries deadline = mint time + 12h, so about 2026-11-18T11:59:59Z.
+But a deadline only marks the token for reaping: the forge has no token expiry
+(V, `doc/papi-forge-token.7.scd:70`) and `sweep` runs only when someone runs it
+with the card or a password; nothing schedules it (V, papi#88 note). So the
+token stays usable past its deadline until a sweep or revoke. (2) Hostile holder:
+papi caps nothing. `--ttl` is any duration; `ttl <= 0` yields deadline 0, which
+the name encodes as "never swept" (V, `main.go:612,675`, `naming.go:32,100-105`).
+The forge does not cap it either, so the maximum is unbounded until revoked.
+(3) Without (a): a max-ttl in the grant checked by papi is client-side only, and a
+hostile holder uses their own client or curl, so it is advisory. The verifier
+never sees the mint (V: it serves only `/auth/*`; the mint goes nginx -> forge).
+An nginx rule that rejects a token-create whose `name` deadline exceeds the grant
+expiry would need body inspection (njs/lua, T) and is a verifier-in-the-mint-path
+component in all but name; it also trusts the name, which the holder chooses. The
+cap that does hold without (a) is the **account**: at expiry, disable the
+restricted account and revoke every token it owns (`list --all`, revoke by id;
+I will add a `revoke --all-for-user` to make this one card-gated command). All
+tokens of that account are nikulin's by construction, so nothing legitimate is
+lost. Whether Forgejo stops honoring tokens of a disabled account is T and must
+be tested by circus before 11-18. (4) Time handling: the grant carries RFC 3339
+UTC with a literal `Z`, whole seconds, anything else rejected; comparisons are on
+Unix seconds, `expires` exclusive; the cookie already uses Unix `exp`
+(V, `token.go:71-75`). No timezone or rounding exposure; the unbounded part is
+token lifetime, which is a gap, not a rounding error.
+
 ## Constraint that shapes everything
 
 V: the verifier cookie is `{principal, groups, exp}` and the reverse proxy turns
