@@ -158,6 +158,51 @@ unregistered.
    mapping of the verifier's `Remote-User` to it, `AllowGrantPrincipals` and the
    deny-file path in the deployed verifier config, then deploy.
 
+## Costs of (b), stated plainly
+
+- A second forge account must exist, and someone (operator or circus) must add it
+  as collaborator on each non-circus repo by hand; a new repo is invisible to
+  nikulin sessions until that is done.
+- Pushes and PRs from nikulin sessions are attributed to that account, not the
+  operator.
+- Revoking a minted token by session name still needs the card (or the account
+  password); the grant does not change that. Disabling the account is the
+  card-free kill switch.
+- Defense in depth is the point: the repo limit lives in forge permissions, so a
+  verifier bug in grant parsing cannot widen it beyond that account's reach.
+- Ship order: (b) first; (a) later without redoing (b), since the grant record
+  is reusable as the (a) grant by adding `repos`/`max-ttl` fields.
+
+## Circus hand-off list (precise; the coordinator routes it)
+
+Nothing below is built or verified by me; each item is T until circus confirms.
+
+1. Forge account (name chosen by operator, e.g. the grant's `principal`), with
+   collaborator write on the agreed non-circus repos and NO access to circus
+   repos; no admin; password unset or unusable (login is by proxy assertion only).
+2. Reverse-proxy mapping so the verifier's `Remote-User` equal to that principal
+   is asserted to that forge account for the API vhost, the same path the
+   operator's principal takes today.
+3. Verifier config: `AllowGrantPrincipals = {<principal>}`; deny-file path; the
+   binding domain already configured (`ExternalURL` host). I will name the exact
+   config keys/flags when implemented.
+4. The registry already published stays as is; grants need no registry change
+   (the grant is signed by an existing slot-9A key). No PHP server change.
+5. Deploy of the new papi verifier build (after my merge and lock bump, which
+   are the coordinator's/operator's call).
+6. At 2026-11-18T00:00Z: disable the account (or strip collaborators), then
+   `sweep`.
+
+## Division with circus/noble-mahogany (SSH half)
+
+Grant key and SSH spawn key: bind them rather than reuse them. Proposal sent to
+that session: it owns the nikulin forced-command SSH key and its `authorized_keys`
+expiry; I own the login grant file. The grant's `key` line is the public half of
+a keypair that session generates (or a distinct one), and the grant's
+`not-before`/`expires` are set to the same window (11-18T00:00Z) so the two die
+together. Which file lives where is settled in chat; nothing is merged for it
+without the operator's ruling.
+
 ## Open questions for the operator
 
 1. Is a second forge account acceptable, and who creates it and its collaborator
