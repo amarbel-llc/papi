@@ -72,6 +72,10 @@ type SessionClaims struct {
 	Principal string   `json:"principal"`
 	Groups    []string `json:"groups"`
 	Exp       int64    `json:"exp"`
+	// Grant is the login-grant id (RFC-0001 §5.2.1) a software-key login was issued
+	// under; empty for a card login. /auth/verify re-checks it on every request so a
+	// deny-listed grant loses its live sessions.
+	Grant string `json:"grant,omitempty"`
 }
 
 // StateClaims is the verifier's login state param — stateless (HMAC'd under

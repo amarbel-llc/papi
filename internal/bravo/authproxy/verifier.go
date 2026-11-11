@@ -4,11 +4,15 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"code.linenisgreat.com/papi/internal/alfa/logingrant"
 )
 
 // DefaultCookieName is the verifier's session cookie name.
@@ -49,6 +53,15 @@ type VerifierConfig struct {
 	// nothing. Setting it WITHOUT AllowPrincipals denies every login. Sourcing groups
 	// (a registry annotation or a principal→groups map) is tracked as a follow-up.
 	AllowGroups map[string]bool
+	// AllowGrantPrincipals enables login grants (RFC-0001 §5.2.1) and names the only
+	// principals a grant may log in as. Empty (the default) disables grants entirely.
+	// A principal that is also a registered card's principal is refused regardless, so
+	// a grant can never act as the operator. This applies to /auth/callback only; the
+	// stateless /auth/verify-signature oracle never accepts a grant.
+	AllowGrantPrincipals map[string]bool
+	// GrantDeny lists revoked grant ids. It is consulted at login AND on every
+	// /auth/verify of a grant-issued session. Nil denies nothing.
+	GrantDeny *DenyList
 	// CookieName defaults to DefaultCookieName. CookieSecure/CookieDomain set the
 	// cookie attributes.
 	CookieName   string
@@ -112,7 +125,18 @@ func (cfg VerifierConfig) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c, err := ParseSession(cfg.CookieKey, ck.Value, cfg.now())
-	if err != nil || !cfg.allowed(c.Principal, c.Groups) {
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// A grant session answers to the grant policy, not the card allowlist: it must
+	// still be enabled, still name an allowed principal, and not be deny-listed.
+	if c.Grant != "" {
+		if !cfg.AllowGrantPrincipals[c.Principal] || cfg.GrantDeny.Denied(c.Grant) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	} else if !cfg.allowed(c.Principal, c.Groups) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -159,19 +183,32 @@ func (cfg VerifierConfig) handleCallback(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "invalid login state", http.StatusBadRequest)
 		return
 	}
-	entry, err := cfg.Registry.VerifyLogin(cfg.domain, st.Nonce, q.Get("sig"))
-	if err != nil {
-		cfg.Logger.Warn("authproxy: login signature rejected", "err", err)
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
-	}
-	if !cfg.allowed(entry.Principal, nil) {
-		cfg.Logger.Warn("authproxy: principal not allowed", "principal", entry.Principal)
-		http.Error(w, "not allowed", http.StatusForbidden)
-		return
-	}
+	principal, grantID := "", ""
 	exp := cfg.now().Add(cfg.SessionTTL).Unix()
-	cookie, err := MintSession(cfg.CookieKey, SessionClaims{Principal: entry.Principal, Exp: exp})
+	if q.Has("grant") || q.Has("grant_sig") {
+		g, err := cfg.verifyGrantLogin(q, st.Nonce)
+		if err != nil {
+			cfg.Logger.Warn("authproxy: grant login rejected", "err", err)
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
+		principal, grantID = g.Principal, g.ID()
+		exp = min(exp, cfg.now().Add(g.MaxSession).Unix(), g.Expires.Unix())
+	} else {
+		entry, err := cfg.Registry.VerifyLogin(cfg.domain, st.Nonce, q.Get("sig"))
+		if err != nil {
+			cfg.Logger.Warn("authproxy: login signature rejected", "err", err)
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
+		if !cfg.allowed(entry.Principal, nil) {
+			cfg.Logger.Warn("authproxy: principal not allowed", "principal", entry.Principal)
+			http.Error(w, "not allowed", http.StatusForbidden)
+			return
+		}
+		principal = entry.Principal
+	}
+	cookie, err := MintSession(cfg.CookieKey, SessionClaims{Principal: principal, Exp: exp, Grant: grantID})
 	if err != nil {
 		http.Error(w, "cookie mint failed", http.StatusInternalServerError)
 		return
@@ -190,8 +227,59 @@ func (cfg VerifierConfig) handleCallback(w http.ResponseWriter, r *http.Request)
 	if !safeRedirect(rd) {
 		rd = "/"
 	}
-	cfg.Logger.Info("authproxy: login", "principal", entry.Principal)
+	cfg.Logger.Info("authproxy: login", "principal", principal, "grant", grantID)
 	http.Redirect(w, r, rd, http.StatusFound)
+}
+
+// verifyGrantLogin runs the RFC-0001 §5.2.1 checks for a software-key login: query
+// parameters grant (the grant text, base64url), grant_sig (the card's signature over
+// it) and sig (the software key's login signature). Every failure is an error the
+// caller turns into the same generic 401 as a bad card signature, so a probe learns
+// nothing about which check failed.
+func (cfg VerifierConfig) verifyGrantLogin(q url.Values, nonce string) (logingrant.Grant, error) {
+	if len(cfg.AllowGrantPrincipals) == 0 {
+		return logingrant.Grant{}, errors.New("login grants are not enabled")
+	}
+	text, err := logingrant.DecodeText(q.Get("grant"))
+	if err != nil {
+		return logingrant.Grant{}, err
+	}
+	g, err := logingrant.Parse(text)
+	if err != nil {
+		return logingrant.Grant{}, err
+	}
+	if g.Domain != cfg.domain {
+		return logingrant.Grant{}, fmt.Errorf("grant is bound to %q, not this verifier", g.Domain)
+	}
+	if err := g.ValidAt(cfg.now()); err != nil {
+		return logingrant.Grant{}, err
+	}
+	if !cfg.AllowGrantPrincipals[g.Principal] {
+		return logingrant.Grant{}, fmt.Errorf("principal %q may not be assumed under a grant", g.Principal)
+	}
+	if cfg.GrantDeny.Denied(g.ID()) {
+		return logingrant.Grant{}, fmt.Errorf("grant %s is deny-listed", g.ID())
+	}
+	entries := cfg.Registry.Entries()
+	for _, e := range entries {
+		if e.Principal == g.Principal {
+			return logingrant.Grant{}, fmt.Errorf("principal %q belongs to a registered card", g.Principal)
+		}
+	}
+	signedByCard := false
+	for _, e := range entries {
+		if logingrant.VerifyGrantSig(e.PubKey, text, q.Get("grant_sig")) == nil {
+			signedByCard = true
+			break
+		}
+	}
+	if !signedByCard {
+		return logingrant.Grant{}, errors.New("grant is not signed by a registered card key")
+	}
+	if err := g.VerifyLogin(cfg.domain, nonce, q.Get("sig")); err != nil {
+		return logingrant.Grant{}, err
+	}
+	return g, nil
 }
 
 // verifySigRequest is the POST /auth/verify-signature body: a card §5.2 signature

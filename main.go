@@ -322,6 +322,11 @@ type forgeTokenFlags struct {
 	// verifier's login flow with the card, so no forge secret is stored at all.
 	cardLogin  bool
 	authDomain string
+	// Login grant (RFC-0001 §5.2.1): the same flow, with a card-signed grant and its
+	// software key standing in for the card.
+	loginGrant    string
+	loginKeyFile  string
+	loginKeyAgent bool
 	signerFlags
 }
 
@@ -422,6 +427,12 @@ func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 	cmd.PersistentFlags().StringVar(&f.authDomain, "auth-domain", "",
 		"host the verifier binds §5.2 signatures to (default: --host); must match its external URL byte-exactly")
 	f.signerFlags.register(cmd, "--card-login", true)
+	cmd.PersistentFlags().StringVar(&f.loginGrant, "login-grant", "",
+		"authenticate with a card-signed login grant (RFC-0001 §5.2.1, from `papi forge grant sign`) and its software key instead of a card; needs --login-key-file or --login-key-agent")
+	cmd.PersistentFlags().StringVar(&f.loginKeyFile, "login-key-file", "",
+		"with --login-grant: an unencrypted OpenSSH ed25519 private key file (mode 0600) holding the key the grant names")
+	cmd.PersistentFlags().BoolVar(&f.loginKeyAgent, "login-key-agent", false,
+		"with --login-grant: sign with the grant's key through the ssh-agent at $SSH_AUTH_SOCK")
 	cmd.PersistentFlags().StringVar(&f.passwordCmd, "password-command", "",
 		"shell command printing the account password on stdout (e.g. `piggy pass show forge/...`) — required to mint or revoke")
 	cmd.PersistentFlags().StringVar(&f.otpCmd, "otp-command", "",
@@ -433,24 +444,31 @@ func (f *forgeTokenFlags) register(cmd *cobra.Command) {
 // client builds the forge client. Card login wins when several credentials are
 // supplied, then a password; a token is last because it drives only the read paths.
 func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error) {
+	if err := f.validateLoginFlags(); err != nil {
+		return nil, err
+	}
 	base, err := f.apiBase(ctx)
 	if err != nil {
 		return nil, err
 	}
 	var cred forgetoken.Credential
 	switch {
+	case f.loginGrant != "":
+		domain, err := f.bindingDomain(base)
+		if err != nil {
+			return nil, err
+		}
+		if cred, err = f.grantCredential(ctx, base, domain); err != nil {
+			return nil, err
+		}
 	case f.cardLogin:
 		signer, guid, err := f.signerFlags.signer(ctx)
 		if err != nil {
 			return nil, err
 		}
-		domain := f.authDomain
-		if domain == "" {
-			// The §5.2 preimage binds a bare host, so strip the scheme a
-			// resolved api_base_url carries.
-			if domain, err = papi.NormalizeBaseHost(base); err != nil {
-				return nil, err
-			}
+		domain, err := f.bindingDomain(base)
+		if err != nil {
+			return nil, err
 		}
 		// The cookie name comes from the verifier's own constant rather than a
 		// copy, so the two halves of this flow cannot drift apart silently.
@@ -491,6 +509,16 @@ func (f *forgeTokenFlags) client(ctx context.Context) (*forgetoken.Client, error
 			"or --token-command (read-only)")
 	}
 	return forgetoken.NewClient(base, f.user, cred)
+}
+
+// bindingDomain is the host the verifier binds login signatures to: --auth-domain, else
+// the API base's bare host (the §5.2 preimage binds a host, so the scheme a resolved
+// api_base_url carries is stripped).
+func (f *forgeTokenFlags) bindingDomain(base string) (string, error) {
+	if f.authDomain != "" {
+		return f.authDomain, nil
+	}
+	return papi.NormalizeBaseHost(base)
 }
 
 // apiBase yields the forge API base URL: --host names it directly, --domain resolves
@@ -3333,7 +3361,8 @@ func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener) error {
 // anywhere — only the YubiKey signs, and ANY registered card may authenticate.
 func newAuthVerifierCmd() *cobra.Command {
 	var addr, cookieKeyFile, authorizedKeysFile, oracleLogin, externalURL, cookieDomain, logFormat string
-	var allowPrincipals, allowGroups []string
+	var allowPrincipals, allowGroups, allowGrantPrincipals []string
+	var grantDenyFile string
 	var cookieSecure, enableVerifySignature bool
 	cmd := &cobra.Command{
 		Use:   "auth-verifier --cookie-key-file <f> --authorized-keys-file <f> --oracle-login <url> --external-url <url>",
@@ -3398,7 +3427,16 @@ func newAuthVerifierCmd() *cobra.Command {
 				cfg.ExternalURL = externalURL
 				cfg.CookieSecure = cookieSecure
 				cfg.CookieDomain = cookieDomain
+				cfg.AllowGrantPrincipals = authproxy.Set(allowGrantPrincipals)
+				if grantDenyFile != "" {
+					if cfg.GrantDeny, err = authproxy.LoadDenyList(grantDenyFile); err != nil {
+						return err
+					}
+				}
 				routes = append(routes, "/auth/verify", "/auth/login", "/auth/callback")
+			} else if len(allowGrantPrincipals) > 0 || grantDenyFile != "" {
+				return fmt.Errorf("--allow-grant-principal and --grant-deny-file need forward-auth mode " +
+					"(login grants are accepted at /auth/callback only, never by --enable-verify-signature)")
 			}
 			if enableVerifySignature {
 				routes = append(routes, "/auth/verify-signature")
@@ -3440,6 +3478,11 @@ func newAuthVerifierCmd() *cobra.Command {
 		"allowed principal (repeatable; empty allowlist = any registered card)")
 	cmd.Flags().StringSliceVar(&allowGroups, "allow-group", nil,
 		"allowed group (repeatable)")
+	cmd.Flags().StringSliceVar(&allowGrantPrincipals, "allow-grant-principal", nil,
+		"principal a card-signed login grant may log in as (RFC-0001 §5.2.1; repeatable). Empty = grants disabled. "+
+			"A principal that is also a registered card's is refused regardless")
+	cmd.Flags().StringVar(&grantDenyFile, "grant-deny-file", "",
+		"file of revoked login-grant ids, one per line (# comments allowed); hot-reloaded, and enforced on every /auth/verify of a grant session")
 	cmd.Flags().BoolVar(&cookieSecure, "cookie-secure", true,
 		"set Secure on the session cookie (requires HTTPS; set false only for plain-HTTP tailnet)")
 	cmd.Flags().StringVar(&cookieDomain, "cookie-domain", "",

@@ -58,6 +58,19 @@ type NonceSigner func(ctx context.Context, domain, nonce string) (string, error)
 // configured external URL), not necessarily the host being called: the preimage is
 // byte-exact, and a mismatch fails as an indistinguishable 401.
 func CardLogin(ctx context.Context, verifierBase, authDomain, cookieName string, sign NonceSigner) (SessionCookieCredential, error) {
+	return Login(ctx, verifierBase, authDomain, cookieName, sign, nil)
+}
+
+// Login is CardLogin with extra /auth/callback query parameters. A login-grant login
+// (RFC-0001 §5.2.1) sends the grant text and its card signature that way, while sign
+// produces the software key's signature instead of a card's. extra MUST NOT carry
+// "state" or "sig": those belong to the flow.
+func Login(ctx context.Context, verifierBase, authDomain, cookieName string, sign NonceSigner, extra url.Values) (SessionCookieCredential, error) {
+	for _, reserved := range []string{"state", "sig"} {
+		if extra.Has(reserved) {
+			return SessionCookieCredential{}, fmt.Errorf("login parameter %q is reserved by the flow", reserved)
+		}
+	}
 	if sign == nil {
 		return SessionCookieCredential{}, errors.New("card login needs a signer")
 	}
@@ -88,7 +101,7 @@ func CardLogin(ctx context.Context, verifierBase, authDomain, cookieName string,
 	if err != nil {
 		return SessionCookieCredential{}, fmt.Errorf("sign the login nonce: %w", err)
 	}
-	value, err := loginCallback(ctx, client, base, state, sig, cookieName)
+	value, err := loginCallback(ctx, client, base, state, sig, cookieName, extra)
 	if err != nil {
 		return SessionCookieCredential{}, err
 	}
@@ -125,10 +138,14 @@ func loginRedirect(ctx context.Context, client *http.Client, base string) (nonce
 }
 
 // loginCallback performs the /auth/callback leg and returns the session cookie value.
-func loginCallback(ctx context.Context, client *http.Client, base, state, sig, cookieName string) (string, error) {
+func loginCallback(ctx context.Context, client *http.Client, base, state, sig, cookieName string, extra url.Values) (string, error) {
 	// The callback spells the signature parameter "sig" — the JSON verify-signature
 	// oracle is the one that calls it "signature".
-	callback := base + "/auth/callback?" + url.Values{"state": {state}, "sig": {sig}}.Encode()
+	params := url.Values{"state": {state}, "sig": {sig}}
+	for k, vs := range extra {
+		params[k] = vs
+	}
+	callback := base + "/auth/callback?" + params.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, callback, nil)
 	if err != nil {
 		return "", err
@@ -142,6 +159,14 @@ func loginCallback(ctx context.Context, client *http.Client, base, state, sig, c
 		if c.Name == cookieName && c.Value != "" {
 			return c.Value, nil
 		}
+	}
+	if len(extra) > 0 && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+		// The verifier answers every refusal alike on purpose, so this lists the
+		// possibilities rather than guessing one.
+		return "", fmt.Errorf("GET /auth/callback: HTTP %d — the login grant was refused: it may be expired or "+
+			"not yet valid, deny-listed, not signed by a registered card, name a principal this verifier does "+
+			"not enable for grants, or be bound to a different verifier domain; or the software key's signature "+
+			"did not verify", resp.StatusCode)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return "", fmt.Errorf("GET /auth/callback: HTTP %d — the card's slot-9A key is not "+

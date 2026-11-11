@@ -106,6 +106,64 @@ func TestSessionCookieCredentialSetsNoAuthorizationHeader(t *testing.T) {
 	}
 }
 
+// Login forwards extra callback parameters (a login grant's text and card signature)
+// next to the state and the signature, and CardLogin is Login with none.
+func TestLoginSendsExtraCallbackParams(t *testing.T) {
+	var got url.Values
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/login", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", oracleRedirect("nonce-9", "state-9"))
+		w.WriteHeader(http.StatusFound)
+	})
+	mux.HandleFunc("/auth/callback", func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		http.SetCookie(w, &http.Cookie{Name: DefaultSessionCookie, Value: "v"})
+		w.WriteHeader(http.StatusFound)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	_, err := Login(context.Background(), srv.URL, "forge.example", "",
+		func(_ context.Context, _, nonce string) (string, error) { return "login-sig-for-" + nonce, nil },
+		url.Values{"grant": {"GRANT"}, "grant_sig": {"GSIG"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range map[string]string{
+		"state": "state-9", "sig": "login-sig-for-nonce-9", "grant": "GRANT", "grant_sig": "GSIG",
+	} {
+		if got.Get(k) != want {
+			t.Errorf("callback %s = %q, want %q", k, got.Get(k), want)
+		}
+	}
+}
+
+// extra parameters must not be able to override the state or signature.
+func TestLoginExtraCannotOverrideStateOrSig(t *testing.T) {
+	v := &fakeVerifier{loginLocation: oracleRedirect("n", "real-state")}
+	srv := v.server(t)
+	_, err := Login(context.Background(), srv.URL, "forge.example", "",
+		func(context.Context, string, string) (string, error) { return "real-sig", nil },
+		url.Values{"state": {"evil"}, "sig": {"evil"}})
+	if err == nil {
+		t.Fatal("reserved extra parameter names were accepted")
+	}
+}
+
+func TestLoginDenialNamesTheGrantNotTheCard(t *testing.T) {
+	v := &fakeVerifier{loginLocation: oracleRedirect("n", "s"), callbackStatus: http.StatusUnauthorized}
+	srv := v.server(t)
+	_, err := Login(context.Background(), srv.URL, "forge.example", "",
+		func(context.Context, string, string) (string, error) { return "sig", nil },
+		url.Values{"grant": {"G"}, "grant_sig": {"S"}})
+	if err == nil || !strings.Contains(err.Error(), "login grant") {
+		t.Fatalf("a refused grant login should name the grant, got %v", err)
+	}
+	if strings.Contains(err.Error(), "slot-9A key is not registered") {
+		t.Fatalf("a grant login must not blame the card key: %v", err)
+	}
+}
+
 func TestCardLoginFailures(t *testing.T) {
 	sign := func(context.Context, string, string) (string, error) { return "sig", nil }
 

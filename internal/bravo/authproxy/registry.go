@@ -145,6 +145,16 @@ func (r *Registry) maybeReload() {
 	r.mu.Unlock()
 }
 
+// Entries returns a copy of the registered identities, after a hot-reload check. The
+// login-grant path needs them twice: to find a card key that signed a grant, and to
+// refuse a grant that names a card principal.
+func (r *Registry) Entries() []RegistryEntry {
+	r.maybeReload()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]RegistryEntry(nil), r.entries...)
+}
+
 // Len reports the number of registered keys.
 func (r *Registry) Len() int {
 	r.mu.RLock()

@@ -273,6 +273,45 @@ func VerifyGrantSig(pub *ecdsa.PublicKey, text []byte, sigMarkl string) error {
 	return nil
 }
 
+const sigLinePrefix = "grant-sig: "
+
+// MarshalSigned joins a grant's text and its card signature into the one file the
+// operator hands to a login client: the canonical text, then a single `grant-sig:` line.
+func MarshalSigned(text []byte, sigMarkl string) []byte {
+	return append(append([]byte(nil), text...), []byte(sigLinePrefix+sigMarkl+"\n")...)
+}
+
+// ParseSigned is the strict inverse of MarshalSigned. It checks shape only — that the
+// text is a canonical grant and the signature a grant-signature markl id — not that the
+// signature verifies; only a verifier holding the registry can say that.
+func ParseSigned(data []byte) (text []byte, sigMarkl string, err error) {
+	if len(data) > maxTextBytes+1024 || !bytes.HasSuffix(data, []byte("\n")) {
+		return nil, "", errors.New("signed grant must be a short, newline-terminated file")
+	}
+	body := data[:len(data)-1]
+	i := bytes.LastIndexByte(body, '\n')
+	if i < 0 {
+		return nil, "", errors.New("signed grant has no signature line")
+	}
+	text, last := data[:i+1], string(body[i+1:])
+	sigMarkl, ok := strings.CutPrefix(last, sigLinePrefix)
+	if !ok || sigMarkl == "" {
+		return nil, "", fmt.Errorf("last line must be %q followed by the signature", sigLinePrefix)
+	}
+	if _, err := Parse(text); err != nil {
+		return nil, "", fmt.Errorf("grant: %w", err)
+	}
+	id, err := markl.Parse(sigMarkl)
+	if err != nil {
+		return nil, "", fmt.Errorf("grant signature: %w", err)
+	}
+	if id.Purpose != markl.PurposeLoginGrantSig || id.Format != markl.FormatEcdsaP256Sig {
+		return nil, "", fmt.Errorf("grant signature is %s/%s, want %s/%s",
+			id.Purpose, id.Format, markl.PurposeLoginGrantSig, markl.FormatEcdsaP256Sig)
+	}
+	return text, sigMarkl, nil
+}
+
 // EncodeSig / DecodeSig carry a raw ed25519 login signature as unpadded base64url.
 func EncodeSig(raw []byte) string { return base64.RawURLEncoding.EncodeToString(raw) }
 
