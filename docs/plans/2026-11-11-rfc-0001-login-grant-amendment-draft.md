@@ -1,7 +1,10 @@
 # RFC-0001 Amendment 29 (DRAFT): login grants (§5.2, §10.4)
 
-Status: draft, not yet merged into RFC-0001. Numbering assumes Amendment 28
-(WebAuthn, `2026-11-08-rfc-0001-webauthn-amendment-draft.md`) lands first.
+Status: MERGED into RFC-0001 as §5.2.1 and Amendment 29 on 2026-11-12; this file is
+kept as the design-time draft and RFC-0001 is authoritative. Amendment 28 (WebAuthn,
+`2026-11-08-rfc-0001-webauthn-amendment-draft.md`) is still a draft, so the history
+has a gap at 28. No RFC-0002 registration is needed: signature purposes are defined
+in RFC-0001 itself.
 Rationale and threat model: `2026-11-11-login-grant-expiring-key.md`.
 
 ## Text to add to §5.2 (new subsection 5.2.1, "Login grants")
