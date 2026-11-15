@@ -33,9 +33,14 @@ let
         type = lib.types.listOf lib.types.str;
         default = [ ];
       };
+      users.users = lib.mkOption {
+        type = lib.types.attrs;
+        default = { };
+      };
     };
     # A home-manager user who enabled the service, as the hm module exposes it.
     config.home-manager.users.alice.services.papi-ssh-sync._fragmentPaths.linenisgreat = fragment;
+    config.users.users.alice.home = "/home/alice";
   };
 
   runEval =
@@ -93,6 +98,44 @@ let
         in
         {
           ok = warns == [ ];
+          got = warns;
+        };
+    }
+    {
+      # papi#95: sshd expands %h, so the %h/ spelling of the fragment is read.
+      name = "percent-h-form-of-fragment-is-quiet";
+      cfg = {
+        services.openssh.authorizedKeysFiles = lib.mkOverride 45 [
+          "/etc/ssh/authorized_keys.d/%u"
+          "%h/.local/state/papi-ssh-sync/linenisgreat.com"
+        ];
+      };
+      check =
+        result:
+        let
+          warns = result.config.warnings;
+        in
+        {
+          ok = warns == [ ];
+          got = warns;
+        };
+    }
+    {
+      # A %h/ entry for a different relative path does not cover the fragment.
+      name = "percent-h-form-of-other-path-warns";
+      cfg = {
+        services.openssh.authorizedKeysFiles = lib.mkOverride 45 [
+          "/etc/ssh/authorized_keys.d/%u"
+          "%h/.local/state/papi-ssh-sync/other.example"
+        ];
+      };
+      check =
+        result:
+        let
+          warns = result.config.warnings;
+        in
+        {
+          ok = lib.any (w: lib.hasInfix fragment w) warns;
           got = warns;
         };
     }

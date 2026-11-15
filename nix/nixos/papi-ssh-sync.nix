@@ -39,7 +39,26 @@ let
   users = config.home-manager.users or { };
   fragmentsOf = u: lib.attrValues (u.services.papi-ssh-sync._fragmentPaths or { });
   allFragments = lib.unique (lib.concatMap fragmentsOf (lib.attrValues users));
-  droppedFragments = lib.subtractLists config.services.openssh.authorizedKeysFiles allFragments;
+  authorizedKeysFiles = config.services.openssh.authorizedKeysFiles;
+
+  # sshd expands %h to the user's home directory, so an override that lists
+  # `%h/<rest>` reads the fragment `<home>/<rest>` just as the absolute path
+  # does (papi#95). Checked per user because %h differs per user. %u and %U
+  # forms are not recognized and still warn.
+  fragmentReadable =
+    home: fragment:
+    lib.elem fragment authorizedKeysFiles
+    || (
+      home != null
+      && lib.hasPrefix "${home}/" fragment
+      && lib.elem "%h/${lib.removePrefix "${home}/" fragment}" authorizedKeysFiles
+    );
+  homeOf = name: (config.users.users.${name} or { }).home or null;
+  droppedFragments = lib.unique (
+    lib.concatMap (
+      name: lib.filter (f: !fragmentReadable (homeOf name) f) (fragmentsOf users.${name})
+    ) (lib.attrNames users)
+  );
 in
 {
   home-manager.sharedModules = [ self.homeManagerModules.papi-ssh-sync ];
@@ -51,7 +70,9 @@ in
     "services.papi-ssh-sync: services.openssh.authorizedKeysFiles was overridden "
     + "at a higher priority (for example srvos's lib.mkForce), so sshd will not read "
     + "these synced fragments: ${lib.concatStringsSep ", " droppedFragments}. "
-    + "Set the list yourself above that priority and include them; see "
+    + "Set the list yourself above that priority and include them, either as the "
+    + "absolute path or as %h/<path relative to the user's home> (%u and %U forms "
+    + "are not recognized by this check); see "
     + "nix/nixos/papi-ssh-sync.nix."
   );
 }
