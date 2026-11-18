@@ -30,6 +30,7 @@ func newForgeGrantCmd() *cobra.Command {
 		SilenceErrors: true,
 	}
 	cmd.AddCommand(newForgeGrantSignCmd())
+	cmd.AddCommand(newForgeGrantCheckCmd())
 	return cmd
 }
 

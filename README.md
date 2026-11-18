@@ -368,6 +368,9 @@ operator signs one grant at the card (`papi forge grant sign`), and `mint
 the grant's ed25519 key until the grant expires. The verifier enables grants per
 principal (`--allow-grant-principal`) and the repository limit is the forge's — map
 the principal to a restricted forge account; see `man 7 papi-forge-token`.
+`papi forge grant check <file> [--warn-within 48h]` is the read-only, offline expiry
+check (no card, no network): it prints the grant and exits nonzero when it is
+malformed, expired, or inside the warning window, for a timer or verify step.
 
 `mint --batch <rows> --out <dir>` pre-mints a **pool** under one login (one card
 signature) for a stretch when the card is away (papi#80): `<rows>` holds
