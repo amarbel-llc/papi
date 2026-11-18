@@ -59,7 +59,7 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.system}.papi;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.papi;
       defaultText = lib.literalExpression "papi.packages.\${system}.papi";
       description = "The papi package providing `papi auth-verifier`.";
     };
