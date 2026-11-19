@@ -3,7 +3,7 @@
 Status: DESIGN NOTE, nothing built. Written 2026-11-19 for operator review.
 Owner of the code: papi (`internal/bravo/inspect/pigpen.go`, `cmd/pigpen-resolver-papi-http`).
 Owner of the consumer contract: piggy (RFC 0008 pointer format, RFC 0010 resolver
-contract). Facts from piggy's side are marked UNCONFIRMED until its session answers.
+contract). Piggy's side facts are in §6, confirmed by its session.
 
 ## 1. The gap, stated precisely
 
@@ -51,8 +51,7 @@ Pin the **signing slot-9A public key(s)**, not the recipient set.
 file is written by the operator and lives in the store, so the pin is carried by the same
 operator-authored, version-controlled object that already says "trust this origin".
 Stateless, no writable state dir, works confined and from CI, survives a new host.
-Papi-side only if the locator string is the only channel piggy passes (question to
-piggy, below). The locator grammar is papi's to define (RFC 0010 treats it as opaque).
+Papi-side only, and piggy confirmed the locator is the only channel (§6). The locator grammar is papi's to define (RFC 0010 treats it as opaque).
 First pin is obtained at a card sitting: read the key ids with `papi debug-cards`
 (or the document, checked against the card) and write them into the pointer. That is a
 **card-provided** pin, not trust-on-first-use.
@@ -75,7 +74,7 @@ papi's to define; named here only so it is not forgotten.
 | Pinned, signature verifies under a pinned key present in the doc | success, bytes passed through (unchanged from today) |
 | Pinned, doc is signed only by a key NOT in the pin set | **exit 1**, message `signer not pinned` plus the key id seen. No output, no fallback to unpinned |
 | Pinned, doc unsigned | exit 1 (already so today) |
-| No pin in the locator | today's behaviour, plus a stderr line `pigpen: unpinned origin (signer not verified against an operator pin)`. Visibility depends on piggy question 2 |
+| No pin in the locator | today's behaviour. A warning on stderr is USELESS: piggy drops the resolver's stderr on success (confirmed, §6). Options: stay silent, write to /dev/tty (the resolver keeps the terminal), or make unpinned a failure (operator question 4) |
 | Pin present but malformed | exit 1 at argv parse, before any fetch |
 
 Never degrade a pinned locator to the unpinned path: a mismatch is a hard failure, with
@@ -100,10 +99,25 @@ legitimate rotation (re-pin at a card sitting) or an attack.
 - papi: locator grammar for the papi-http kind, the verification change (pin set, any
   pinned key), the diagnostics, tests, README/FDR 0013 and RFC-0001 §14.2 text
   (§14.2's SHOULD-pin sentence becomes a described mechanism).
-- piggy (UNCONFIRMED, asked piggy/green-larch): whether a pointer can carry more than
-  `kind` + `locator`; whether resolver stderr reaches the operator on success; whether
-  piggy caches the resolved document and re-runs the resolver each time; whether the
-  resolver may write state or is sandboxed.
+- piggy facts, CONFIRMED by piggy/green-larch (from RFC 0008/0010 and the code on
+  master; read, not run):
+  1. A pointer carries exactly `kind=` and `locator=` (a third tag is a malformed
+     document); the resolver gets only argv `resolve <locator>`. So the locator is the
+     ONLY channel and option A is papi-side only. The writer refuses a quote or newline
+     in the locator; `domain#signer=<markl-id>` is allowed. piggy never interprets it.
+  2. On success the resolver's stderr is read and discarded. A "not pinned" notice
+     cannot travel that way (use /dev/tty, or make not-pinned a failure).
+  3. The Rust CLI caches resolved bytes under `$XDG_CACHE_HOME/piggy/` with a TTL (RFC
+     0010 §4, "on the order of one hour"; actual default unchecked) and a fresh entry
+     SKIPS the resolver; `PIGGY_PIGPEN_NO_CACHE` forces a resolve. The Go library does
+     not cache. piggy checks only: not sealed, at least one recipient, at most 1 MiB,
+     deadline 30 s. No signature/provenance check: it must live in the resolver.
+  4. Nothing confines the resolver: it inherits piggy's environment, cwd, HOME, XDG
+     vars and terminal. A TOFU pin file under XDG state is possible from piggy's side.
+- **Cache caveat for any pin:** the pin check runs only on cache misses, so a document
+  verified once stays trusted for the TTL even if the pin is later tightened. A design
+  that must check every use needs the cache bypassed or the pin checked elsewhere (a
+  piggy-side question if the operator wants per-use checks).
 
 ## 7. Questions for the operator
 
@@ -122,8 +136,8 @@ legitimate rotation (re-pin at a card sitting) or an attack.
 
 ## 8. Not decided here
 
-- The exact locator syntax (`#signer=` vs a query string); decided with piggy's answer
-  to question 1.
+- The exact locator syntax: `#signer=<id>[,<id>]` is allowed by piggy's writer rules
+  (no quote, no newline); a query string would also pass. The choice is papi's.
 - Freshness/rollback protection (a replayed old signed document). The RFC notes a
   signature binds authorship, not freshness; a `created` check is a separate item.
 
