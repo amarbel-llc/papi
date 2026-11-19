@@ -52,13 +52,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	c, err := papi.NewClient(args[1])
+	origin, pins, err := inspect.ParsePigpenLocator(args[1])
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	c, err := papi.NewClient(origin)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
 
-	doc, err := inspect.ResolvePigpen(context.Background(), c)
+	doc, err := inspect.ResolvePigpenPinned(context.Background(), c, pins)
 	if err != nil {
 		fmt.Fprintln(stderr, err.Error())
 		return 1

@@ -1042,11 +1042,15 @@ func newPigpenResolveCmd() *cobra.Command {
 			"to.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			c, err := papi.NewClient(args[0])
+			origin, pins, err := inspect.ParsePigpenLocator(args[0])
 			if err != nil {
 				return err
 			}
-			body, err := inspect.ResolvePigpen(cmd.Context(), c)
+			c, err := papi.NewClient(origin)
+			if err != nil {
+				return err
+			}
+			body, err := inspect.ResolvePigpenPinned(cmd.Context(), c, pins)
 			if err != nil {
 				return err
 			}

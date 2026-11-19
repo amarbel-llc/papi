@@ -196,6 +196,18 @@ func (e *errPigpenStripBytes) Unwrap() error { return e.err }
 // means), along with the signing key's markl-id when one was found before
 // the failure occurred.
 func verifyPigpenSelfSignature(lines []hyphence.MetadataLine, fetchAuthIDs func() []string) (keyID string, err error) {
+	return verifyPigpenSelfSignaturePinned(lines, fetchAuthIDs, nil)
+}
+
+// verifyPigpenSelfSignaturePinned is verifyPigpenSelfSignature with an
+// optional signer pin set (papi#54, docs/plans/2026-11-19-pigpen-key-pinning-design.md).
+// pins holds compressed P-256 points of the slot-9A keys the caller trusts to
+// sign; with no pins the behaviour is exactly the unpinned one (only the
+// first auth-key line is tried). With pins, every auth-key line of the
+// document whose point is pinned is tried in document order and the first
+// that verifies wins; if the document carries no pinned key the result is
+// *errPigpenSignerNotPinned, never a fallback to the unpinned path.
+func verifyPigpenSelfSignaturePinned(lines []hyphence.MetadataLine, fetchAuthIDs func() []string, pins [][]byte) (keyID string, err error) {
 	value, hasSig := findPigpenSelfSig(lines)
 	if !hasSig {
 		return "", errPigpenUnsigned
@@ -206,11 +218,47 @@ func verifyPigpenSelfSignature(lines []hyphence.MetadataLine, fetchAuthIDs func(
 		return "", errPigpenLockMalformed
 	}
 
-	keyID, keyPoint, hasKey := findPigpenAuthKey(lines)
-	if !hasKey {
+	candidates := pigpenCandidateKeys(lines, pins)
+	if len(candidates) == 0 {
+		if len(pins) > 0 {
+			return "", &errPigpenSignerNotPinned{seen: pigpenAuthKeyIDs(lines)}
+		}
 		return "", errPigpenNoAuthKey
 	}
 
+	var authIDs []string
+	fetched := false
+	published := func() []string {
+		if !fetched {
+			authIDs, fetched = fetchAuthIDs(), true
+		}
+		return authIDs
+	}
+
+	var firstKeyID string
+	for _, cand := range candidates {
+		id, verr := verifyPigpenSigWithKey(lines, sigID.Payload, cand.id, cand.point, published)
+		if verr == nil {
+			return id, nil
+		}
+		if err == nil {
+			firstKeyID, err = id, verr
+		}
+	}
+	// Every pinned key failed, but the document also offers keys outside the
+	// pin set: the likely signer is one of those, so name them instead of a
+	// bare "signature invalid".
+	if len(pins) > 0 && errors.Is(err, errPigpenSigInvalid) {
+		if unpinned := pigpenUnpinnedKeyIDs(lines, candidates); len(unpinned) > 0 {
+			return "", &errPigpenSignerNotPinned{seen: unpinned}
+		}
+	}
+	return firstKeyID, err
+}
+
+// verifyPigpenSigWithKey runs the published-check and the ECDSA check for one
+// candidate signing key.
+func verifyPigpenSigWithKey(lines []hyphence.MetadataLine, sig []byte, keyID string, keyPoint []byte, fetchAuthIDs func() []string) (string, error) {
 	if !keyPublishedMarkl(keyID, keyPoint, nil, fetchAuthIDs()) {
 		return keyID, errPigpenKeyNotPublished
 	}
@@ -225,7 +273,7 @@ func verifyPigpenSelfSignature(lines []hyphence.MetadataLine, fetchAuthIDs func(
 		return keyID, &errPigpenStripBytes{err: serr}
 	}
 
-	if !ecdsaVerifyRaw(pub, input, sigID.Payload) {
+	if !ecdsaVerifyRaw(pub, input, sig) {
 		return keyID, errPigpenSigInvalid
 	}
 
@@ -345,6 +393,14 @@ func pigpenSignaturePoints(ctx context.Context, c *papi.Client) []point {
 // distinguishable errPigpen* verdicts — unsigned, malformed self-signature,
 // no auth-key line, key not published, signature invalid).
 func ResolvePigpen(ctx context.Context, c *papi.Client) ([]byte, error) {
+	return ResolvePigpenPinned(ctx, c, nil)
+}
+
+// ResolvePigpenPinned is ResolvePigpen with a signer pin set (see
+// ParsePigpenLocator): with pins, the document must verify under a pinned
+// slot-9A key that it also publishes, and a document signed by any other key
+// is refused with *errPigpenSignerNotPinned even if it is self-consistent.
+func ResolvePigpenPinned(ctx context.Context, c *papi.Client, pins [][]byte) ([]byte, error) {
 	resp, err := c.Fetch(ctx, "/papi/pigpen")
 	if err != nil {
 		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: fetch failed: %w", c.BaseURL, err)
@@ -361,9 +417,9 @@ func ResolvePigpen(ctx context.Context, c *papi.Client) ([]byte, error) {
 		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: parse hyphence metadata: %w", c.BaseURL, err)
 	}
 
-	if _, verr := verifyPigpenSelfSignature(lines, func() []string {
+	if _, verr := verifyPigpenSelfSignaturePinned(lines, func() []string {
 		return fetchPiggyAuthIDs(ctx, c)
-	}); verr != nil {
+	}, pins); verr != nil {
 		return nil, fmt.Errorf("pigpen: resolve %s/papi/pigpen: %w", c.BaseURL, verr)
 	}
 

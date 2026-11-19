@@ -171,7 +171,21 @@ $ papi pigpen resolve example.com
   `kind=...` resolver, or a future revision of this one, could reasonably
   choose to pass through an unsigned document instead; nothing in RFC-0001
   or piggy RFC 0010 mandates today's stricter choice.
-- **The first matching auth-key line wins.** `findPigpenAuthKey` (in
+- **Signer pinning (papi#54, ruled by the operator 2026-11-19).** A locator
+  may carry `<origin>#signer=<id>[,<id>]`, ids being slot-9A markl-ids taken
+  from the card. With a pin set the document must verify under a pinned key
+  it also publishes on `/papi/piggy-ids`; any pinned key present in the
+  document is tried, and a document signed by any other key fails with
+  `signer not pinned` naming the keys it offered, never falling back to the
+  unpinned path. A malformed pin fails at argument parsing, before any fetch.
+  Unpinned locators still work, silently (piggy discards a resolver's stderr
+  on success). Design and rationale:
+  `docs/plans/2026-11-19-pigpen-key-pinning-design.md`. Caveat: piggy caches
+  resolved bytes (about an hour) and skips the resolver on a hit, so the pin
+  is checked only on cache misses. The "No TOFU pinning" limitation above
+  still holds for unpinned locators; making unpinned an error is deferred
+  until the pointers carry pins.
+- **Without a pin, the first matching auth-key line wins.** `findPigpenAuthKey` (in
   `internal/alfa/inspect/pigpen.go`) returns the *first*
   `piggy-piv_auth-v1@ssh_ecdsa_nistp256_pub` line it finds among the
   document's metadata lines. A document that (unusually) published more than
