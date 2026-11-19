@@ -91,6 +91,10 @@ var (
 type Session struct {
 	ID        string // the minted session id, presented as `PiggySession <id>` (§5.3)
 	Principal string // the principal the session is bound to (§5.2)
+	// Groups and ExpiresAt echo the §5.2 response payload; both are zero when the
+	// server omits them.
+	Groups    []string
+	ExpiresAt int64
 	respBody  []byte // the consumed /papi/auth/response request body, for the replay check
 }
 
@@ -245,13 +249,18 @@ func finishHandshake(ctx context.Context, c *papi.Client, respBody []byte) (Sess
 		return Session{}, fmt.Errorf("session response (§4.2/§5.2): %w", err)
 	}
 	var session struct {
-		Session   string `json:"session"`
-		Principal string `json:"principal"`
+		Session   string   `json:"session"`
+		Principal string   `json:"principal"`
+		Groups    []string `json:"groups"`
+		ExpiresAt int64    `json:"expires_at"`
 	}
 	if json.Unmarshal(sessData, &session) != nil || session.Session == "" {
 		return Session{}, fmt.Errorf("response body lacks session (§5.2)")
 	}
-	return Session{ID: session.Session, Principal: session.Principal, respBody: respBody}, nil
+	return Session{
+		ID: session.Session, Principal: session.Principal,
+		Groups: session.Groups, ExpiresAt: session.ExpiresAt, respBody: respBody,
+	}, nil
 }
 
 // authenticatedChecks runs the §5 handshake via Handshake and verifies the scoped

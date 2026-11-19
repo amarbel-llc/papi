@@ -1484,6 +1484,17 @@ downstream consumer receiving already-resolved bytes from a resolver does
 or does not re-verify — that is the resolver-dispatch contract's concern,
 not this endpoint's.
 
+A resolver SHOULD prefer a **card-provided pin** to trust-on-first-use: the
+document's own key, proven "published" by the same origin's
+`/papi/piggy-ids`, is not an independent trust anchor, because an origin that
+controls both can serve a self-consistent document under its own key. The
+reference resolver (`pigpen-resolver-papi-http`) therefore accepts a pin set
+in the pointer's locator, `<origin>#signer=<id>[,<id>]`, each id a slot-9A
+markl-id read from the card: a document is accepted only if it verifies under
+a pinned key that it also publishes, and a document signed by any other key is
+refused with the keys it offered, never falling back to the unpinned path. See
+`docs/features/0013-pigpen-resolver-papi-http.md`.
+
 #### 14.3. Worked examples
 
 A bare (unsigned) payload-less pigpen document — permitted, since the

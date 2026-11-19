@@ -105,6 +105,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newQueryCmd())
 	root.AddCommand(newEnrollCmd())
 	root.AddCommand(newVerifyReceiptCmd())
+	root.AddCommand(newAuthCmd())
 	root.AddCommand(newSignChallengeCmd())
 	root.AddCommand(newIdentityCmd())
 	root.AddCommand(newSignChallengeServeCmd())

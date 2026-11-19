@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: experimental
 date: 2026-07-05
 promotion-criteria: >
   proposed → experimental when `papi auth` is implemented (runs the §5 handshake and
